@@ -1,0 +1,4 @@
+#!/bin/sh
+# Spotpreis aWATTar - minutlicher Cron (Preisabruf, stuendliche Ansage/Push, MQTT)
+# REPLACELBPHTMLDIR wird bei der Installation durch den Plugin-HTML-Pfad ersetzt.
+php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>&1
