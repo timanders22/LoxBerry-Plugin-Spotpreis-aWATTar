@@ -1,6 +1,6 @@
 <?php
 /**
- * Spotpreis aWATTar - Admin-Oberflaeche (v1.0.0)
+ * Spotpreis aWATTar - Admin-Oberflaeche (v1.0.1)
  * Reiter: Einstellungen | Einbindung in Loxone | Test | Logdateien
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  *
@@ -54,7 +54,7 @@ if ((!is_file($sp_cfgfile) || trim((string) @file_get_contents($sp_cfgfile)) ===
 $sp_saved = false;
 $sp_err = '';
 $sp_note = '';
-$sp_tab = preg_match('/^tab-(settings|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
+$sp_tab = preg_match('/^tab-(settings|loxone|costs|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
 
 // ---------- Protokoll leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
@@ -144,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
         'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
         'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
-        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 20))),
+        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
         'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
         'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
     );
@@ -176,7 +176,7 @@ $sp_notify = is_array($sp_cfg['notify']) ? $sp_cfg['notify'] : array();
 $sp_notify += array('audio' => 0, 'push' => 0, 'hours' => array(), 'only_cheap' => 0, 'negative' => 1, 'tomorrow' => 0);
 $sp_hoursel = array_map('intval', (array) $sp_notify['hours']);
 $sp_tts = is_array($sp_cfg['tts']) ? $sp_cfg['tts'] : array();
-$sp_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 20, 'lang' => 'de', 'template' => '');
+$sp_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
 
 $sp_st = function_exists('spot_state') ? spot_state() : array();
 $sp_loglines = array();
@@ -322,6 +322,7 @@ Schnitt <?= sp_n($sp_st['morgen']['avg'], 2) ?> ct<?php } else { ?><br>Morgen: n
 <div class="sp-tabs">
     <div class="sp-tab" data-pane="tab-settings">Einstellungen</div>
     <div class="sp-tab" data-pane="tab-loxone">Einbindung in Loxone</div>
+    <div class="sp-tab" data-pane="tab-costs">Kostenvergleich</div>
     <div class="sp-tab" data-pane="tab-test">Test</div>
     <div class="sp-tab" data-pane="tab-log">Logdateien</div>
 </div>
@@ -794,42 +795,6 @@ Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellunge
 Test-Benachrichtigungsbaustein in Loxone (Schritt 4a) innerhalb des 300-s-Abfragetakts.<br>
 &bull; Die Tabellen unten f&uuml;llen sich mit jedem Tag, den das Plugin l&auml;uft (Tageswerte werden um 23:50 gesichert).
 </div>
-<?php $sp_cc = function_exists('spot_cost_compare') ? spot_cost_compare() : null; if ($sp_cc) { ?>
-<h2>Kostenvergleich auf ein Jahr hochgerechnet</h2>
-<div class="sp-small" style="margin-bottom:6px;">Beide Tarife mit allen Bestandteilen: Arbeitspreis, Grundpreis,
-Rabatt und Boni. Grundlage: <b><?= sp_n($sp_cc['kwh'], 0) ?> kWh</b> Jahresverbrauch
-<?= $sp_mon['use'] ? '(aus den Monatswerten)' : '(Jahreswert, gleichm&auml;&szlig;ig verteilt)' ?>,
-Preisniveau aus <?= (int) $sp_cc['monate_gemessen'] ?> Monat(en) eigener Aufzeichnung
-<?= $sp_cc['monate_gemessen'] < 12 ? '&mdash; f&uuml;r die &uuml;brigen Monate mit dem bisherigen Schnitt von ' . sp_n($sp_cc['schnitt'], 2) . ' ct/kWh' : '' ?>.
-Je l&auml;nger das Plugin l&auml;uft, desto belastbarer wird die Zahl.</div>
-<table class="sp-tbl" style="width:100%;">
-<tr><th>Position</th><th style="text-align:right;">fester Tarif</th><th style="text-align:right;">dynamischer Tarif</th></tr>
-<tr><td>Arbeitspreis (Jahr)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_arbeit'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_arbeit'], 2) ?> &euro;</td></tr>
-<tr><td>Grundpreis (12 Monate)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_grund'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_grund'], 2) ?> &euro;</td></tr>
-<tr><td>Zwischensumme</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_zwischen'], 2) ?> &euro;</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b></td></tr>
-<?php if ($sp_cc['rabatt'] > 0) { ?>
-<tr><td>Abschlagsrabatt (<?= sp_n($sp_cc['rabatt_pct'], 1) ?> %)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['rabatt'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
-<?php } ?>
-<?php if ($sp_cc['boni'] > 0) { ?>
-<tr><td>Boni (nur erstes Jahr)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['boni'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
-<?php } ?>
-<tr style="background:#f5f5f5;"><td><b>Kosten erstes Jahr</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_jahr1'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monat1'], 2) ?> &euro;/Monat</span></td>
-<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
-<tr style="background:#f5f5f5;"><td><b>Kosten Folgejahr</b> (ohne Boni)</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_folge'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monatf'], 2) ?> &euro;/Monat</span></td>
-<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
-</table>
-<div class="sp-alert <?= $sp_cc['vorteilf'] >= 0 ? 'sp-ok' : 'sp-warn' ?>">
-<b>Erstes Jahr:</b> <?= $sp_cc['vorteil1'] >= 0
-    ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger gewesen.'
-    : 'Der feste Tarif ist um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger &mdash; die Boni machen den Unterschied.' ?><br>
-<b>Folgejahr:</b> <?= $sp_cc['vorteilf'] >= 0
-    ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.'
-    : 'Der feste Tarif bleibt um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.' ?>
-<div class="sp-small" style="margin-top:4px;">Das Folgejahr ist die ehrlichere Zahl: Sofort- und Neukundenboni gibt es nur einmal,
-der Abschlagsrabatt dagegen dauerhaft. Nicht ber&uuml;cksichtigt sind Boni des dynamischen Anbieters und die Ersparnis
-durch verschobenen Verbrauch (siehe unten) &mdash; beides w&uuml;rde den dynamischen Tarif zus&auml;tzlich verbessern.</div>
-</div>
-<?php } ?>
 <?php $sp_mc = function_exists('spot_month_compare') ? spot_month_compare(12) : array(); if ($sp_mc) { ?>
 <h2>Monatsvergleich der Arbeitspreise</h2>
 <div class="sp-small" style="margin-bottom:6px;">Dynamisch = lastprofil-gewichteter Monatsschnitt der Endpreise.
@@ -866,6 +831,53 @@ Wer t&auml;glich <?= sp_n($sp_sh['kwh'], 1) ?> kWh in die g&uuml;nstigste Zeit v
 <td><?= sp_n($sp_r[2], 2) ?> ct</td><td><?= sp_n($sp_r[3], 2) ?> ct</td>
 <td><?= $sp_r[5] > 0 ? (int) $sp_r[5] . ' g' : '&ndash;' ?></td></tr>
 <?php } ?></table>
+<?php } ?>
+</div>
+
+<!-- ================= Reiter: Kostenvergleich ================= -->
+<div class="sp-pane" id="tab-costs">
+<?php $sp_cc = function_exists('spot_cost_compare') ? spot_cost_compare() : null; if ($sp_cc) { ?>
+<h2>Kostenvergleich auf ein Jahr hochgerechnet</h2>
+<div class="sp-small" style="margin-bottom:6px;">Beide Tarife mit allen Bestandteilen: Arbeitspreis, Grundpreis,
+Rabatt und Boni. Grundlage: <b><?= sp_n($sp_cc['kwh'], 0) ?> kWh</b> Jahresverbrauch
+<?= $sp_mon['use'] ? '(aus den Monatswerten)' : '(Jahreswert, gleichm&auml;&szlig;ig verteilt)' ?>,
+Preisniveau aus <?= (int) $sp_cc['monate_gemessen'] ?> Monat(en) eigener Aufzeichnung
+<?= $sp_cc['monate_gemessen'] < 12 ? '&mdash; f&uuml;r die &uuml;brigen Monate mit dem bisherigen Schnitt von ' . sp_n($sp_cc['schnitt'], 2) . ' ct/kWh' : '' ?>.
+Je l&auml;nger das Plugin l&auml;uft, desto belastbarer wird die Zahl.</div>
+<table class="sp-tbl" style="width:100%;">
+<tr><th>Position</th><th style="text-align:right;">fester Tarif</th><th style="text-align:right;">dynamischer Tarif</th></tr>
+<tr><td>Arbeitspreis (Jahr)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_arbeit'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_arbeit'], 2) ?> &euro;</td></tr>
+<tr><td>Grundpreis (12 Monate)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_grund'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_grund'], 2) ?> &euro;</td></tr>
+<tr><td>Zwischensumme</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_zwischen'], 2) ?> &euro;</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b></td></tr>
+<?php if ($sp_cc['rabatt'] > 0) { ?>
+<tr><td>Abschlagsrabatt (<?= sp_n($sp_cc['rabatt_pct'], 1) ?> %)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['rabatt'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
+<?php } ?>
+<?php if ($sp_cc['boni'] > 0) { ?>
+<tr><td>Boni (nur erstes Jahr)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['boni'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
+<?php } ?>
+<tr style="background:#f5f5f5;"><td><b>Kosten erstes Jahr</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_jahr1'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monat1'], 2) ?> &euro;/Monat</span></td>
+<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
+<tr style="background:#f5f5f5;"><td><b>Kosten Folgejahr</b> (ohne Boni)</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_folge'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monatf'], 2) ?> &euro;/Monat</span></td>
+<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
+</table>
+<div class="sp-alert <?= $sp_cc['vorteilf'] >= 0 ? 'sp-ok' : 'sp-warn' ?>">
+<b>Erstes Jahr:</b> <?= $sp_cc['vorteil1'] >= 0
+    ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger gewesen.'
+    : 'Der feste Tarif ist um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger &mdash; die Boni machen den Unterschied.' ?><br>
+<b>Folgejahr:</b> <?= $sp_cc['vorteilf'] >= 0
+    ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.'
+    : 'Der feste Tarif bleibt um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.' ?>
+<div class="sp-small" style="margin-top:4px;">Das Folgejahr ist die ehrlichere Zahl: Sofort- und Neukundenboni gibt es nur einmal,
+der Abschlagsrabatt dagegen dauerhaft. Nicht ber&uuml;cksichtigt sind Boni des dynamischen Anbieters und die Ersparnis
+durch verschobenen Verbrauch (Reiter <b>Test</b>) &mdash; beides w&uuml;rde den dynamischen Tarif zus&auml;tzlich verbessern.</div>
+</div>
+<?php } ?>
+<?php if (!$sp_cc) { ?>
+<h2>Kostenvergleich auf ein Jahr hochgerechnet</h2>
+<div class="sp-alert sp-info">Noch keine Auswertung m&ouml;glich &mdash; das Plugin sichert die Tageswerte jeweils um
+23:50&nbsp;Uhr. Nach dem ersten vollst&auml;ndigen Tag erscheint hier der Vergleich, und mit jedem weiteren Monat
+wird er belastbarer. Pr&uuml;fen Sie im Reiter <b>Einstellungen</b>, ob fester Arbeitspreis, Grundpreis und
+Jahres- bzw. Monatsverbrauch eingetragen sind.</div>
 <?php } ?>
 </div>
 
