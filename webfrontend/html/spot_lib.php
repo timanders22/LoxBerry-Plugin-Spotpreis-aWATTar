@@ -115,7 +115,7 @@ function spot_config() {
         $cfg['months'][$i] = isset($cfg['months'][$i]) ? max(0, (float) $cfg['months'][$i]) : 0.0;
     }
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                         'zones' => '1', 'volume' => 20, 'lang' => 'de', 'template' => '');
+                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
     return $cfg;
 }
 
@@ -775,7 +775,7 @@ function spot_tts_url($text) {
         return '';
     }
     if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~20,4~20,6~20".
+        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
         // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
         $vol = max(1, min(100, (int) $tts['volume']));
         $zones = array();
@@ -831,9 +831,9 @@ function spot_announce_text($st = null) {
     if (!$st['ok']) {
         return '';
     }
-    $t = 'Ding Dong! Der Strompreis betraegt jetzt ' . spot_num($st['cur'], 1) . ' Cent pro Kilowattstunde.';
+    $t = 'Hallo! Der Strompreis betraegt jetzt ' . spot_num($st['cur'], 1) . ' Cent pro Kilowattstunde.';
     if ($st['neg']) {
-        $t = 'Ding Dong! Achtung, der Boersenstrompreis ist gerade negativ. Der Endpreis liegt bei '
+        $t = 'Hallo! Achtung, der Boersenstrompreis ist gerade negativ. Der Endpreis liegt bei '
            . spot_num($st['cur'], 1) . ' Cent pro Kilowattstunde. Ein guter Zeitpunkt fuer grosse Verbraucher.';
     } elseif ($st['level'] === 1) {
         $t .= ' Das ist guenstig.';
@@ -860,7 +860,7 @@ function spot_tomorrow_text($st = null) {
     if (!$st['tomorrow_ok']) {
         return '';
     }
-    return 'Ding Dong! Die Strompreise f' . "\u{00fc}" . 'r morgen sind da. Am g' . "\u{00fc}" . 'nstigsten ist es um '
+    return 'Hallo! Die Strompreise f' . "\u{00fc}" . 'r morgen sind da. Am g' . "\u{00fc}" . 'nstigsten ist es um '
         . (int) $st['morgen']['minh'] . ' Uhr mit ' . spot_num($st['morgen']['minp'], 1) . ' Cent, am teuersten um '
         . (int) $st['morgen']['maxh'] . ' Uhr mit ' . spot_num($st['morgen']['maxp'], 1)
         . ' Cent pro Kilowattstunde. Der Tagesdurchschnitt liegt bei ' . spot_num($st['morgen']['avg'], 1) . ' Cent.';

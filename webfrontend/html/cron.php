@@ -25,7 +25,7 @@ if ((int) date('j') === 1 && date('H:i') === '08:05') {
             . abs($vm['diff']) . ' ct/kWh (' . abs($vm['euro']) . ' EUR)');
         $cfgm = spot_config();
         if (!empty($cfgm['notify']['audio'])) {
-            $t = 'Ding Dong! Monatsbericht Strompreis. Der dynamische Tarif lag im letzten Monat bei '
+            $t = 'Hallo! Monatsbericht Strompreis. Der dynamische Tarif lag im letzten Monat bei '
                . spot_num($vm['dynp'], 1) . ' Cent pro Kilowattstunde, dein fester Tarif bei ' . spot_num($vm['fix'], 1) . ' Cent. '
                . ($vm['diff'] >= 0 ? 'Der dynamische Tarif w' . "\u{00e4}" . 're um ' . spot_num(abs($vm['diff']), 1) . ' Cent g' . "\u{00fc}" . 'nstiger gewesen.'
                                     : 'Dein fester Tarif war um ' . spot_num(abs($vm['diff']), 1) . ' Cent g' . "\u{00fc}" . 'nstiger.');

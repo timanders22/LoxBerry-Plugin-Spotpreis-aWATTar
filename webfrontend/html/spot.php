@@ -42,7 +42,7 @@ if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
     $st = spot_state();
     $text = isset($_GET['saytomorrow']) ? spot_tomorrow_text($st) : spot_announce_text($st);
     if ($text === '') {
-        $text = 'Ding Dong! Dies ist eine Testansage des Spotpreis-Plugins. Es liegen noch keine Preisdaten vor.';
+        $text = 'Hallo! Dies ist eine Testansage des Spotpreis-Plugins. Es liegen noch keine Preisdaten vor.';
     }
     $ok = spot_say($text);
     echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
