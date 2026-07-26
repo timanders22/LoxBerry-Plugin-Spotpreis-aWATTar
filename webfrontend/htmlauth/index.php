@@ -651,11 +651,24 @@ sonst &uuml;berschreiben sich beide Sollwerte gegenseitig. Wer die Loxone-Logik 
     <div>
         <label>Topic-Pr&auml;fix</label>
         <input data-role="none" type="text" name="mqtt_topic" value="<?= sp_e($sp_cfg['mqtt_topic']) ?>" placeholder="spot_awattar">
-        <div class="sp-small">Nutzt das <b>LoxBerry MQTT Gateway</b>. Ver&ouml;ffentlicht bei &Auml;nderung und mindestens halbst&uuml;ndlich:
-        <span class="sp-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/cur</span>, <span class="sp-mono">/next</span>, <span class="sp-mono">/rank</span>,
-        <span class="sp-mono">/level</span>, <span class="sp-mono">/neg</span>, <span class="sp-mono">/avg_heute</span>, <span class="sp-mono">/min_heute</span>,
-        <span class="sp-mono">/minh_heute</span>, <span class="sp-mono">/max_heute</span>, dieselben f&uuml;r morgen,
-        <span class="sp-mono">/fenster_start</span>, <span class="sp-mono">/fenster_in</span>, <span class="sp-mono">/fenster_ct</span>.</div>
+        <div class="sp-small">Nutzt das <b>LoxBerry MQTT Gateway</b>. Ver&ouml;ffentlicht bei &Auml;nderung und mindestens halbst&uuml;ndlich
+        &mdash; ab Version 1.0.3 <b>alles, was auch der HTTP-Endpunkt liefert</b>, sodass die Loxone-Konfiguration ganz auf MQTT laufen kann:<br>
+        <b>Preise:</b> <span class="sp-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/cur</span>, <span class="sp-mono">/cur_boerse</span>,
+        <span class="sp-mono">/next</span>, <span class="sp-mono">/rank</span>, <span class="sp-mono">/rankd</span>,
+        <span class="sp-mono">/level</span>, <span class="sp-mono">/neg</span>, <span class="sp-mono">/ok</span><br>
+        <b>Heute und morgen:</b> <span class="sp-mono">/avg_heute</span>, <span class="sp-mono">/min_heute</span>,
+        <span class="sp-mono">/minh_heute</span>, <span class="sp-mono">/max_heute</span>, <span class="sp-mono">/maxh_heute</span>,
+        dieselben mit <span class="sp-mono">_morgen</span>, dazu <span class="sp-mono">/morgen_ok</span><br>
+        <b>G&uuml;nstigstes Fenster:</b> <span class="sp-mono">/fenster_start</span>, <span class="sp-mono">/fenster_in</span>, <span class="sp-mono">/fenster_ct</span><br>
+        <b>CO<sub>2</sub>:</b> <span class="sp-mono">/co2</span>, <span class="sp-mono">/co2_min</span>,
+        <span class="sp-mono">/co2_minh</span>, <span class="sp-mono">/co2_clean</span><br>
+        <b>Meldesteuerung:</b> <span class="sp-mono">/ann</span>, <span class="sp-mono">/audio</span>,
+        <span class="sp-mono">/push</span>, <span class="sp-mono">/ptest</span><br>
+        <b>Kostenvergleich:</b> <span class="sp-mono">/fix</span>, <span class="sp-mono">/dyn_monat</span>,
+        <span class="sp-mono">/diff_monat</span>, <span class="sp-mono">/euro_monat</span>,
+        <span class="sp-mono">/shift_jahr</span>, <span class="sp-mono">/wp_cur</span>, <span class="sp-mono">/wp_next</span><br>
+        Das Meldefenster <span class="sp-mono">/ann</span> wird sofort ver&ouml;ffentlicht, wenn es umspringt &mdash;
+        es gilt nur die ersten zehn Minuten einer aktivierten Stunde und d&uuml;rfte sonst zu sp&auml;t kommen.</div>
     </div>
 </div>
 
