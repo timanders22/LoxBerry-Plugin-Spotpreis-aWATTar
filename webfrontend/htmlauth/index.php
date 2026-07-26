@@ -281,6 +281,22 @@ $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cf
 .sp-row > div > label:not([style]) { min-height: 2.6em; display: flex; align-items: flex-end; }
 .sp-wrap .sp-btn, .sp-wrap a.sp-btn, .sp-wrap button { text-shadow: none !important; box-shadow: none !important; }
 .sp-wrap a.sp-btn, .sp-wrap a.sp-btn:visited, .sp-wrap a.sp-btn:hover { color: #fff !important; text-decoration: none; }
+
+/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
+.sp-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.sp-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sp-knopfreihe form { margin: 0; display: flex; }
+.sp-knopfreihe .sp-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
+.sp-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sp-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sp-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sp-btn.sp-b-lesen   { background: #6dac20; }
+.sp-btn.sp-b-technik { background: #546e7a; }
+.sp-btn.sp-b-aktion  { background: #e0620d; }
+.sp-punkt.sp-b-lesen   { background: #6dac20; }
+.sp-punkt.sp-b-technik { background: #546e7a; }
+.sp-punkt.sp-b-aktion  { background: #e0620d; }
 </style>
 <div class="sp-wrap">
 
@@ -776,17 +792,32 @@ Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellunge
 <!-- ================= Reiter: Test ================= -->
 <div class="sp-pane" id="tab-test">
 <h2>Test</h2>
-<p>
-<a class="sp-btn" style="display:inline-block;margin-right:8px;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php" target="_blank">Loxone-Zeile abrufen</a>
-<a class="sp-btn" style="display:inline-block;margin-right:8px;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?debug=1" target="_blank">Debug (alle Stundenpreise)</a>
-<a class="sp-btn" style="display:inline-block;margin-right:8px;background:#607d8b;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
-<a class="sp-btn" style="display:inline-block;background:#607d8b;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?json=1" target="_blank">JSON-Ansicht</a>
-</p>
-<p>
-<a class="sp-btn" style="display:inline-block;margin-right:8px;background:#e65100;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?say=1" target="_blank">Test-Ansage (aktueller Preis)</a>
-<a class="sp-btn" style="display:inline-block;margin-right:8px;background:#e65100;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?saytomorrow=1" target="_blank">Test-Ansage (Preise morgen)</a>
-<a class="sp-btn" style="display:inline-block;background:#e65100;" href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?ptest=1" target="_blank">Test-Pushnachricht</a>
-</p>
+<div class="sp-legende">
+<span><i class="sp-punkt sp-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
+<span><i class="sp-punkt sp-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
+<span><i class="sp-punkt sp-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+</div>
+
+<h3 class="sp-h3">Ansehen</h3>
+<div class="sp-knopfreihe">
+<a class="sp-btn sp-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php" target="_blank">Loxone-Zeile abrufen</a>
+<a class="sp-btn sp-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?json=1" target="_blank">JSON-Ansicht</a>
+</div>
+
+<h3 class="sp-h3">Technische Auskunft</h3>
+<div class="sp-knopfreihe">
+<a class="sp-btn sp-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?debug=1" target="_blank">Debug (alle Stundenpreise)</a>
+<a class="sp-btn sp-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
+</div>
+
+<h3 class="sp-h3">L&ouml;st etwas aus</h3>
+<div class="sp-knopfreihe">
+<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?say=1" target="_blank">Test-Ansage (aktueller Preis)</a>
+<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?saytomorrow=1" target="_blank">Test-Ansage (Preise morgen)</a>
+<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?ptest=1" target="_blank">Test-Pushnachricht</a>
+</div>
+
+
 <div class="sp-small">
 &bull; <b>Loxone-Zeile</b> zeigt genau das, was der Miniserver bekommt.<br>
 &bull; <b>Debug</b> listet alle Stundenpreise heute und morgen &mdash; jeweils Endpreis und B&ouml;rsenanteil.<br>
