@@ -8,7 +8,8 @@
  *                       CUR=..;CURB=..;NEXT=..;NEG=..;RANK=..;RANKD=..;LEVEL=..;
  *                       WINH=..;WININ=..;WINCT=..;ANN=..;AUDIO=..;PUSH=..;PTEST=..
  *                       Die ersten Felder sind identisch zum klassischen spotzeit.php:
- *                       MIN*/MAX*/AVG = MORGEN, HMIN*/HMAX*/HAVG = HEUTE.
+ *                       MIN.., MAX.. und AVG gelten fuer MORGEN,
+ *                       HMIN.., HMAX.. und HAVG fuer HEUTE.
  *                       ACHTUNG: Preise jetzt in ct/kWh als ENDPREIS (inkl. Netzentgelte,
  *                       Abgaben, USt) - das alte Skript lieferte EUR/kWh nur mit USt.
  *                       CUR = aktuelle Stunde, CURB = reiner Boersenanteil,

@@ -747,8 +747,14 @@ function spot_mqtt_publish($st = null) {
         'max_morgen' => $st['morgen']['maxp'], 'maxh_morgen' => $st['morgen']['maxh'],
         'fenster_start' => $st['fenster']['h'], 'fenster_in' => $st['fenster']['in'], 'fenster_ct' => $st['fenster']['ct'],
         'co2' => $st['co2'], 'co2_min' => $st['co2_min'], 'co2_minh' => $st['co2_minh'], 'co2_clean' => $st['co2_clean'],
-        'wp_cur' => $st['wp_cur'], 'fix' => $st['fix'], 'dyn_monat' => $st['dyn_monat'],
-        'diff_monat' => $st['diff_monat'], 'shift_jahr' => $st['shift_jahr'],
+        'wp_cur' => $st['wp_cur'], 'wp_next' => $st['wp_next'],
+        'fix' => $st['fix'], 'dyn_monat' => $st['dyn_monat'],
+        'diff_monat' => $st['diff_monat'], 'euro_monat' => $st['euro_monat'], 'shift_jahr' => $st['shift_jahr'],
+        // Meldesteuerung - bisher nur ueber den HTTP-Endpunkt erreichbar
+        'ann' => spot_ann_active($st),
+        'audio' => empty($cfg['notify']['audio']) ? 0 : 1,
+        'push' => empty($cfg['notify']['push']) ? 0 : 1,
+        'ptest' => spot_ptest_active(),
     );
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {

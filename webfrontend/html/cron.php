@@ -34,8 +34,11 @@ if ((int) date('j') === 1 && date('H:i') === '08:05') {
     }
 }
 
+// ann und ptest gehoeren in die Signatur: sie wechseln minutengenau, und ohne sie
+// wuerde das Meldefenster erst beim naechsten Stundenschlag veroeffentlicht.
 $sig = json_encode(array($st['cur'], $st['rank'], $st['level'], $st['tomorrow_ok'],
-                         $st['heute']['avg'], $st['morgen']['avg'], $st['fenster'], $st['co2']));
+                         $st['heute']['avg'], $st['morgen']['avg'], $st['fenster'], $st['co2'],
+                         spot_ann_active($st), spot_ptest_active()));
 $sigf = spot_tmpdir() . '/mqtt_sig.txt';
 $beat = spot_tmpdir() . '/mqtt_beat';
 $old = is_file($sigf) ? (string) file_get_contents($sigf) : '';
