@@ -18,6 +18,26 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
+/** Anzahl der Schaltregeln. Vier decken Wallbox, Speicher, Warmwasser und
+ *  Waermepumpe ab - mehr macht die Oberflaeche unuebersichtlich. */
+define('SPOT_REGELN', 4);
+
+/** Vorgabe einer Schaltregel. */
+function spot_regel_vorgabe() {
+    return array(
+        'aktiv' => 0,
+        'name' => '',
+        'art' => 'fenster',   // fenster | stunden | schwelle | mittel
+        'n' => 3,             // Anzahl Stunden (fenster/stunden)
+        'von' => 0,           // Zeitfenster von (Stunde, einschliesslich)
+        'bis' => 0,           // Zeitfenster bis (Stunde, ausschliesslich); von==bis = ganzer Tag
+        'horizont' => 24,     // nur die naechsten X Stunden betrachten
+        'schwelle' => 20.0,   // ct/kWh Endpreis (art=schwelle)
+        'prozent' => 20,      // % unter dem Tagesmittel (art=mittel)
+        'neg' => 1,           // bei negativem Boersenpreis immer einschalten
+    );
+}
+
 function spot_paths() {
     $lbhomedir = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
     $plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
@@ -94,11 +114,50 @@ function spot_config() {
         'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
         'marstek_power' => 2500,     // Ladeleistung in W
         'marstek_neg' => 1,          // bei negativem Preis immer laden
+        // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
+        // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
+        // dahin, Durchschnittspreis. Daraus "jetzt laden" zu machen war Arbeit
+        // im Miniserver. Siehe spot_regel_werte().
+        'regeln' => array(),
+        // Stundenprofil: aus | absolut | relativ | beides
+        //   absolut  PH00..PH23 heute, PM00..PM23 morgen -> Spot Price
+        //            Optimizer im Modus "Absolut" (Eingaenge 00:00 bis 23:00)
+        //   relativ  PR00..PR23 ab der laufenden Stunde   -> Modus "Relativ"
+        //            (Eingaenge +0 bis +23)
+        // Nicht beides als Vorgabe: jeder Wert ist ein virtueller Eingang im
+        // Miniserver, und 72 davon legt man nicht versehentlich an.
+        'profil_ein' => 'absolut',
         'mqtt_enabled' => 0,
         'mqtt_topic' => 'spot_awattar',
         'notify' => array(),
         'tts' => array(),
     );
+    // Alte Konfigurationen trugen hier 0/1 - auf die neuen Namen heben.
+    if ($cfg['profil_ein'] === 1 || $cfg['profil_ein'] === '1' || $cfg['profil_ein'] === true) {
+        $cfg['profil_ein'] = 'absolut';
+    } elseif ($cfg['profil_ein'] === 0 || $cfg['profil_ein'] === '0' || $cfg['profil_ein'] === false) {
+        $cfg['profil_ein'] = 'aus';
+    }
+    if (!in_array($cfg['profil_ein'], array('aus', 'absolut', 'relativ', 'beides'), true)) {
+        $cfg['profil_ein'] = 'absolut';
+    }
+    if (!is_array($cfg['regeln'])) { $cfg['regeln'] = array(); }
+    for ($i = 0; $i < SPOT_REGELN; $i++) {
+        $r = isset($cfg['regeln'][$i]) && is_array($cfg['regeln'][$i]) ? $cfg['regeln'][$i] : array();
+        $r += spot_regel_vorgabe();
+        $r['aktiv'] = empty($r['aktiv']) ? 0 : 1;
+        $r['neg'] = empty($r['neg']) ? 0 : 1;
+        $r['name'] = trim((string) $r['name']);
+        $r['art'] = in_array($r['art'], array('fenster', 'stunden', 'schwelle', 'mittel'), true)
+                  ? $r['art'] : 'fenster';
+        $r['n'] = max(1, min(12, (int) $r['n']));
+        $r['von'] = max(0, min(23, (int) $r['von']));
+        $r['bis'] = max(0, min(23, (int) $r['bis']));
+        $r['horizont'] = max(1, min(48, (int) $r['horizont']));
+        $r['schwelle'] = (float) $r['schwelle'];
+        $r['prozent'] = max(0, min(90, (int) $r['prozent']));
+        $cfg['regeln'][$i] = $r;
+    }
     if (!is_array($cfg['notify'])) { $cfg['notify'] = array(); }
     if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
     $cfg['notify'] += array(
@@ -296,6 +355,146 @@ function spot_window($all, $len) {
     return array('h' => (int) date('G', $best[0]), 'ct' => $best[1], 'in' => (int) round(($best[0] - $hstart) / 3600));
 }
 
+/* ==================================================================
+ * Schaltregeln - fertige 0/1-Signale statt Zahlen
+ *
+ * Bis 1.0.3 lieferte das Plugin WINH, WININ und WINCT: Startstunde,
+ * Stunden bis dahin, Durchschnittspreis. Alles Zahlen. Wer daraus
+ * "jetzt laden" machen wollte, baute im Miniserver eine Kaskade aus
+ * Vergleichern und Zeitbausteinen - und genau daran scheitern die
+ * meisten. Eine Schaltregel beantwortet die Frage hier und gibt eine
+ * Eins oder eine Null aus. In Loxone bleibt ein digitaler Eingang.
+ *
+ * Vier Arten:
+ *   fenster   die N guenstigsten Stunden AM STUECK   (Wallbox, Waschmaschine)
+ *   stunden   die N guenstigsten Einzelstunden       (Speicher, Warmwasser)
+ *   schwelle  Preis unter einem festen Wert          (Heizstab)
+ *   mittel    Preis X % unter dem Tagesmittel        (mitlaufend)
+ *
+ * Jede Regel kennt zusaetzlich ein Zeitfenster (z. B. 22 bis 6 Uhr) und
+ * einen Horizont (nur die naechsten X Stunden ansehen). Erst damit laesst
+ * sich "die 3 guenstigsten Stunden zwischen 22 und 6 Uhr" beantworten -
+ * die alte Fensterrechnung sah immer alle verbleibenden Stunden an.
+ * ================================================================== */
+
+/** Liegt die Stunde $h im Zeitfenster? von == bis bedeutet: ganzer Tag. */
+function spot_in_zeitfenster($h, $von, $bis) {
+    $h = (int) $h; $von = (int) $von; $bis = (int) $bis;
+    if ($von === $bis) { return true; }
+    if ($von < $bis) { return $h >= $von && $h < $bis; }
+    return $h >= $von || $h < $bis;   // ueber Mitternacht, z. B. 22 bis 6
+}
+
+/** Die Stunden, die fuer eine Regel ueberhaupt in Frage kommen. ts => ct. */
+function spot_regel_kandidaten($r, $all, $hstart) {
+    $ende = $hstart + max(1, (int) $r['horizont']) * 3600;
+    $out = array();
+    foreach ($all as $ts => $ct) {
+        if ($ts < $hstart || $ts >= $ende) { continue; }
+        if (!spot_in_zeitfenster((int) date('G', $ts), $r['von'], $r['bis'])) { continue; }
+        $out[$ts] = $ct;
+    }
+    ksort($out);
+    return $out;
+}
+
+/**
+ * Eine Regel auswerten.
+ * Rueckgabe: aktiv (0/1), in (Stunden bis zum naechsten Treffer, -1 = keiner),
+ * rest (verbleibende Trefferstunden ab jetzt), ct (Schnitt der Treffer),
+ * start (Startstunde des naechsten Treffers, -1 = keiner), grund.
+ */
+function spot_regel_werte($r, $all, $st) {
+    $leer = array('aktiv' => 0, 'in' => -1, 'rest' => 0, 'ct' => 0.0, 'start' => -1, 'grund' => 'aus');
+    if (empty($r['aktiv'])) {
+        return $leer;
+    }
+    $hstart = (int) $st['hstart'];
+    $kand = spot_regel_kandidaten($r, $all, $hstart);
+    $treffer = array();
+
+    if ($r['art'] === 'fenster') {
+        // Guenstigstes zusammenhaengendes Fenster. Zusammenhaengend heisst:
+        // luekenlos in der Zeit - ueber eine fehlende Stunde hinweg wird nicht
+        // geklebt, sonst stuende die Wallbox mittendrin still.
+        $ks = array_keys($kand);
+        $len = min(max(1, (int) $r['n']), count($ks));
+        $best = null;
+        for ($i = 0; $len > 0 && $i + $len <= count($ks); $i++) {
+            if ($ks[$i + $len - 1] - $ks[$i] !== ($len - 1) * 3600) { continue; }
+            $s = 0;
+            for ($j = 0; $j < $len; $j++) { $s += $kand[$ks[$i + $j]]; }
+            if ($best === null || $s / $len < $best[1]) { $best = array($i, $s / $len); }
+        }
+        if ($best !== null) {
+            for ($j = 0; $j < $len; $j++) { $treffer[] = $ks[$best[0] + $j]; }
+        }
+    } elseif ($r['art'] === 'stunden') {
+        // Die N guenstigsten Einzelstunden - sie duerfen ueber den Tag
+        // verstreut liegen.
+        $sortiert = $kand;
+        asort($sortiert);
+        $treffer = array_slice(array_keys($sortiert), 0, max(1, (int) $r['n']));
+        sort($treffer);
+    } else {
+        // schwelle: fester Wert. mittel: Abstand zum Tagesmittel.
+        if ($r['art'] === 'schwelle') {
+            $grenze = (float) $r['schwelle'];
+        } else {
+            $mittel = (float) $st['heute']['avg'];
+            if ($mittel <= 0 && $kand) { $mittel = array_sum($kand) / count($kand); }
+            $grenze = round($mittel * (1 - max(0, min(90, (int) $r['prozent'])) / 100), 3);
+        }
+        foreach ($kand as $ts => $ct) {
+            if ($ct <= $grenze) { $treffer[] = $ts; }
+        }
+    }
+
+    $erg = $leer;
+    if ($treffer) {
+        $erg['ct'] = round(array_sum(array_intersect_key($kand, array_flip($treffer))) / count($treffer), 3);
+        $erg['aktiv'] = in_array($hstart, $treffer, true) ? 1 : 0;
+        foreach ($treffer as $ts) {
+            if ($ts >= $hstart) {
+                $erg['start'] = (int) date('G', $ts);
+                $erg['in'] = (int) round(($ts - $hstart) / 3600);
+                break;
+            }
+        }
+        if ($erg['aktiv']) {
+            // Wie lange laeuft es noch am Stueck? Eine Luecke beendet die Zaehlung.
+            $rest = 0;
+            for ($ts = $hstart; in_array($ts, $treffer, true); $ts += 3600) { $rest++; }
+            $erg['rest'] = $rest;
+        }
+        $erg['grund'] = $erg['aktiv'] ? $r['art'] : 'wartet';
+    }
+
+    // Negativer Boersenpreis sticht - wer dann nicht laedt, verschenkt Geld.
+    if (!empty($r['neg']) && !empty($st['neg'])) {
+        $erg['aktiv'] = 1;
+        $erg['in'] = 0;
+        $erg['rest'] = max(1, (int) $erg['rest']);
+        $erg['grund'] = 'negativ';
+    }
+    return $erg;
+}
+
+/** Alle Regeln auswerten. Rueckgabe: Liste mit Name, Art und Werten. */
+function spot_regeln($all, $st) {
+    $cfg = spot_config();
+    $out = array();
+    foreach ($cfg['regeln'] as $i => $r) {
+        $w = spot_regel_werte($r, $all, $st);
+        $w['nr'] = $i + 1;
+        $w['name'] = $r['name'] !== '' ? $r['name'] : ('Regel ' . ($i + 1));
+        $w['art'] = $r['art'];
+        $w['ein'] = empty($r['aktiv']) ? 0 : 1;
+        $out[] = $w;
+    }
+    return $out;
+}
+
 /** Kompletter Zustand (Cache 5 min). */
 function spot_state($force = false) {
     $cfg = spot_config();
@@ -388,6 +587,25 @@ function spot_state($force = false) {
     $st['shift_ct'] = $sh['ct'];
     $st['shift_euro'] = $sh['euro'];
     $st['shift_jahr'] = $sh['euro_jahr'];
+    // Stundenprofil als flache Listen - so kommt es ohne JSON in den
+    // Miniserver (PH00..PH23 heute, PM00..PM23 morgen).
+    $st['profil_heute'] = array();
+    $st['profil_morgen'] = array();
+    for ($h = 0; $h < 24; $h++) {
+        $st['profil_heute'][$h] = isset($st['heute']['hours'][$h]['ct'])
+            ? round((float) $st['heute']['hours'][$h]['ct'], 3) : 0.0;
+        $st['profil_morgen'][$h] = isset($st['morgen']['hours'][$h]['ct'])
+            ? round((float) $st['morgen']['hours'][$h]['ct'], 3) : 0.0;
+    }
+    // Rollend ab der laufenden Stunde - fuer den Modus "Relativ" des Spot
+    // Price Optimizer (Eingaenge +0 bis +23).
+    $st['profil_relativ'] = array();
+    for ($h = 0; $h < 24; $h++) {
+        $st['profil_relativ'][$h] = isset($all[$hstart + $h * 3600])
+            ? round((float) $all[$hstart + $h * 3600], 3) : 0.0;
+    }
+    // Schaltregeln zuletzt: sie brauchen neg, hstart und das Tagesmittel.
+    $st['regeln'] = spot_regeln($all, $st);
     file_put_contents($cache, json_encode($st));
     spot_log_if_changed('zustand', 'cur=' . $st['cur'] . ' ct rank=' . $st['rank'] . ' level=' . $st['level'] . ' morgen_ok=' . $st['tomorrow_ok']);
     return $st;
@@ -756,6 +974,16 @@ function spot_mqtt_publish($st = null) {
         'push' => empty($cfg['notify']['push']) ? 0 : 1,
         'ptest' => spot_ptest_active(),
     );
+    // Schaltregeln: je Regel ein eigener Themenzweig. 'aktiv' ist das, woran
+    // in Loxone ein digitaler Eingang haengt - alles andere ist Beiwerk.
+    foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $r) {
+        $z = 'regel/' . (int) $r['nr'] . '/';
+        $msgs[$z . 'aktiv'] = (int) $r['aktiv'];
+        $msgs[$z . 'in'] = (int) $r['in'];
+        $msgs[$z . 'rest'] = (int) $r['rest'];
+        $msgs[$z . 'ct'] = $r['ct'];
+        $msgs[$z . 'ein'] = (int) $r['ein'];
+    }
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         return;
@@ -765,6 +993,218 @@ function spot_mqtt_publish($st = null) {
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
     }
     socket_close($s);
+}
+
+/* ==================================================================
+ * Loxone-Vorlage (XML fuer den Import in Loxone Config)
+ *
+ * Das Plugin liefert weit ueber hundert Werte. Die von Hand als virtuelle
+ * Eingaenge anzulegen ist eine Stunde stumpfe Arbeit mit vielen
+ * Gelegenheiten fuer Tippfehler. Hausstandard: ein Knopf, eine Datei.
+ *
+ * spot_felder() ist die EINE Quelle - aus ihr entstehen die Vorlage UND
+ * die Pruefung im Reiter Test, die nachsieht, ob jedes hier genannte Feld
+ * auch wirklich in der Zeile von spot.php steht. Ohne diese Pruefung
+ * laufen Tabelle und Ausgabe beim naechsten neuen Wert auseinander, und
+ * der virtuelle Eingang bleibt stumm - ohne Fehlermeldung.
+ *
+ * min/max sind die Grenzen des FERTIGEN Wertes: gerechnet wird im Plugin,
+ * nicht in Loxone. Deshalb bleiben SourceVal/DestVal 1:1.
+ * ================================================================== */
+
+/**
+ * Die komplette Ausgabe fuer den Miniserver als Zeichenkette.
+ *
+ * Bewusst eine Funktion und nicht direkt in spot.php: so kann die
+ * Selbstpruefung im Reiter Test dieselbe Zeile erzeugen und gegen
+ * spot_felder() halten, ohne spot.php einzubinden - ein include haette
+ * dort ein header() nach der Ausgabe ausgeloest.
+ */
+function spot_zeile($st, $cfg) {
+    $o = sprintf("SPOT;OK=%d;MINH=%d;MINP=%.3f;MAXH=%d;MAXP=%.3f;AVG=%.3f;HOK=%d;HMINH=%d;HMINP=%.3f;HMAXH=%d;HMAXP=%.3f;HAVG=%.3f;CUR=%.3f;CURB=%.3f;NEXT=%.3f;NEG=%d;RANK=%d;RANKD=%d;LEVEL=%d;WINH=%d;WININ=%d;WINCT=%.3f;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d;CO2=%d;CO2MIN=%d;CO2MINH=%d;CO2CLEAN=%d;WPCUR=%.3f;WPNEXT=%.3f;FIX=%.3f;DYNM=%.3f;DIFFM=%.3f;EUROM=%.2f;SHIFTJ=%.2f\n",
+        $st['tomorrow_ok'], $st['morgen']['minh'], $st['morgen']['minp'], $st['morgen']['maxh'], $st['morgen']['maxp'], $st['morgen']['avg'],
+        $st['ok'], $st['heute']['minh'], $st['heute']['minp'], $st['heute']['maxh'], $st['heute']['maxp'], $st['heute']['avg'],
+        $st['cur'], $st['cur_boerse'], $st['next'], $st['neg'], $st['rank'], $st['rankd'], $st['level'],
+        $st['fenster']['h'], $st['fenster']['in'], $st['fenster']['ct'],
+        spot_ann_active($st),
+        empty($cfg['notify']['audio']) ? 0 : 1,
+        empty($cfg['notify']['push']) ? 0 : 1,
+        spot_ptest_active(),
+        $st['co2'], $st['co2_min'], $st['co2_minh'], $st['co2_clean'],
+        $st['wp_cur'], $st['wp_next'],
+        $st['fix'], $st['dyn_monat'], $st['diff_monat'], $st['euro_monat'], $st['shift_jahr']);
+
+    // Schaltregeln als EIGENE Zeile hinter der bisherigen. Die
+    // Befehlserkennung in Loxone sucht Textstellen, nicht Zeilen -
+    // bestehende Eingaenge merken davon nichts.
+    $teile = array();
+    foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $r) {
+        $n = (int) $r['nr'];
+        $teile[] = sprintf('R%d=%d;R%dIN=%d;R%dREST=%d;R%dCT=%.3f',
+            $n, $r['aktiv'], $n, $r['in'], $n, $r['rest'], $n, $r['ct']);
+    }
+    $o .= 'REGEL;' . implode(';', $teile) . "\n";
+
+    // Stundenprofil: PH00..PH23 heute, PM00..PM23 morgen, Endpreis in ct/kWh.
+    $modus = (string) $cfg['profil_ein'];
+    if ($modus === 'absolut' || $modus === 'beides') {
+        $ph = array();
+        $pm = array();
+        for ($h = 0; $h < 24; $h++) {
+            $ph[] = sprintf('PH%02d=%.3f', $h, isset($st['profil_heute'][$h]) ? $st['profil_heute'][$h] : 0);
+            $pm[] = sprintf('PM%02d=%.3f', $h, isset($st['profil_morgen'][$h]) ? $st['profil_morgen'][$h] : 0);
+        }
+        $o .= 'PROFIL;' . implode(';', $ph) . ';' . implode(';', $pm) . "\n";
+    }
+    if ($modus === 'relativ' || $modus === 'beides') {
+        $pr = array();
+        for ($h = 0; $h < 24; $h++) {
+            $pr[] = sprintf('PR%02d=%.3f', $h, isset($st['profil_relativ'][$h]) ? $st['profil_relativ'][$h] : 0);
+        }
+        $o .= 'PROFILR;' . implode(';', $pr) . "\n";
+    }
+    return $o;
+}
+
+/** Alle Felder der Loxone-Zeile: name => array(analog, min, max, einheit, text). */
+function spot_felder() {
+    $f = array(
+        'OK'      => array(0, 0, 1, '', 'Preise fuer morgen liegen vor'),
+        'HOK'     => array(0, 0, 1, '', 'Preise fuer heute liegen vor'),
+        'CUR'     => array(1, -100, 200, 'ct/kWh', 'Endpreis der laufenden Stunde'),
+        'CURB'    => array(1, -100, 200, 'ct/kWh', 'Reiner Boersenanteil der laufenden Stunde'),
+        'NEXT'    => array(1, -100, 200, 'ct/kWh', 'Endpreis der naechsten Stunde'),
+        'NEG'     => array(0, 0, 1, '', 'Boersenpreis ist negativ'),
+        'RANK'    => array(1, 1, 48, '', 'Rang der laufenden Stunde (1 = guenstigste)'),
+        'RANKD'   => array(1, 1, 48, '', 'Rang von hinten (1 = teuerste)'),
+        'LEVEL'   => array(1, 1, 3, '', 'Preisniveau: 1 guenstig, 2 normal, 3 teuer'),
+        'MINH'    => array(1, 0, 23, 'h', 'Guenstigste Stunde morgen'),
+        'MINP'    => array(1, -100, 200, 'ct/kWh', 'Preis der guenstigsten Stunde morgen'),
+        'MAXH'    => array(1, 0, 23, 'h', 'Teuerste Stunde morgen'),
+        'MAXP'    => array(1, -100, 200, 'ct/kWh', 'Preis der teuersten Stunde morgen'),
+        'AVG'     => array(1, -100, 200, 'ct/kWh', 'Tagesmittel morgen'),
+        'HMINH'   => array(1, 0, 23, 'h', 'Guenstigste Stunde heute'),
+        'HMINP'   => array(1, -100, 200, 'ct/kWh', 'Preis der guenstigsten Stunde heute'),
+        'HMAXH'   => array(1, 0, 23, 'h', 'Teuerste Stunde heute'),
+        'HMAXP'   => array(1, -100, 200, 'ct/kWh', 'Preis der teuersten Stunde heute'),
+        'HAVG'    => array(1, -100, 200, 'ct/kWh', 'Tagesmittel heute'),
+        'WINH'    => array(1, -1, 23, 'h', 'Startstunde des guenstigsten Fensters'),
+        'WININ'   => array(1, -1, 48, 'h', 'Stunden bis zu diesem Fenster'),
+        'WINCT'   => array(1, -100, 200, 'ct/kWh', 'Schnitt in diesem Fenster'),
+        'CO2'     => array(1, 0, 1000, 'g/kWh', 'CO2-Intensitaet jetzt'),
+        'CO2MIN'  => array(1, 0, 1000, 'g/kWh', 'Sauberste Stunde'),
+        'CO2MINH' => array(1, -1, 23, 'h', 'Stunde der saubersten Stunde'),
+        'CO2CLEAN' => array(0, 0, 1, '', 'Strommix gilt als sauber'),
+        'WPCUR'   => array(1, -100, 200, 'ct/kWh', 'Par.-14a-Preissatz jetzt'),
+        'WPNEXT'  => array(1, -100, 200, 'ct/kWh', 'Par.-14a-Preissatz naechste Stunde'),
+        'FIX'     => array(1, 0, 200, 'ct/kWh', 'Fester Vergleichstarif'),
+        'DYNM'    => array(1, -100, 200, 'ct/kWh', 'Dynamischer Preis laufender Monat'),
+        'DIFFM'   => array(1, -200, 200, 'ct/kWh', 'Unterschied dynamisch zu fest'),
+        'EUROM'   => array(1, -10000, 10000, 'EUR', 'Unterschied in Euro im laufenden Monat'),
+        'SHIFTJ'  => array(1, 0, 10000, 'EUR', 'Verschiebe-Potenzial im Jahr'),
+        'ANN'     => array(0, 0, 1, '', 'Meldefenster offen'),
+        'AUDIO'   => array(0, 0, 1, '', 'Ansage freigegeben'),
+        'PUSH'    => array(0, 0, 1, '', 'Push freigegeben'),
+        'PTEST'   => array(0, 0, 1, '', 'Test-Pushnachricht angefordert'),
+    );
+    // Schaltregeln - der Grund fuer die ganze Uebung: R<n> ist digital.
+    for ($i = 1; $i <= SPOT_REGELN; $i++) {
+        $f['R' . $i]          = array(0, 0, 1, '', 'Schaltregel ' . $i . ': jetzt einschalten');
+        $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', 'Schaltregel ' . $i . ': Stunden bis zum naechsten Fenster');
+        $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', 'Schaltregel ' . $i . ': verbleibende Stunden');
+        $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', 'Schaltregel ' . $i . ': Schnitt im Fenster');
+    }
+    $cfg = spot_config();
+    $modus = (string) $cfg['profil_ein'];
+    if ($modus === 'absolut' || $modus === 'beides') {
+        for ($h = 0; $h < 24; $h++) {
+            $f[sprintf('PH%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis heute %02d Uhr - Spot Price Optimizer, Modus Absolut, Eingang %02d:00', $h, $h));
+            $f[sprintf('PM%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis morgen %02d Uhr', $h));
+        }
+    }
+    if ($modus === 'relativ' || $modus === 'beides') {
+        for ($h = 0; $h < 24; $h++) {
+            $f[sprintf('PR%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis in %d Stunden - Spot Price Optimizer, Modus Relativ, Eingang +%d', $h, $h));
+        }
+    }
+    return $f;
+}
+
+/**
+ * Geprüfter PHP-Nachbau des LoxoneTemplateBuilder - Attributreihenfolge,
+ * CRLF und der Tabulator vor den Kindelementen entsprechen dem Original.
+ * Uebernommen aus LoxBerry-Plugin-APC-UPS, nur das Kuerzel getauscht.
+ */
+function spot_xml_virtual_in_http($kopf, $cmds) {
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp ';
+    $o .= 'Title="' . spot_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . spot_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . spot_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'PollingTime="' . spot_x(isset($kopf['polling']) ? $kopf['polling'] : '300') . '"';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualInHttpCmd ';
+        $o .= 'Title="' . spot_x($c['title']) . '" ';
+        $o .= 'Comment="' . spot_x($c['comment']) . '" ';
+        $o .= 'Check="' . spot_x($c['check']) . '" ';
+        $o .= 'Signed="' . ($c['min'] < 0 ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . ($c['analog'] ? 'true' : 'false') . '" ';
+        $o .= 'SourceValLow="0" ';
+        $o .= 'DestValLow="0" ';
+        $o .= 'SourceValHigh="1" ';
+        $o .= 'DestValHigh="1" ';
+        $o .= 'DefVal="0" ';
+        $o .= 'MinVal="' . (int) $c['min'] . '" ';
+        $o .= 'MaxVal="' . (int) $c['max'] . '"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+function spot_x($s) {
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
+function spot_vorlage() {
+    $p = spot_paths();
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $ordner = basename(dirname(__DIR__, 2));
+    if ($p['lbhome'] !== '') {
+        $ordner = getenv('LBPPLUGINDIR') ?: 'spotpreis';
+    }
+    $st = spot_state();
+    $cmds = array();
+    foreach (spot_felder() as $name => $d) {
+        list($analog, $min, $max, $einheit, $text) = $d;
+        // Die Namen der Regeln aus der Konfiguration einsetzen - ein Eingang
+        // "Wallbox" ist beim Verdrahten mehr wert als "Schaltregel 1".
+        if (preg_match('/^R([0-9]+)/', $name, $m)) {
+            $i = (int) $m[1] - 1;
+            if (isset($st['regeln'][$i]) && $st['regeln'][$i]['name'] !== '') {
+                $text = str_replace('Schaltregel ' . ($i + 1), $st['regeln'][$i]['name'], $text);
+            }
+        }
+        $cmds[] = array(
+            'title' => 'SPOT_' . $name,
+            'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            'check' => '\i' . $name . '=\i\v',
+            'analog' => $analog, 'min' => $min, 'max' => $max,
+        );
+    }
+    return array('VI_spotpreis.xml', spot_xml_virtual_in_http(array(
+        'title' => 'Spotpreis aWATTar',
+        'address' => 'http://' . $host . '/plugins/' . $ordner . '/spot.php',
+        'polling' => '300',
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Spotpreis aWATTar (' . date('d.m.Y') . '). '
+                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+    ), $cmds));
 }
 
 /* ---------------- Ansage (TTS) - identisch zu Abfahrtsassistent/Abfuhrkalender ---------------- */
@@ -1004,4 +1444,69 @@ function spot_history_read($days = 30) {
         }
     }
     return array_slice($out, -max(1, (int) $days));
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function spot_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function spot_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . spot_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }

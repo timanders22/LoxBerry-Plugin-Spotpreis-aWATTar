@@ -1,6 +1,6 @@
 <?php
 /**
- * Spotpreis aWATTar - Admin-Oberflaeche (v1.0.1)
+ * Spotpreis aWATTar - Admin-Oberflaeche
  * Reiter: Einstellungen | Einbindung in Loxone | Test | Logdateien
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  *
@@ -56,6 +56,16 @@ $sp_err = '';
 $sp_note = '';
 $sp_tab = preg_match('/^tab-(settings|loxone|costs|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
 
+// ---------- Loxone-Vorlage herunterladen ----------
+// Vor jeder Ausgabe, sonst stehen HTML-Reste in der XML-Datei.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('spot_vorlage')) {
+    list($sp_vname, $sp_vinhalt) = spot_vorlage();
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $sp_vname . '"');
+    echo $sp_vinhalt;
+    exit;
+}
+
 // ---------- Protokoll leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     @mkdir(dirname($sp_logfile), 0775, true);
@@ -88,6 +98,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $sp_new['cheap'] = max(0, min(200, sp_f('cheap', 20.0)));
     $sp_new['expensive'] = max(0, min(400, sp_f('expensive', 35.0)));
     $sp_new['window'] = max(1, min(12, (int) (isset($_POST['window']) ? $_POST['window'] : 3)));
+    $sp_pm = (string) (isset($_POST['profil_ein']) ? $_POST['profil_ein'] : 'absolut');
+    $sp_new['profil_ein'] = in_array($sp_pm, array('aus', 'absolut', 'relativ', 'beides'), true) ? $sp_pm : 'absolut';
+    // ---- Schaltregeln ----
+    $sp_new['regeln'] = array();
+    for ($sp_i = 0; $sp_i < SPOT_REGELN; $sp_i++) {
+        $sp_g = function ($feld, $def = '') use ($sp_i) {
+            $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
+            return isset($a[$sp_i]) ? $a[$sp_i] : $def;
+        };
+        $sp_art = (string) $sp_g('r_art', 'fenster');
+        $sp_new['regeln'][$sp_i] = array(
+            'aktiv' => (int) $sp_g('r_aktiv', 0) ? 1 : 0,
+            // Der Name landet im Kommentar der Loxone-Vorlage - deshalb nur
+            // Steuerzeichen und Anfuehrungszeichen raus, nicht hart filtern.
+            'name' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $sp_g('r_name'))),
+            'art' => in_array($sp_art, array('fenster', 'stunden', 'schwelle', 'mittel'), true) ? $sp_art : 'fenster',
+            'n' => max(1, min(12, (int) $sp_g('r_n', 3))),
+            'von' => max(0, min(23, (int) $sp_g('r_von', 0))),
+            'bis' => max(0, min(23, (int) $sp_g('r_bis', 0))),
+            'horizont' => max(1, min(48, (int) $sp_g('r_horizont', 24))),
+            'schwelle' => max(-100, min(200, (float) str_replace(',', '.', (string) $sp_g('r_schwelle', 20)))),
+            'prozent' => max(0, min(90, (int) $sp_g('r_prozent', 20))),
+            'neg' => (int) $sp_g('r_neg', 0) ? 1 : 0,
+        );
+    }
     $sp_new['wp_enabled'] = isset($_POST['wp_enabled']) ? 1 : 0;
     $sp_new['wp_name'] = trim((string) (isset($_POST['wp_name']) ? $_POST['wp_name'] : '')) !== '' ? trim((string) $_POST['wp_name']) : 'Wärmepumpe';
     $sp_new['wp_netz'] = max(0, min(50, sp_f('wp_netz', 3.43)));
@@ -197,7 +232,7 @@ function sp_chart($st) {
         }
     }
     if (!$rows) {
-        return '<div class="sp-small">Noch keine Preisdaten &mdash; im Reiter Test &bdquo;Jetzt abrufen&ldquo; klicken.</div>';
+        return '<div class="sm-small">Noch keine Preisdaten &mdash; im Reiter Test &bdquo;Jetzt abrufen&ldquo; klicken.</div>';
     }
     $w = 900; $h = 190; $x0 = 40; $y0 = 10; $pw = $w - $x0 - 10; $ph = $h - $y0 - 34;
     $vals = array_map(function ($r) { return $r[2]; }, $rows);
@@ -243,632 +278,735 @@ $sp_host = sp_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cfg['konzession'] + (float) $sp_cfg['umlagen'] + (float) $sp_cfg['aufschlag'];
 ?>
 <style>
-.sp-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
-.sp-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
-.sp-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
-.sp-wrap input[type=text], .sp-wrap input[type=number], .sp-wrap select, .sp-wrap textarea {
+.sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
+.sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
+.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
-.sp-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
-.sp-row { display: flex; gap: 12px; flex-wrap: wrap; }
-.sp-row > div { flex: 1; min-width: 150px; }
-.sp-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
-.sp-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
-.sp-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
-.sp-err { background: #ffebee; border: 1px solid #ef9a9a; }
-.sp-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
-.sp-warn { background: #fff8e1; border: 1px solid #ffe082; }
-.sp-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
-.sp-small { font-size: 0.82em; color: #666; margin-top: 3px; }
-.sp-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.sp-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
-.sp-tab.sp-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
-.sp-pane { display: none; padding-top: 4px; }
-.sp-pane.sp-active { display: block; }
-.sp-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
-.sp-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
-.sp-tbl { border-collapse: collapse; margin: 8px 0; }
-.sp-tbl th, .sp-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
-.sp-tbl th { background: #f0f0f0; }
-.sp-hours { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
-.sp-hours label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 5px 9px; margin: 0; font-weight: 500; font-size: 0.85em; width: 95px; box-sizing: border-box; }
-.sp-hours label:hover { background: #eef7e4; border-color: #6dac20; }
-.sp-months { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
-.sp-months > div { width: 108px; }
-.sp-months label { margin: 0 0 2px; font-size: 0.8em; font-weight: 600; color: #555; white-space: nowrap; min-height: 0; }
-.sp-months input { padding: 6px 8px; font-size: 0.9em; text-align: right; }
+.sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
+.sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.sm-row > div { flex: 1; min-width: 150px; }
+.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
+.sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+.sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
+.sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
+.sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
+.sm-warn { background: #fff8e1; border: 1px solid #ffe082; }
+.sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+.sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
+.sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
+.sm-pane { display: none; padding-top: 4px; }
+.sm-pane.sm-active { display: block; }
+.sm-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+.sm-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
+.sm-tbl { border-collapse: collapse; margin: 8px 0; }
+.sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
+.sm-tbl th { background: #f0f0f0; }
+.sm-hours { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.sm-hours label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 5px 9px; margin: 0; font-weight: 500; font-size: 0.85em; width: 95px; box-sizing: border-box; }
+.sm-hours label:hover { background: #eef7e4; border-color: #6dac20; }
+.sm-months { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.sm-months > div { width: 108px; }
+.sm-months label { margin: 0 0 2px; font-size: 0.8em; font-weight: 600; color: #555; white-space: nowrap; min-height: 0; }
+.sm-months input { padding: 6px 8px; font-size: 0.9em; text-align: right; }
 /* Beschriftungen einer Zeile auf gleiche Hoehe bringen, damit die Eingabefelder
    waagrecht fluchten - auch wenn ein Text zweizeilig umbricht */
-.sp-row > div > label:not([style]) { min-height: 2.6em; display: flex; align-items: flex-end; }
-.sp-wrap .sp-btn, .sp-wrap a.sp-btn, .sp-wrap button { text-shadow: none !important; box-shadow: none !important; }
-.sp-wrap a.sp-btn, .sp-wrap a.sp-btn:visited, .sp-wrap a.sp-btn:hover { color: #fff !important; text-decoration: none; }
+.sm-row > div > label:not([style]) { min-height: 2.6em; display: flex; align-items: flex-end; }
+.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button { text-shadow: none !important; box-shadow: none !important; }
+.sm-wrap a.sm-btn, .sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover { color: #fff !important; text-decoration: none; }
 
-/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
-.sp-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
-.sp-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
-.sp-knopfreihe form { margin: 0; display: flex; }
-.sp-knopfreihe .sp-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+/* --- <?php echo spot_t('TEXT.EINHEIT'); ?>liches Kachel-Raster im Reiter <?php echo spot_t('TEXT.TEST'); ?> (Standard aller Plugins) --- */
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sm-knopfreihe form { margin: 0; display: flex; }
+.sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
     display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
-.sp-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
-.sp-legende span { display: inline-flex; align-items: center; gap: 6px; }
-.sp-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
-.sp-btn.sp-b-lesen   { background: #6dac20; }
-.sp-btn.sp-b-technik { background: #546e7a; }
-.sp-btn.sp-b-aktion  { background: #e0620d; }
-.sp-punkt.sp-b-lesen   { background: #6dac20; }
-.sp-punkt.sp-b-technik { background: #546e7a; }
-.sp-punkt.sp-b-aktion  { background: #e0620d; }
+.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sm-btn.sm-b-lesen   { background: #6dac20; }
+.sm-btn.sm-b-technik { background: #546e7a; }
+.sm-btn.sm-b-aktion  { background: #e0620d; }
+.sm-punkt.sm-b-lesen   { background: #6dac20; }
+.sm-punkt.sm-b-technik { background: #546e7a; }
+.sm-punkt.sm-b-aktion  { background: #e0620d; }
 </style>
-<div class="sp-wrap">
+<div class="sm-wrap">
 
-<?php if ($sp_saved) { ?><div class="sp-alert sp-ok"><b>Konfiguration gespeichert</b> (inkl. Sicherungskopie f&uuml;r Updates).</div><?php } ?>
-<?php if ($sp_note !== '') { ?><div class="sp-alert sp-ok"><?= sp_e($sp_note) ?></div><?php } ?>
-<?php if ($sp_err !== '') { ?><div class="sp-alert sp-err"><b>Fehler:</b> <?= sp_e($sp_err) ?></div><?php } ?>
+<?php if ($sp_saved) { ?><div class="sm-alert sm-ok"><b><?php echo spot_t('TEXT.KONFIGURATION_GESPEICHERT'); ?></b> <?php echo spot_t('TEXT.INKL_SICHERUNGSKOPIE_FR_UPDATES'); ?></div><?php } ?>
+<?php if ($sp_note !== '') { ?><div class="sm-alert sm-ok"><?= sp_e($sp_note) ?></div><?php } ?>
+<?php if ($sp_err !== '') { ?><div class="sm-alert sm-err"><b><?php echo spot_t('TEXT.FEHLER'); ?></b> <?= sp_e($sp_err) ?></div><?php } ?>
 
 <?php if (!empty($sp_st)) { ?>
-<div class="sp-alert sp-info">
+<div class="sm-alert sm-info">
 <?php if ($sp_st['ok']) { ?>
-<b>Jetzt (<?= (int) $sp_st['stunde'] ?> Uhr): <?= sp_n($sp_st['cur'], 2) ?> ct/kWh</b>
-(davon B&ouml;rse <?= sp_n($sp_st['cur_boerse'], 2) ?> ct) &middot;
-n&auml;chste Stunde <?= sp_n($sp_st['next'], 2) ?> ct &middot;
-Rang <?= (int) $sp_st['rank'] ?> von <?= (int) $sp_st['n'] ?> &middot;
-Niveau <?= $sp_st['level'] == 1 ? '<b>g&uuml;nstig</b>' : ($sp_st['level'] == 3 ? '<b>teuer</b>' : 'normal') ?>
+<b><?php echo spot_t('TEXT.JETZT'); ?><?= (int) $sp_st['stunde'] ?> <?php echo spot_t('TEXT.UHR'); ?> <?= sp_n($sp_st['cur'], 2) ?> <?php echo spot_t('TEXT.CT_KWH'); ?></b>
+<?php echo spot_t('TEXT.DAVON_BRSE'); ?> <?= sp_n($sp_st['cur_boerse'], 2) ?> <?php echo spot_t('TEXT.CT_NCHSTE_STUNDE'); ?> <?= sp_n($sp_st['next'], 2) ?> <?php echo spot_t('TEXT.CT_RANG'); ?> <?= (int) $sp_st['rank'] ?> von <?= (int) $sp_st['n'] ?> <?php echo spot_t('TEXT.NIVEAU'); ?> <?= $sp_st['level'] == 1 ? '<b>g&uuml;nstig</b>' : ($sp_st['level'] == 3 ? '<b>teuer</b>' : 'normal') ?>
 <?= $sp_st['neg'] ? ' &middot; <b>B&ouml;rsenpreis negativ!</b>' : '' ?><br>
-Heute: Min <?= sp_n($sp_st['heute']['minp'], 2) ?> ct um <?= (int) $sp_st['heute']['minh'] ?> Uhr &middot;
-Max <?= sp_n($sp_st['heute']['maxp'], 2) ?> ct um <?= (int) $sp_st['heute']['maxh'] ?> Uhr &middot;
-Schnitt <?= sp_n($sp_st['heute']['avg'], 2) ?> ct
-<?php if ($sp_st['tomorrow_ok']) { ?><br>Morgen: Min <?= sp_n($sp_st['morgen']['minp'], 2) ?> ct um <?= (int) $sp_st['morgen']['minh'] ?> Uhr &middot;
+<?php echo spot_t('TEXT.HEUTE_MIN'); ?> <?= sp_n($sp_st['heute']['minp'], 2) ?> ct um <?= (int) $sp_st['heute']['minh'] ?> <?php echo spot_t('TEXT.UHR_MAX'); ?> <?= sp_n($sp_st['heute']['maxp'], 2) ?> ct um <?= (int) $sp_st['heute']['maxh'] ?> <?php echo spot_t('TEXT.UHR_SCHNITT'); ?> <?= sp_n($sp_st['heute']['avg'], 2) ?> ct
+<?php if ($sp_st['tomorrow_ok']) { ?><br><?php echo spot_t('TEXT.MORGEN_MIN'); ?> <?= sp_n($sp_st['morgen']['minp'], 2) ?> ct um <?= (int) $sp_st['morgen']['minh'] ?> Uhr &middot;
 Max <?= sp_n($sp_st['morgen']['maxp'], 2) ?> ct um <?= (int) $sp_st['morgen']['maxh'] ?> Uhr &middot;
-Schnitt <?= sp_n($sp_st['morgen']['avg'], 2) ?> ct<?php } else { ?><br>Morgen: noch nicht ver&ouml;ffentlicht (kommt b&ouml;rsent&auml;glich ab ca. 14 Uhr)<?php } ?>
-<?php if ($sp_st['fenster']['in'] >= 0) { ?><br>G&uuml;nstigstes <?= (int) $sp_st['fenster_len'] ?>-Stunden-Fenster: ab <?= (int) $sp_st['fenster']['h'] ?> Uhr
-(<?= $sp_st['fenster']['in'] == 0 ? 'jetzt' : 'in ' . (int) $sp_st['fenster']['in'] . ' h' ?>), Schnitt <?= sp_n($sp_st['fenster']['ct'], 2) ?> ct<?php } ?>
-<?php if (!empty($sp_st['wp_on'])) { ?><br><?= sp_e($sp_st['wp_name']) ?> (&sect;&nbsp;14a): <b><?= sp_n($sp_st['wp_cur'], 2) ?> ct/kWh</b> &middot; n&auml;chste Stunde <?= sp_n($sp_st['wp_next'], 2) ?> ct<?php } ?>
-<?php if (!empty($sp_st['co2_ok'])) { ?><br>CO&#8322;-Intensit&auml;t: <b><?= (int) $sp_st['co2'] ?> g/kWh</b><?= !empty($sp_st['co2_clean']) ? ' <b>(sauber)</b> ' : ' ' ?>
-&middot; sauberste Stunde <?= (int) $sp_st['co2_minh'] ?> Uhr mit <?= (int) $sp_st['co2_min'] ?> g &middot; Schnitt <?= (int) $sp_st['co2_avg'] ?> g<?php } ?>
-<br>Tarifvergleich laufender Monat: dynamisch (gewichtet) <b><?= sp_n($sp_st['dyn_monat'], 2) ?> ct</b> gegen fest <b><?= sp_n($sp_st['fix'], 2) ?> ct</b>
-&rarr; <?= $sp_st['diff_monat'] >= 0 ? 'dynamisch w&auml;re g&uuml;nstiger um ' : '<b>fester Tarif ist g&uuml;nstiger um</b> ' ?>
-<?= sp_n(abs($sp_st['diff_monat']), 2) ?> ct/kWh (<?= sp_n(abs($sp_st['euro_monat']), 2) ?> &euro;)
-<br>Verschiebe-Potenzial (7 Tage): <?= sp_n($sp_st['shift_ct'], 2) ?> ct/kWh Spanne &rarr; rund <b><?= sp_n($sp_st['shift_jahr'], 2) ?> &euro; im Jahr</b>
+<?php echo spot_t('TEXT.SCHNITT_2'); ?> <?= sp_n($sp_st['morgen']['avg'], 2) ?> ct<?php } else { ?><br><?php echo spot_t('TEXT.MORGEN_NOCH_NICHT_VERFFENTLICHT_KO'); ?><?php } ?>
+<?php if ($sp_st['fenster']['in'] >= 0) { ?><br><?php echo spot_t('TEXT.GNSTIGSTES'); ?> <?= (int) $sp_st['fenster_len'] ?><?php echo spot_t('TEXT.STUNDEN_FENSTER_AB'); ?> <?= (int) $sp_st['fenster']['h'] ?> <?php echo spot_t('TEXT.UHR_2'); ?><?= $sp_st['fenster']['in'] == 0 ? 'jetzt' : 'in ' . (int) $sp_st['fenster']['in'] . ' h' ?><?php echo spot_t('TEXT.SCHNITT'); ?> <?= sp_n($sp_st['fenster']['ct'], 2) ?> ct<?php } ?>
+<?php if (!empty($sp_st['wp_on'])) { ?><br><?= sp_e($sp_st['wp_name']) ?> <?php echo spot_t('TEXT.14A'); ?> <b><?= sp_n($sp_st['wp_cur'], 2) ?> ct/kWh</b> <?php echo spot_t('TEXT.NCHSTE_STUNDE'); ?> <?= sp_n($sp_st['wp_next'], 2) ?> ct<?php } ?>
+<?php if (!empty($sp_st['co2_ok'])) { ?><br><?php echo spot_t('TEXT.CO_8322_INTENSITT'); ?> <b><?= (int) $sp_st['co2'] ?> <?php echo spot_t('TEXT.G_KWH'); ?></b><?= !empty($sp_st['co2_clean']) ? ' <b>(sauber)</b> ' : ' ' ?>
+&middot; sauberste Stunde <?= (int) $sp_st['co2_minh'] ?> <?php echo spot_t('TEXT.UHR_MIT'); ?> <?= (int) $sp_st['co2_min'] ?> <?php echo spot_t('TEXT.G_SCHNITT'); ?> <?= (int) $sp_st['co2_avg'] ?> g<?php } ?>
+<br><?php echo spot_t('TEXT.TARIFVERGLEICH_LAUFENDER_MONAT_DYN'); ?> <b><?= sp_n($sp_st['dyn_monat'], 2) ?> ct</b> <?php echo spot_t('TEXT.GEGEN_FEST'); ?> <b><?= sp_n($sp_st['fix'], 2) ?> ct</b>
+<?php echo spot_t('TEXT.TEXT'); ?> <?= $sp_st['diff_monat'] >= 0 ? 'dynamisch w&auml;re g&uuml;nstiger um ' : '<b>fester Tarif ist g&uuml;nstiger um</b> ' ?>
+<?= sp_n(abs($sp_st['diff_monat']), 2) ?> <?php echo spot_t('TEXT.CT_KWH_2'); ?><?= sp_n(abs($sp_st['euro_monat']), 2) ?> <?php echo spot_t('TEXT.TEXT_2'); ?>
+<br><?php echo spot_t('TEXT.VERSCHIEBE_POTENZIAL_7_TAGE'); ?> <?= sp_n($sp_st['shift_ct'], 2) ?> <?php echo spot_t('TEXT.CT_KWH_SPANNE_RUND'); ?> <b><?= sp_n($sp_st['shift_jahr'], 2) ?> <?php echo spot_t('TEXT.IM_JAHR'); ?></b>
 <div style="margin-top:8px;"><?= sp_chart($sp_st) ?></div>
 <?php } else { ?>
-<b>Noch keine Preisdaten geladen.</b> Bitte unten die Preisbestandteile pr&uuml;fen, speichern und im Reiter Test &bdquo;Jetzt abrufen&ldquo; klicken.
+<b><?php echo spot_t('TEXT.NOCH_KEINE_PREISDATEN_GELADEN'); ?></b> <?php echo spot_t('TEXT.BITTE_UNTEN_DIE_PREISBESTANDTEILE_'); ?>
 <?php } ?>
 </div>
 <?php } ?>
 
-<div class="sp-tabs">
-    <div class="sp-tab" data-pane="tab-settings">Einstellungen</div>
-    <div class="sp-tab" data-pane="tab-loxone">Einbindung in Loxone</div>
-    <div class="sp-tab" data-pane="tab-costs">Kostenvergleich</div>
-    <div class="sp-tab" data-pane="tab-test">Test</div>
-    <div class="sp-tab" data-pane="tab-log">Logdateien</div>
+<div class="sm-tabs">
+    <div class="sm-tab" data-pane="tab-settings"><?php echo spot_t('REITER.EINSTELLUNGEN'); ?></div>
+    <div class="sm-tab" data-pane="tab-loxone"><?php echo spot_t('REITER.LOXONE'); ?></div>
+    <div class="sm-tab" data-pane="tab-costs"><?php echo spot_t('REITER.KOSTEN'); ?></div>
+    <div class="sm-tab" data-pane="tab-test"><?php echo spot_t('REITER.TEST'); ?></div>
+    <div class="sm-tab" data-pane="tab-log"><?php echo spot_t('REITER.LOG'); ?></div>
 </div>
 
-<!-- ================= Reiter: Einstellungen ================= -->
-<div class="sp-pane" id="tab-settings">
-<form method="post" autocomplete="off">
+<!-- ================= Reiter: <?php echo spot_t('TEXT.EINSTELLUNGEN'); ?> ================= -->
+<div class="sm-pane" id="tab-settings">
+<form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
-<h2>Markt</h2>
-<div class="sp-row">
+<h2><?php echo spot_t('TEXT.MARKT'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Preiszone / API</label>
+        <label><?php echo spot_t('TEXT.PREISZONE_API'); ?></label>
         <select data-role="none" name="market" id="market" onchange="spMarket()">
-            <option value="de"<?= $sp_cfg['market'] === 'de' ? ' selected' : '' ?>>Deutschland (api.awattar.de)</option>
-            <option value="at"<?= $sp_cfg['market'] === 'at' ? ' selected' : '' ?>>&Ouml;sterreich (api.awattar.at)</option>
+            <option value="de"<?= $sp_cfg['market'] === 'de' ? ' selected' : '' ?><?php echo spot_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE'); ?></option>
+            <option value="at"<?= $sp_cfg['market'] === 'at' ? ' selected' : '' ?><?php echo spot_t('TEXT.OUML_STERREICH_API_AWATTAR_AT'); ?></option>
         </select>
-        <div class="sp-small">Quelle: offene aWATTar-API (EPEX SPOT Day-Ahead, st&uuml;ndlich). Kein Konto n&ouml;tig.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.QUELLE_OFFENE_AWATTAR_API_EPEX_SPO'); ?></div>
     </div>
 </div>
 
-<h2>Preiszusammensetzung (Endpreis)</h2>
-<div class="sp-small" style="margin-bottom:8px;">Alle Angaben in <b>ct/kWh netto</b>. Endpreis =
-(B&ouml;rsenpreis + Summe der Aufschl&auml;ge) &times; Umsatzsteuer. Die Werte stehen auf den
-Richtwerten f&uuml;r 2026 &mdash; bitte mit der eigenen Stromrechnung abgleichen.</div>
-<div class="sp-row">
+<h2><?php echo spot_t('TEXT.PREISZUSAMMENSETZUNG_ENDPREIS'); ?></h2>
+<div class="sm-small" style="margin-bottom:8px;"><?php echo spot_t('TEXT.ALLE_ANGABEN_IN'); ?> <b><?php echo spot_t('TEXT.CT_KWH_NETTO'); ?></b><?php echo spot_t('TEXT.ENDPREIS_BRSENPREIS_SUMME_DER_AUFS'); ?></div>
+<div class="sm-row">
     <div>
-        <label>Netzentgelte</label>
+        <label><?php echo spot_t('TEXT.NETZENTGELTE'); ?></label>
         <input data-role="none" type="text" name="netz" value="<?= sp_e($sp_cfg['netz']) ?>" placeholder="9.0">
-        <div class="sp-small">Inkl. Messstellenbetrieb; stark regional (typisch 7&ndash;12).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.INKL_MESSSTELLENBETRIEB_STARK_REGI'); ?></div>
     </div>
     <div>
-        <label>Stromsteuer</label>
-        <input data-role="none" type="text" name="steuer" value="<?= sp_e($sp_cfg['steuer']) ?>" placeholder="2.05">
-        <div class="sp-small">DE: 2,05 &middot; AT (Elektrizit&auml;tsabgabe): 1,50.</div>
+        <label><?php echo spot_t('TEXT.STROMSTEUER'); ?></label>
+        <input data-role="none" type="text" name="s<?php echo spot_t('TEXT.TEUER'); ?>" value="<?= sp_e($sp_cfg['steuer']) ?>" placeholder="2.05">
+        <div class="sm-small"><?php echo spot_t('TEXT.DE_2_05_AT_ELEKTRIZITTSABGABE_1_50'); ?></div>
     </div>
     <div>
-        <label>Konzessionsabgabe</label>
+        <label><?php echo spot_t('TEXT.KONZESSIONSABGABE'); ?></label>
         <input data-role="none" type="text" name="konzession" value="<?= sp_e($sp_cfg['konzession']) ?>" placeholder="1.32">
-        <div class="sp-small">Nach Gemeindegr&ouml;&szlig;e: bis 25.000 EW <b>1,32</b> &middot; bis 100.000 <b>1,59</b> &middot; bis 500.000 <b>1,99</b> &middot; &uuml;ber 500.000 <b>2,39</b>.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.NACH_GEMEINDEGRE_BIS_25_000_EW'); ?> <b>1,32</b> <?php echo spot_t('TEXT.BIS_100_000'); ?> <b>1,59</b> <?php echo spot_t('TEXT.BIS_500_000'); ?> <b>1,99</b> <?php echo spot_t('TEXT.BER_500_000'); ?> <b>2,39</b>.</div>
     </div>
 </div>
-<div class="sp-row">
+<div class="sm-row">
     <div>
-        <label>Umlagen</label>
+        <label><?php echo spot_t('TEXT.UMLAGEN'); ?></label>
         <input data-role="none" type="text" name="umlagen" value="<?= sp_e($sp_cfg['umlagen']) ?>" placeholder="2.945">
-        <div class="sp-small">2026: KWKG 0,446 + Offshore-Netzumlage 0,941 + &sect;&nbsp;19 StromNEV 1,558 = <b>2,945</b>.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.2026_KWKG_0_446_OFFSHORE_NETZUMLAG'); ?> <b>2,945</b>.</div>
     </div>
     <div>
-        <label>Anbieter-Aufschlag</label>
+        <label><?php echo spot_t('TEXT.ANBIETER_AUFSCHLAG'); ?></label>
         <input data-role="none" type="text" name="aufschlag" value="<?= sp_e($sp_cfg['aufschlag']) ?>" placeholder="0.0">
-        <div class="sp-small">Marge/Arbeitspreis-Aufschlag des dynamischen Tarifs (oft 1&ndash;2).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.MARGE_ARBEITSPREIS_AUFSCHLAG_DES_D'); ?></div>
     </div>
     <div>
-        <label>Umsatzsteuer (%)</label>
+        <label><?php echo spot_t('TEXT.UMSATZSTEUER'); ?></label>
         <input data-role="none" type="text" name="vat" id="vat" value="<?= sp_e($sp_cfg['vat']) ?>" placeholder="19">
-        <div class="sp-small">Deutschland 19, &Ouml;sterreich 20.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.DEUTSCHLAND_19_OUML_STERREICH_20'); ?></div>
     </div>
     <div>
-        <label>Grundpreis (EUR/Monat)</label>
+        <label><?php echo spot_t('TEXT.GRUNDPREIS_EUR_MONAT'); ?></label>
         <input data-role="none" type="text" name="grundpreis" value="<?= sp_e($sp_cfg['grundpreis']) ?>" placeholder="0">
-        <div class="sp-small">Netz-Grundpreis + Messstellenbetrieb. Nur informativ (geht nicht in den ct-Preis ein).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.NETZ_GRUNDPREIS_MESSSTELLENBETRIEB'); ?></div>
     </div>
 </div>
-<div class="sp-alert sp-ok" style="margin-top:10px;">Aktuelle Summe der Aufschl&auml;ge: <b><?= sp_n($sp_addon, 3) ?> ct/kWh netto</b>
-&rarr; bei einem B&ouml;rsenpreis von 8,00 ct ergibt das <b><?= sp_n((8 + $sp_addon) * (1 + (float) $sp_cfg['vat'] / 100), 2) ?> ct/kWh</b> Endpreis.</div>
+<div class="sm-alert sm-ok" style="margin-top:10px;"><?php echo spot_t('TEXT.AKTUELLE_SUMME_DER_AUFSCHLGE'); ?> <b><?= sp_n($sp_addon, 3) ?> ct/kWh netto</b>
+<?php echo spot_t('TEXT.BEI_EINEM_BRSENPREIS_VON_8_00_CT_E'); ?> <b><?= sp_n((8 + $sp_addon) * (1 + (float) $sp_cfg['vat'] / 100), 2) ?> ct/kWh</b> <?php echo spot_t('TEXT.ENDPREIS'); ?></div>
 
-<h2>Zweiter Preissatz: steuerbare Verbrauchseinrichtung (&sect;&nbsp;14a EnWG)</h2>
+<h2><?php echo spot_t('TEXT.ZWEITER_PREISSATZ_STEUERBARE_VERBR'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="wp_enabled" <?= !empty($sp_cfg['wp_enabled']) ? 'checked' : '' ?>> Zweiten Preissatz berechnen und ausgeben
+    <input data-role="none" type="checkbox" name="wp_enabled" <?= !empty($sp_cfg['wp_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.ZWEITEN_PREISSATZ_BERECHNEN_UND_AU'); ?>
 </label>
-<div class="sp-small">F&uuml;r W&auml;rmepumpe oder Wallbox mit <b>eigenem Z&auml;hlpunkt</b> nach &sect;&nbsp;14a EnWG (Modul 1):
-reduziertes Netzentgelt und Schwachlast-Konzessionsabgabe. Liefert eine zweite Preisreihe
-(<span class="sp-mono">WPCUR</span>/<span class="sp-mono">WPNEXT</span>) &mdash; ideal, um W&auml;rmepumpe und Haushalt getrennt zu rechnen.</div>
-<div class="sp-row" style="margin-top:6px;">
+<div class="sm-small"><?php echo spot_t('TEXT.FR_WRMEPUMPE_ODER_WALLBOX_MIT'); ?> <b><?php echo spot_t('TEXT.EIGENEM_ZHLPUNKT'); ?></b> <?php echo spot_t('TEXT.NACH_14A_ENWG_MODUL_1_REDUZIERTES_'); ?><span class="sm-mono"><?php echo spot_t('TEXT.WPCUR'); ?></span>/<span class="sm-mono"><?php echo spot_t('TEXT.WPNEXT'); ?></span><?php echo spot_t('TEXT.IDEAL_UM_WRMEPUMPE_UND_HAUSHALT_GE'); ?></div>
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Bezeichnung</label>
+        <label><?php echo spot_t('TEXT.BEZEICHNUNG'); ?></label>
         <input data-role="none" type="text" name="wp_name" value="<?= sp_e($sp_cfg['wp_name']) ?>" placeholder="Wärmepumpe">
     </div>
     <div>
-        <label>Netzentgelt &sect;&nbsp;14a (ct/kWh)</label>
+        <label><?php echo spot_t('TEXT.NETZENTGELT_14A_CT_KWH'); ?></label>
         <input data-role="none" type="text" name="wp_netz" value="<?= sp_e($sp_cfg['wp_netz']) ?>" placeholder="3.43">
-        <div class="sp-small">Beispiel-Netzgebiet 2026: steuerbare W&auml;rmepumpe <b>3,43</b> &middot; Speicherheizung 1,71 &middot;
-        Elektromobilit&auml;t/sonstige 4,28 &middot; Modul 2 (pauschal) 2,59 &middot; Modul 3 HT 7,14 / NT 2,59.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.BEISPIEL_NETZGEBIET_2026_STEUERBAR'); ?> <b>3,43</b> <?php echo spot_t('TEXT.SPEICHERHEIZUNG_1_71_ELEKTROMOBILI'); ?></div>
     </div>
     <div>
-        <label>Konzessionsabgabe (ct/kWh)</label>
+        <label><?php echo spot_t('TEXT.KONZESSIONSABGABE_CT_KWH'); ?></label>
         <input data-role="none" type="text" name="wp_konzession" value="<?= sp_e($sp_cfg['wp_konzession']) ?>" placeholder="0.61">
-        <div class="sp-small">Schwachlast-H&ouml;chstbetrag nach &sect;&nbsp;2 Abs.&nbsp;2 KAV: <b>0,61</b>.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.SCHWACHLAST_HCHSTBETRAG_NACH_2_ABS'); ?> <b>0,61</b>.</div>
     </div>
 </div>
 
-<h2>CO&#8322;-Intensit&auml;t des Strommixes</h2>
+<h2><?php echo spot_t('TEXT.CO_8322_INTENSITT_DES_STROMMIXES'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="co2_enabled" <?= !empty($sp_cfg['co2_enabled']) ? 'checked' : '' ?>> CO&#8322;-Werte abrufen (Fraunhofer ISE Energy-Charts, kostenlos, ohne Konto)
+    <input data-role="none" type="checkbox" name="co2_enabled" <?= !empty($sp_cfg['co2_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.CO_8322_WERTE_ABRUFEN_FRAUNHOFER_I'); ?>
 </label>
-<div class="sp-row" style="margin-top:6px;">
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Schwelle &bdquo;sauber&ldquo; (g CO&#8322;/kWh)</label>
+        <label><?php echo spot_t('TEXT.SCHWELLE_SAUBER_G_CO_8322_KWH'); ?></label>
         <input data-role="none" type="text" name="co2_clean" value="<?= sp_e($sp_cfg['co2_clean']) ?>" placeholder="200">
-        <div class="sp-small">Darunter meldet das Plugin <span class="sp-mono">CO2CLEAN=1</span> &mdash; f&uuml;r &bdquo;jetzt ist &Ouml;kostrom-Zeit&ldquo;.
-        Typisch: unter 150 sehr sauber, &uuml;ber 400 sehr fossil. Inklusive Prognose f&uuml;r die n&auml;chsten Stunden.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.DARUNTER_MELDET_DAS_PLUGIN'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.CO2CLEAN_1'); ?></span> <?php echo spot_t('TEXT.FR_JETZT_IST_OUML_KOSTROM_ZEIT_TYP'); ?></div>
     </div>
 </div>
 
-<h2>Vergleich fester Tarif gegen dynamischen Tarif</h2>
-<div class="sp-row">
+<h2><?php echo spot_t('TEXT.VERGLEICH_FESTER_TARIF_GEGEN_DYNAM'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Mein fester Arbeitspreis (ct/kWh brutto)</label>
+        <label><?php echo spot_t('TEXT.MEIN_FESTER_ARBEITSPREIS_CT_KWH_BR'); ?></label>
         <input data-role="none" type="text" name="fixed_price" value="<?= sp_e($sp_cfg['fixed_price']) ?>" placeholder="30.90">
-        <div class="sp-small">Arbeitspreis des aktuellen Tarifs &mdash; damit rechnet der Monatsvergleich.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.ARBEITSPREIS_DES_AKTUELLEN_TARIFS_'); ?></div>
     </div>
     <div>
-        <label>Grundpreis fester Tarif (&euro;/Monat)</label>
+        <label><?php echo spot_t('TEXT.GRUNDPREIS_FESTER_TARIF_MONAT'); ?></label>
         <input data-role="none" type="text" name="fix_grund" value="<?= sp_e($sp_cfg['fix_grund']) ?>" placeholder="12.90">
-        <div class="sp-small">Grundgeb&uuml;hr des Liefervertrags (meist inkl. Netz-Grundpreis und Messstellenbetrieb).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.GRUNDGEBHR_DES_LIEFERVERTRAGS_MEIS'); ?></div>
     </div>
     <div>
-        <label>Jahresverbrauch (kWh)</label>
+        <label><?php echo spot_t('TEXT.JAHRESVERBRAUCH_KWH'); ?></label>
         <input data-role="none" type="text" name="consumption" id="consumption" value="<?= (int) $sp_cfg['consumption'] ?>" placeholder="3500"<?= $sp_mon['use'] ? ' readonly style="background:#f0f0f0;"' : '' ?>>
-        <div class="sp-small" id="consumption_hint"><?= $sp_mon['use']
+        <div class="sm-small" id="consumption_hint"><?= $sp_mon['use']
             ? 'Wird aus den Monatswerten unten berechnet.'
             : 'Wird verwendet, solange unten keine Monatswerte gepflegt sind.' ?></div>
     </div>
     <div>
-        <label>T&auml;glich verschiebbare Menge (kWh)</label>
+        <label><?php echo spot_t('TEXT.TGLICH_VERSCHIEBBARE_MENGE_KWH'); ?></label>
         <input data-role="none" type="text" name="shift_kwh" value="<?= sp_e($sp_cfg['shift_kwh']) ?>" placeholder="3">
-        <div class="sp-small">Wasch-/Sp&uuml;lmaschine, Warmwasser, E-Auto &hellip; Basis f&uuml;r das Verschiebe-Potenzial.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.WASCH_SPLMASCHINE_WARMWASSER_E_AUT'); ?></div>
     </div>
 </div>
 
-<div class="sp-small" style="margin-top:10px;"><b>Boni und Rabatte des festen Tarifs</b> &mdash; nur so l&auml;sst sich der
-tats&auml;chlich gezahlte Betrag vergleichen (viele Anbieter locken mit Einmalzahlungen, andere mit einem laufenden
-Rabatt auf die Rechnung):</div>
-<div class="sp-row">
+<div class="sm-small" style="margin-top:10px;"><b><?php echo spot_t('TEXT.BONI_UND_RABATTE_DES_FESTEN_TARIFS'); ?></b> <?php echo spot_t('TEXT.NUR_SO_LSST_SICH_DER_TATSCHLICH_GE'); ?></div>
+<div class="sm-row">
     <div>
-        <label>Sofortbonus (&euro;, einmalig)</label>
+        <label><?php echo spot_t('TEXT.SOFORTBONUS_EINMALIG'); ?></label>
         <input data-role="none" type="text" name="fix_sofortbonus" value="<?= sp_e($sp_cfg['fix_sofortbonus']) ?>" placeholder="0">
-        <div class="sp-small">Wird meist nach wenigen Wochen ausgezahlt.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.WIRD_MEIST_NACH_WENIGEN_WOCHEN_AUS'); ?></div>
     </div>
     <div>
-        <label>Neukundenbonus (&euro;)</label>
+        <label><?php echo spot_t('TEXT.NEUKUNDENBONUS'); ?></label>
         <input data-role="none" type="text" name="fix_neubonus" value="<?= sp_e($sp_cfg['fix_neubonus']) ?>" placeholder="0">
-        <div class="sp-small">Fester Betrag nach dem ersten Lieferjahr.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.FESTER_BETRAG_NACH_DEM_ERSTEN_LIEF'); ?></div>
     </div>
     <div>
-        <label>&hellip; oder Neukundenbonus (%)</label>
+        <label><?php echo spot_t('TEXT.ODER_NEUKUNDENBONUS'); ?></label>
         <input data-role="none" type="text" name="fix_neubonus_pct" value="<?= sp_e($sp_cfg['fix_neubonus_pct']) ?>" placeholder="0">
-        <div class="sp-small">Prozent vom Jahresbetrag (Arbeitspreis + Grundpreis). Beide Felder werden addiert &mdash; nur eines ausf&uuml;llen.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.PROZENT_VOM_JAHRESBETRAG_ARBEITSPR'); ?></div>
     </div>
     <div>
-        <label>Abschlagsrabatt auf Rechnungsbetrag (%)</label>
+        <label><?php echo spot_t('TEXT.ABSCHLAGSRABATT_AUF_RECHNUNGSBETRA'); ?></label>
         <input data-role="none" type="text" name="fix_rabatt" value="<?= sp_e($sp_cfg['fix_rabatt']) ?>" placeholder="0">
-        <div class="sp-small">Laufender Rabatt, gilt <b>dauerhaft</b> (nicht nur im ersten Jahr) &mdash; z.&nbsp;B. 27&nbsp;%.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.LAUFENDER_RABATT_GILT'); ?> <b><?php echo spot_t('TEXT.DAUERHAFT'); ?></b> <?php echo spot_t('TEXT.NICHT_NUR_IM_ERSTEN_JAHR_Z_B_27'); ?></div>
     </div>
 </div>
 
-<div class="sp-small" style="margin-top:10px;"><b>Netzbezug je Monat (kWh)</b> &mdash; optional, aber deutlich genauer:
-Mit PV-Anlage ist der Zukauf im Sommer klein und im Winter gro&szlig; &mdash; genau dann, wenn der B&ouml;rsenstrom teuer ist.
-Wer hier die Werte der letzten Jahresabrechnung eintr&auml;gt, bekommt einen realistischen Euro-Vergleich statt einer
-Gleichverteilung. Felder leer lassen = es wird mit dem Jahresverbrauch oben gerechnet.</div>
-<div class="sp-months">
+<div class="sm-small" style="margin-top:10px;"><b><?php echo spot_t('TEXT.NETZBEZUG_JE_MONAT_KWH'); ?></b> <?php echo spot_t('TEXT.OPTIONAL_ABER_DEUTLICH_GENAUER_MIT'); ?></div>
+<div class="sm-months">
 <?php $sp_mnames = array('Januar', 'Februar', 'M&auml;rz', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember');
 for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <div>
         <label><?= $sp_mnames[$sp_i] ?></label>
-        <input data-role="none" type="text" class="sp-mkwh" name="months[]" value="<?= $sp_mon['kwh'][$sp_i] > 0 ? sp_e(rtrim(rtrim(number_format($sp_mon['kwh'][$sp_i], 1, '.', ''), '0'), '.')) : '' ?>" placeholder="&ndash;" oninput="spSum()">
+        <input data-role="none" type="text" class="sm-mkwh" name="months[]" value="<?= $sp_mon['kwh'][$sp_i] > 0 ? sp_e(rtrim(rtrim(number_format($sp_mon['kwh'][$sp_i], 1, '.', ''), '0'), '.')) : '' ?>" placeholder="<?php echo spot_t('TEXT.TEXT_8'); ?>" oninput="spSum()">
     </div>
 <?php } ?>
 </div>
-<div class="sp-alert sp-ok" id="sp_msum" style="margin-top:6px;">Summe der Monatswerte: <b><?= $sp_mon['use'] ? sp_n($sp_mon['summe'], 0) . ' kWh' : 'noch keine Werte gepflegt' ?></b><?= $sp_mon['use'] ? ' &mdash; dieser Wert wird als Jahresverbrauch gespeichert.' : '' ?></div>
-<div class="sp-small">Der Monatsvergleich wird <b>lastprofil-gewichtet</b> gerechnet (Haushalts-Profil): ein einfacher
-Mittelwert w&uuml;rde den dynamischen Tarif sch&ouml;nrechnen, weil der Verbrauch abends liegt, wenn der Strom teurer ist.
-Ergebnis erscheint im Reiter <b>Test</b>, im Protokoll und am Monatsersten als Ansage/Push.</div>
+<div class="sm-alert sm-ok" id="sp_msum" style="margin-top:6px;"><?php echo spot_t('TEXT.SUMME_DER_MONATSWERTE'); ?> <b><?= $sp_mon['use'] ? sp_n($sp_mon['summe'], 0) . ' kWh' : 'noch keine Werte gepflegt' ?></b><?= $sp_mon['use'] ? ' &mdash; dieser Wert wird als Jahresverbrauch gespeichert.' : '' ?></div>
+<div class="sm-small"><?php echo spot_t('TEXT.DER_MONATSVERGLEICH_WIRD'); ?> <b><?php echo spot_t('TEXT.LASTPROFIL_GEWICHTET'); ?></b> <?php echo spot_t('TEXT.GERECHNET_HAUSHALTS_PROFIL_EIN_EIN'); ?> <b>Test</b><?php echo spot_t('TEXT.IM_PROTOKOLL_UND_AM_MONATSERSTEN_A'); ?></div>
 
-<h2>Kopplung mit dem Marstek-Speicher-Plugin (optional)</h2>
+<h2><?php echo spot_t('TEXT.KOPPLUNG_MIT_DEM_MARSTEK_SPEICHER_'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="marstek_enabled" <?= !empty($sp_cfg['marstek_enabled']) ? 'checked' : '' ?>> Speicher in den g&uuml;nstigsten Stunden automatisch laden
+    <input data-role="none" type="checkbox" name="marstek_enabled" <?= !empty($sp_cfg['marstek_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.SPEICHER_IN_DEN_GNSTIGSTEN_STUNDEN'); ?>
 </label>
-<div class="sp-alert sp-info" style="margin-top:6px;">Nur einschalten, wenn die Rang-Logik <b>nicht</b> in Loxone gebaut ist &mdash;
-sonst &uuml;berschreiben sich beide Sollwerte gegenseitig. Wer die Loxone-Logik behalten will, l&auml;sst das hier aus
-(Standard) und nutzt einfach <span class="sp-mono">RANK</span> aus Schritt 2.</div>
-<div class="sp-row" style="margin-top:6px;">
+<div class="sm-alert sm-info" style="margin-top:6px;"><?php echo spot_t('TEXT.NUR_EINSCHALTEN_WENN_DIE_RANG_LOGI'); ?> <b><?php echo spot_t('TEXT.NICHT'); ?></b> <?php echo spot_t('TEXT.IN_LOXONE_GEBAUT_IST_SONST_BERSCHR'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.RANK'); ?></span> <?php echo spot_t('TEXT.AUS_SCHRITT_2'); ?></div>
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Endpunkt des Marstek-Plugins</label>
+        <label><?php echo spot_t('TEXT.ENDPUNKT_DES_MARSTEK_PLUGINS'); ?></label>
         <input data-role="none" type="text" name="marstek_url" value="<?= sp_e($sp_cfg['marstek_url']) ?>" placeholder="<?= sp_e($sp_ownurl) ?>">
-        <div class="sp-small">Leer lassen = automatisch <span class="sp-mono"><?= sp_e($sp_ownurl) ?></span> (eigene LoxBerry-Adresse).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.LEER_LASSEN_AUTOMATISCH'); ?> <span class="sm-mono"><?= sp_e($sp_ownurl) ?></span> <?php echo spot_t('TEXT.EIGENE_LOXBERRY_ADRESSE'); ?></div>
     </div>
     <div>
-        <label>In den X g&uuml;nstigsten Stunden laden</label>
+        <label><?php echo spot_t('TEXT.IN_DEN_X_GNSTIGSTEN_STUNDEN_LADEN'); ?></label>
         <input data-role="none" type="number" name="marstek_hours" value="<?= (int) $sp_cfg['marstek_hours'] ?>" min="1" max="12">
     </div>
     <div>
-        <label>Ladeleistung (W)</label>
+        <label><?php echo spot_t('TEXT.LADELEISTUNG_W'); ?></label>
         <input data-role="none" type="number" name="marstek_power" value="<?= (int) $sp_cfg['marstek_power'] ?>" min="100" max="10000">
     </div>
     <div>
-        <label style="min-height:2.6em;display:flex;align-items:flex-end;">&nbsp;</label>
+        <label style="min-height:2.6em;display:flex;align-items:flex-end;"><?php echo spot_t('TEXT.TEXT_3'); ?></label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
-            <input data-role="none" type="checkbox" name="marstek_neg" <?= !empty($sp_cfg['marstek_neg']) ? 'checked' : '' ?>> Bei negativem Preis immer laden
+            <input data-role="none" type="checkbox" name="marstek_neg" <?= !empty($sp_cfg['marstek_neg']) ? 'checked' : '' ?><?php echo spot_t('TEXT.BEI_NEGATIVEM_PREIS_IMMER_LADEN'); ?>
         </label>
     </div>
 </div>
 
-<h2>Schwellen und Fenster</h2>
-<div class="sp-row">
+<h2><?php echo spot_t('TEXT.SCHWELLEN_UND_FENSTER'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Schwelle &bdquo;g&uuml;nstig&ldquo; (ct/kWh Endpreis)</label>
+        <label><?php echo spot_t('TEXT.SCHWELLE_GNSTIG_CT_KWH_ENDPREIS'); ?></label>
         <input data-role="none" type="text" name="cheap" value="<?= sp_e($sp_cfg['cheap']) ?>" placeholder="20">
-        <div class="sp-small">Darunter meldet das Plugin Niveau 1 (LEVEL=1).</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.DARUNTER_MELDET_DAS_PLUGIN_NIVEAU_'); ?></div>
     </div>
     <div>
-        <label>Schwelle &bdquo;teuer&ldquo; (ct/kWh Endpreis)</label>
+        <label><?php echo spot_t('TEXT.SCHWELLE_TEUER_CT_KWH_ENDPREIS'); ?></label>
         <input data-role="none" type="text" name="expensive" value="<?= sp_e($sp_cfg['expensive']) ?>" placeholder="35">
-        <div class="sp-small">Dar&uuml;ber Niveau 3 (LEVEL=3) &mdash; ideal zum Sperren gro&szlig;er Verbraucher.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.DARBER_NIVEAU_3_LEVEL_3_IDEAL_ZUM_'); ?></div>
     </div>
     <div>
-        <label>L&auml;nge des g&uuml;nstigsten Fensters (h)</label>
+        <label><?php echo spot_t('TEXT.LNGE_DES_GNSTIGSTEN_FENSTERS_H'); ?></label>
         <input data-role="none" type="number" name="window" value="<?= (int) $sp_cfg['window'] ?>" min="1" max="12">
-        <div class="sp-small">Z.&nbsp;B. 3 f&uuml;r Waschmaschine/Sp&uuml;lmaschine, 4&ndash;6 f&uuml;r E-Auto.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.Z_B_3_FR_WASCHMASCHINE_SPLMASCHINE'); ?></div>
     </div>
 </div>
 
-<h2>Ansage und Push je Stunde</h2>
+<h2><?php echo spot_t('REGEL.H_TITEL'); ?></h2>
+<div class="sm-hinweis"><?php echo spot_t('REGEL.ERKLAERUNG'); ?></div>
+<?php for ($sp_i = 0; $sp_i < SPOT_REGELN; $sp_i++) {
+    $sp_r = $sp_cfg['regeln'][$sp_i]; ?>
+<div class="sm-step">
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:600;">
+    <input data-role="none" type="checkbox" name="r_aktiv[<?= $sp_i ?>]" value="1" <?= !empty($sp_r['aktiv']) ? 'checked' : '' ?>>
+    <?= sprintf(spot_t('REGEL.L_AKTIV'), $sp_i + 1) ?>
+  </label>
+  <div class="sm-row" style="margin-top:8px;">
+    <div>
+      <label><?php echo spot_t('REGEL.L_NAME'); ?></label>
+      <input data-role="none" type="text" name="r_name[<?= $sp_i ?>]" value="<?= sp_e($sp_r['name']) ?>" placeholder="<?php echo spot_t('REGEL.P_NAME'); ?>">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_ART'); ?></label>
+      <select data-role="none" name="r_art[<?= $sp_i ?>]">
+<?php foreach (array('fenster', 'stunden', 'schwelle', 'mittel') as $sp_a) { ?>
+        <option value="<?= $sp_a ?>"<?= $sp_r['art'] === $sp_a ? ' selected' : '' ?>><?= sp_e(spot_t('REGEL.ART_' . strtoupper($sp_a))) ?></option>
+<?php } ?>
+      </select>
+    </div>
+  </div>
+  <div class="sm-row">
+    <div>
+      <label><?php echo spot_t('REGEL.L_N'); ?></label>
+      <input data-role="none" type="number" name="r_n[<?= $sp_i ?>]" value="<?= (int) $sp_r['n'] ?>" min="1" max="12">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_SCHWELLE'); ?></label>
+      <input data-role="none" type="text" name="r_schwelle[<?= $sp_i ?>]" value="<?= sp_e($sp_r['schwelle']) ?>">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_PROZENT'); ?></label>
+      <input data-role="none" type="number" name="r_prozent[<?= $sp_i ?>]" value="<?= (int) $sp_r['prozent'] ?>" min="0" max="90">
+    </div>
+  </div>
+  <div class="sm-row">
+    <div>
+      <label><?php echo spot_t('REGEL.L_VON'); ?></label>
+      <input data-role="none" type="number" name="r_von[<?= $sp_i ?>]" value="<?= (int) $sp_r['von'] ?>" min="0" max="23">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_BIS'); ?></label>
+      <input data-role="none" type="number" name="r_bis[<?= $sp_i ?>]" value="<?= (int) $sp_r['bis'] ?>" min="0" max="23">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_HORIZONT'); ?></label>
+      <input data-role="none" type="number" name="r_horizont[<?= $sp_i ?>]" value="<?= (int) $sp_r['horizont'] ?>" min="1" max="48">
+    </div>
+  </div>
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="r_neg[<?= $sp_i ?>]" value="1" <?= !empty($sp_r['neg']) ? 'checked' : '' ?>>
+    <?php echo spot_t('REGEL.L_NEG'); ?>
+  </label>
+  <div class="sm-small"><?= sprintf(spot_t('REGEL.H_AUSGANG'), $sp_i + 1, $sp_i + 1, $sp_i + 1, $sp_i + 1) ?></div>
+</div>
+<?php } ?>
+<div class="sm-feld">
+  <label for="profil_ein"><?php echo spot_t('REGEL.L_PROFIL'); ?></label>
+  <select data-role="none" id="profil_ein" name="profil_ein">
+<?php foreach (array('aus', 'absolut', 'relativ', 'beides') as $sp_pv) { ?>
+    <option value="<?= $sp_pv ?>"<?= (string) $sp_cfg['profil_ein'] === $sp_pv ? ' selected' : '' ?>><?= sp_e(spot_t('REGEL.PROFIL_' . strtoupper($sp_pv))) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-small"><?php echo spot_t('REGEL.H_PROFIL'); ?></div>
+</div>
+
+<h2><?php echo spot_t('TEXT.ANSAGE_UND_PUSH_JE_STUNDE'); ?></h2>
 <div style="margin-bottom:6px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($sp_notify['audio']) ? 'checked' : '' ?>> Audioausgabe aktiv
+        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($sp_notify['audio']) ? 'checked' : '' ?><?php echo spot_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($sp_notify['push']) ? 'checked' : '' ?>> Push-Nachricht aktiv
+        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($sp_notify['push']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
     </label>
-    <div class="sp-small">Beides an = Ansage + Push. Nur eines an = nur diese Ausgabe. Beides aus = keine Meldung.
-    Die Ansage spricht das Plugin selbst; den Push verschickt der Miniserver &uuml;ber <span class="sp-mono">ANN=1</span> (Anleitung Schritt 4).</div>
+    <div class="sm-small"><?php echo spot_t('TEXT.BEIDES_AN_ANSAGE_PUSH_NUR_EINES_AN'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.ANN_1'); ?></span> <?php echo spot_t('TEXT.ANLEITUNG_SCHRITT_4'); ?></div>
 </div>
-<div class="sp-small"><b>Stunden ausw&auml;hlen</b>, zu denen die Preisansage kommen soll (jeweils zur vollen Stunde):</div>
-<div class="sp-hours">
+<div class="sm-small"><b><?php echo spot_t('TEXT.STUNDEN_AUSWHLEN'); ?></b><?php echo spot_t('TEXT.ZU_DENEN_DIE_PREISANSAGE_KOMMEN_SO'); ?></div>
+<div class="sm-hours">
 <?php for ($sp_h = 0; $sp_h < 24; $sp_h++) { ?>
     <label><input data-role="none" type="checkbox" name="hours[]" value="<?= $sp_h ?>" <?= in_array($sp_h, $sp_hoursel, true) ? 'checked' : '' ?>> <?= sprintf('%02d', $sp_h) ?> Uhr</label>
 <?php } ?>
 </div>
 <div style="margin-top:6px;">
-    <button data-role="none" type="button" class="sp-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(1)">Alle</button>
-    <button data-role="none" type="button" class="sp-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(0)">Keine</button>
-    <button data-role="none" type="button" class="sp-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(2)">Nur tags&uuml;ber (7&ndash;21)</button>
+    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(1)"><?php echo spot_t('TEXT.ALLE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(0)"><?php echo spot_t('TEXT.KEINE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(2)"><?php echo spot_t('TEXT.NUR_TAGSBER_721'); ?></button>
 </div>
 <div style="margin-top:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="only_cheap" <?= !empty($sp_notify['only_cheap']) ? 'checked' : '' ?>> Nur melden, wenn der Preis unter der &bdquo;g&uuml;nstig&ldquo;-Schwelle liegt
+        <input data-role="none" type="checkbox" name="only_cheap" <?= !empty($sp_notify['only_cheap']) ? 'checked' : '' ?><?php echo spot_t('TEXT.NUR_MELDEN_WENN_DER_PREIS_UNTER_DE'); ?>
     </label><br>
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="neg_always" <?= !empty($sp_notify['negative']) ? 'checked' : '' ?>> Bei negativem B&ouml;rsenpreis IMMER melden (auch in nicht gew&auml;hlten Stunden)
+        <input data-role="none" type="checkbox" name="neg_always" <?= !empty($sp_notify['negative']) ? 'checked' : '' ?><?php echo spot_t('TEXT.BEI_NEGATIVEM_BRSENPREIS_IMMER_MEL'); ?>
     </label><br>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_tomorrow" <?= !empty($sp_notify['tomorrow']) ? 'checked' : '' ?>> Einmal t&auml;glich melden, sobald die Preise f&uuml;r morgen ver&ouml;ffentlicht sind (ca. 14 Uhr)
+        <input data-role="none" type="checkbox" name="notify_tomorrow" <?= !empty($sp_notify['tomorrow']) ? 'checked' : '' ?><?php echo spot_t('TEXT.EINMAL_TGLICH_MELDEN_SOBALD_DIE_PR'); ?>
     </label>
 </div>
 
-<h2>Sprachausgabe</h2>
-<div class="sp-row">
+<h2><?php echo spot_t('TEXT.SPRACHAUSGABE'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Audio-Ausgabe</label>
+        <label><?php echo spot_t('TEXT.AUDIO_AUSGABE'); ?></label>
         <select data-role="none" name="tts_mode" id="tts_mode" onchange="spTtsMode()">
-            <option value="musicserver"<?= $sp_tts['mode'] === 'musicserver' ? ' selected' : '' ?>>Loxone Music Server (klassisch)</option>
-            <option value="ms4h"<?= $sp_tts['mode'] === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
-            <option value="audioserver"<?= $sp_tts['mode'] === 'audioserver' ? ' selected' : '' ?>>Original Loxone Audioserver (via Loxone Config)</option>
-            <option value="custom"<?= $sp_tts['mode'] === 'custom' ? ' selected' : '' ?>>Eigene URL-Vorlage</option>
+            <option value="musicserver"<?= $sp_tts['mode'] === 'musicserver' ? ' selected' : '' ?><?php echo spot_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
+            <option value="ms4h"<?= $sp_tts['mode'] === 'ms4h' ? ' selected' : '' ?><?php echo spot_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
+            <option value="audioserver"<?= $sp_tts['mode'] === 'audioserver' ? ' selected' : '' ?><?php echo spot_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
+            <option value="custom"<?= $sp_tts['mode'] === 'custom' ? ' selected' : '' ?><?php echo spot_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
         </select>
     </div>
     <div>
-        <label>IP des Audio-Servers</label>
+        <label><?php echo spot_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
         <input data-role="none" type="text" name="tts_ip" value="<?= sp_e($sp_tts['ip']) ?>" placeholder="z. B. 192.168.1.50">
     </div>
     <div>
-        <label>Port</label>
+        <label><?php echo spot_t('TEXT.PORT'); ?></label>
         <input data-role="none" type="number" name="tts_port" value="<?= (int) $sp_tts['port'] ?>" min="1" max="65535">
     </div>
 </div>
-<div class="sp-row">
+<div class="sm-row">
     <div>
-        <label>Zonen</label>
+        <label><?php echo spot_t('TEXT.ZONEN'); ?></label>
         <input data-role="none" type="text" name="tts_zones" value="<?= sp_e($sp_tts['zones']) ?>" placeholder="z. B. 2,4,6">
-        <div class="sp-small">Zonennummern mit Komma (z.&nbsp;B. <span class="sp-mono">2,4,6</span>) &mdash; die Lautst&auml;rke kommt aus dem Feld daneben. Optional je Zone eigene Lautst&auml;rke: <span class="sp-mono">Zone~Lautst&auml;rke</span> (z.&nbsp;B. <span class="sp-mono">2~25,4~40</span>). Leerzeichen nach dem Komma sind erlaubt &mdash; <span class="sp-mono">2,4,6</span> und <span class="sp-mono">2, 4, 6</span> funktionieren beide.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.ZONENNUMMERN_MIT_KOMMA_Z_B'); ?> <span class="sm-mono">2,4,6</span><?php echo spot_t('TEXT.DIE_LAUTSTRKE_KOMMT_AUS_DEM_FELD_D'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.ZONE_LAUTSTRKE'); ?></span> <?php echo spot_t('TEXT.Z_B'); ?> <span class="sm-mono">2~25,4~40</span><?php echo spot_t('TEXT.LEERZEICHEN_NACH_DEM_KOMMA_SIND_ER'); ?> <span class="sm-mono">2,4,6</span> und <span class="sm-mono">2, 4, 6</span> <?php echo spot_t('TEXT.FUNKTIONIEREN_BEIDE'); ?></div>
     </div>
     <div>
-        <label>Lautst&auml;rke (%)</label>
+        <label><?php echo spot_t('TEXT.LAUTSTRKE'); ?></label>
         <input data-role="none" type="number" name="tts_volume" value="<?= (int) $sp_tts['volume'] ?>" min="1" max="100">
     </div>
     <div>
-        <label>Sprache</label>
+        <label><?php echo spot_t('TEXT.SPRACHE'); ?></label>
         <input data-role="none" type="text" name="tts_lang" value="<?= sp_e($sp_tts['lang']) ?>" maxlength="2">
     </div>
 </div>
 <div id="tts_template_row">
-    <label>URL-Vorlage (f&uuml;r Audioserver4Home/MS4H bzw. eigene Ausgabe)</label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= sp_e($sp_tts['template']) ?></textarea>
-    <div class="sp-small">Platzhalter: <span class="sp-mono">{ip} {port} {zones} {vol} {lang} {text}</span>. Leer = Standard-Vorlage.</div>
+    <label><?php echo spot_t('TEXT.URL_VORLAGE_FR_AUDIOSERVER4HOME_MS'); ?></label>
+    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="<?php echo spot_t('TEXT.HTTP'); ?>{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= sp_e($sp_tts['template']) ?></textarea>
+    <div class="sm-small"><?php echo spot_t('TEXT.PLATZHALTER'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.IP_PORT_ZONES_VOL_LANG_TEXT'); ?></span><?php echo spot_t('TEXT.LEER_STANDARD_VORLAGE'); ?></div>
 </div>
-<div id="tts_audioserver_hint" class="sp-alert sp-info" style="display:none;">
-    Der originale Loxone Audioserver bietet <b>keine HTTP-TTS-Schnittstelle</b>. In diesem Modus spricht das Plugin NICHT selbst;
-    die Sprachausgabe baut man in Loxone Config: Textgenerator &rarr; TTS-Eingang des Audioplayers, ausgel&ouml;st &uuml;ber
-    <span class="sp-mono">ANN=1</span> (Anleitung Schritt 4).
+<div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
+    <?php echo spot_t('TEXT.DER_ORIGINALE_LOXONE_AUDIOSERVER_B'); ?> <b><?php echo spot_t('TEXT.KEINE_HTTP_TTS_SCHNITTSTELLE'); ?></b><?php echo spot_t('TEXT.IN_DIESEM_MODUS_SPRICHT_DAS_PLUGIN'); ?>
+    <span class="sm-mono">ANN=1</span> (Anleitung Schritt 4).
 </div>
 
-<h2>MQTT (optional)</h2>
+<h2><?php echo spot_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?>> Preise per MQTT ver&ouml;ffentlichen
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
-<div class="sp-row" style="margin-top:6px;">
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Topic-Pr&auml;fix</label>
+        <label><?php echo spot_t('TEXT.TOPIC_PRFIX'); ?></label>
         <input data-role="none" type="text" name="mqtt_topic" value="<?= sp_e($sp_cfg['mqtt_topic']) ?>" placeholder="spot_awattar">
-        <div class="sp-small">Nutzt das <b>LoxBerry MQTT Gateway</b>. Ver&ouml;ffentlicht bei &Auml;nderung und mindestens halbst&uuml;ndlich
-        &mdash; ab Version 1.0.3 <b>alles, was auch der HTTP-Endpunkt liefert</b>, sodass die Loxone-Konfiguration ganz auf MQTT laufen kann:<br>
-        <b>Preise:</b> <span class="sp-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/cur</span>, <span class="sp-mono">/cur_boerse</span>,
-        <span class="sp-mono">/next</span>, <span class="sp-mono">/rank</span>, <span class="sp-mono">/rankd</span>,
-        <span class="sp-mono">/level</span>, <span class="sp-mono">/neg</span>, <span class="sp-mono">/ok</span><br>
-        <b>Heute und morgen:</b> <span class="sp-mono">/avg_heute</span>, <span class="sp-mono">/min_heute</span>,
-        <span class="sp-mono">/minh_heute</span>, <span class="sp-mono">/max_heute</span>, <span class="sp-mono">/maxh_heute</span>,
-        dieselben mit <span class="sp-mono">_morgen</span>, dazu <span class="sp-mono">/morgen_ok</span><br>
-        <b>G&uuml;nstigstes Fenster:</b> <span class="sp-mono">/fenster_start</span>, <span class="sp-mono">/fenster_in</span>, <span class="sp-mono">/fenster_ct</span><br>
-        <b>CO<sub>2</sub>:</b> <span class="sp-mono">/co2</span>, <span class="sp-mono">/co2_min</span>,
-        <span class="sp-mono">/co2_minh</span>, <span class="sp-mono">/co2_clean</span><br>
-        <b>Meldesteuerung:</b> <span class="sp-mono">/ann</span>, <span class="sp-mono">/audio</span>,
-        <span class="sp-mono">/push</span>, <span class="sp-mono">/ptest</span><br>
-        <b>Kostenvergleich:</b> <span class="sp-mono">/fix</span>, <span class="sp-mono">/dyn_monat</span>,
-        <span class="sp-mono">/diff_monat</span>, <span class="sp-mono">/euro_monat</span>,
-        <span class="sp-mono">/shift_jahr</span>, <span class="sp-mono">/wp_cur</span>, <span class="sp-mono">/wp_next</span><br>
-        Das Meldefenster <span class="sp-mono">/ann</span> wird sofort ver&ouml;ffentlicht, wenn es umspringt &mdash;
-        es gilt nur die ersten zehn Minuten einer aktivierten Stunde und d&uuml;rfte sonst zu sp&auml;t kommen.</div>
+        <div class="sm-small"><?php echo spot_t('TEXT.NUTZT_DAS'); ?> <b><?php echo spot_t('TEXT.LOXBERRY_MQTT_GATEWAY'); ?></b><?php echo spot_t('TEXT.VERFFENTLICHT_BEI_AUML_NDERUNG_UND'); ?> <b><?php echo spot_t('TEXT.ALLES_WAS_AUCH_DER_HTTP_ENDPUNKT_L'); ?></b><?php echo spot_t('TEXT.SODASS_DIE_LOXONE_KONFIGURATION_GA'); ?><br>
+        <b><?php echo spot_t('TEXT.PREISE'); ?></b> <span class="sm-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?><?php echo spot_t('TEXT.CUR'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.CUR_BOERSE'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.NEXT'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.RANK_2'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.RANKD'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.LEVEL'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.NEG'); ?></span>, <span class="sm-mono">/ok</span><br>
+        <b><?php echo spot_t('TEXT.HEUTE_UND_MORGEN'); ?></b> <span class="sm-mono"><?php echo spot_t('TEXT.AVG_HEUTE'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.MIN_HEUTE'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.MINH_HEUTE'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.MAX_HEUTE'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.MAXH_HEUTE'); ?></span><?php echo spot_t('TEXT.DIESELBEN_MIT'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.MORGEN'); ?></span><?php echo spot_t('TEXT.DAZU'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.MORGEN_OK'); ?></span><br>
+        <b><?php echo spot_t('TEXT.GNSTIGSTES_FENSTER'); ?></b> <span class="sm-mono"><?php echo spot_t('TEXT.FENSTER_START'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.FENSTER_IN'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.FENSTER_CT'); ?></span><br>
+        <b>CO<sub>2</sub>:</b> <span class="sm-mono">/co2</span>, <span class="sm-mono"><?php echo spot_t('TEXT.CO2_MIN'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.CO2_MINH'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.CO2_CLEAN'); ?></span><br>
+        <b><?php echo spot_t('TEXT.MELDESTEUERUNG'); ?></b> <span class="sm-mono"><?php echo spot_t('TEXT.ANN'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.AUDIO'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.PUSH'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.PTEST'); ?></span><br>
+        <b><?php echo spot_t('TEXT.KOSTENVERGLEICH'); ?></b> <span class="sm-mono"><?php echo spot_t('TEXT.FIX'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.DYN_MONAT'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.DIFF_MONAT'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.EURO_MONAT'); ?></span>,
+        <span class="sm-mono"><?php echo spot_t('TEXT.SHIFT_JAHR'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.WP_CUR'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.WP_NEXT'); ?></span><br>
+        <?php echo spot_t('TEXT.DAS_MELDEFENSTER'); ?> <span class="sm-mono">/ann</span> <?php echo spot_t('TEXT.WIRD_SOFORT_VERFFENTLICHT_WENN_ES_'); ?></div>
     </div>
 </div>
 
-<button data-role="none" class="sp-btn" type="submit">Speichern</button>
+<button data-role="none" class="sm-btn" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
-<form method="post" style="margin-top:8px;">
+<form action="index.php" method="post" style="margin-top:8px;">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sp-btn" type="submit" style="background:#607d8b;margin-top:0;">Jetzt abrufen</button>
+    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sp-pane" id="tab-loxone">
-<h2>Einbindung in Loxone &mdash; Schritt f&uuml;r Schritt</h2>
-<p>Der Miniserver fragt das Plugin alle 5 Minuten ab und bekommt fertig berechnete <b>Endpreise</b>
-(inkl. Netzentgelte, Abgaben und Umsatzsteuer) &mdash; dazu G&uuml;nstigst-/Teuerst-Stunden f&uuml;r heute und morgen,
-den Rang der aktuellen Stunde, ein Preisniveau und das g&uuml;nstigste zusammenh&auml;ngende Zeitfenster.
-Die <b>Ansage</b> spricht das Plugin selbst; den <b>Push</b> verschickt der Miniserver.</p>
+<div class="sm-pane" id="tab-loxone">
+<h2><?php echo spot_t('EM.H_TITEL'); ?></h2>
+<div class="sm-hinweis"><?php echo spot_t('EM.EINLEITUNG'); ?></div>
 
-<div class="sp-step"><b>Schritt 1: Virtueller HTTP-Eingang &bdquo;Spotpreis&ldquo;</b> (Abfrage alle 300 s)
-<table class="sp-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>URL</td><td><span class="sp-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?>/spot.php</span></td></tr>
-<tr><td>Abfragezyklus</td><td>300 Sekunden</td></tr>
+<div class="sm-step"><b><?php echo spot_t('EM.H_SPOTOPT'); ?></b><br>
+<?php echo spot_t('EM.SPOTOPT_TEXT'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('EM.T_VONHIER'); ?></th><th><?php echo spot_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo spot_t('EM.T_BEDEUTUNG'); ?></th></tr>
+<tr><td><span class="sm-mono">PH00 &hellip; PH23</span></td><td><span class="sm-mono">00:00 &hellip; 23:00</span></td><td><?php echo spot_t('EM.Z_ABSOLUT'); ?></td></tr>
+<tr><td><span class="sm-mono">PR00 &hellip; PR23</span></td><td><span class="sm-mono">+0 &hellip; +23</span></td><td><?php echo spot_t('EM.Z_RELATIV'); ?></td></tr>
+<tr><td><span class="sm-mono">&ndash;</span></td><td><span class="sm-mono">Tr</span></td><td><?php echo spot_t('EM.Z_TRIGGER'); ?></td></tr>
+<tr><td><span class="sm-mono">&ndash;</span></td><td><span class="sm-mono">O</span></td><td><?php echo spot_t('EM.Z_O'); ?></td></tr>
+</table>
+<div class="sm-warnung"><?php echo spot_t('EM.SPOTOPT_WARNUNG'); ?></div>
+</div>
+
+<div class="sm-step"><b><?php echo spot_t('EM.H_EM'); ?></b><br>
+<?php echo spot_t('EM.EM_TEXT'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('EM.T_VONHIER'); ?></th><th><?php echo spot_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo spot_t('EM.T_BEDEUTUNG'); ?></th></tr>
+<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">Prio</span></td><td><?php echo spot_t('EM.Z_PRIO'); ?></td></tr>
+<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">O</span></td><td><?php echo spot_t('EM.Z_OFFSET'); ?></td></tr>
+<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">MinSoc</span></td><td><?php echo spot_t('EM.Z_MINSOC'); ?></td></tr>
+<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">Off</span></td><td><?php echo spot_t('EM.Z_OFF'); ?></td></tr>
+</table>
+<div class="sm-hinweis"><?php echo spot_t('EM.EM_HINWEIS'); ?></div>
+</div>
+
+<h2><?php echo spot_t('REGEL.H_VORLAGE'); ?></h2>
+<div class="sm-hinweis"><?php echo spot_t('REGEL.H_VORLAGE_TEXT'); ?></div>
+<form action="index.php" method="post" style="margin-bottom:14px;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="1">
+  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo spot_t('REGEL.K_VORLAGE'); ?></button>
+</form>
+
+<h2><?php echo spot_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
+<p><?php echo spot_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_AL'); ?> <b><?php echo spot_t('TEXT.ENDPREISE'); ?></b>
+<?php echo spot_t('TEXT.INKL_NETZENTGELTE_ABGABEN_UND_UMSA'); ?> <b><?php echo spot_t('TEXT.ANSAGE'); ?></b> <?php echo spot_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_DEN'); ?> <b><?php echo spot_t('TEXT.PUSH_2'); ?></b> <?php echo spot_t('TEXT.VERSCHICKT_DER_MINISERVER'); ?></p>
+
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_1_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo spot_t('TEXT.ABFRAGE_ALLE_300_S'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('TEXT.EIGENSCHAFT'); ?></th><th><?php echo spot_t('TEXT.WERT'); ?></th></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= $sp_host ?><?php echo spot_t('TEXT.PLUGINS'); ?><?= sp_e($sp_plugin) ?><?php echo spot_t('TEXT.SPOT_PHP'); ?></span></td></tr>
+<tr><td><?php echo spot_t('TEXT.ABFRAGEZYKLUS'); ?></td><td><?php echo spot_t('TEXT.300_SEKUNDEN'); ?></td></tr>
 </table>
 </div>
 
-<div class="sp-step"><b>Schritt 2: Befehlserkennungen</b> (je ein &bdquo;Virtueller HTTP-Eingang Befehl&ldquo;;
-<span class="sp-mono">\i...\i</span> = Suchtext, <span class="sp-mono">\v</span> = Zahl dahinter)
-<table class="sp-tbl">
-<tr><th>Befehlserkennung</th><th>Bedeutung</th><th>Einheit</th></tr>
-<tr><td><span class="sp-mono">\iCUR=\i\v</span></td><td>Endpreis der AKTUELLEN Stunde</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iNEXT=\i\v</span></td><td>Endpreis der n&auml;chsten Stunde</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iCURB=\i\v</span></td><td>reiner B&ouml;rsenanteil der aktuellen Stunde</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iNEG=\i\v</span></td><td>1 = B&ouml;rsenpreis negativ</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iRANK=\i\v</span></td><td>Rang der aktuellen Stunde in den n&auml;chsten 24 h (1 = g&uuml;nstigste)</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iRANKD=\i\v</span></td><td>Rang absteigend (1 = teuerste)</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iLEVEL=\i\v</span></td><td>1 = g&uuml;nstig, 2 = normal, 3 = teuer (Schwellen aus den Einstellungen)</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iHMINP=\i\v</span> / <span class="sp-mono">\iHMINH=\i\v</span></td><td>g&uuml;nstigster Preis HEUTE / dessen Stunde</td><td>ct/kWh, 0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iHMAXP=\i\v</span> / <span class="sp-mono">\iHMAXH=\i\v</span></td><td>teuerster Preis heute / dessen Stunde</td><td>ct/kWh, 0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iHAVG=\i\v</span></td><td>Tagesdurchschnitt heute</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iMINP=\i\v</span> / <span class="sp-mono">\iMINH=\i\v</span></td><td>g&uuml;nstigster Preis MORGEN / dessen Stunde</td><td>ct/kWh, 0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iMAXP=\i\v</span> / <span class="sp-mono">\iMAXH=\i\v</span></td><td>teuerster Preis morgen / dessen Stunde</td><td>ct/kWh, 0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iAVG=\i\v</span> / <span class="sp-mono">\iOK=\i\v</span></td><td>Durchschnitt morgen / 1 = Preise f&uuml;r morgen liegen vor</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iWINH=\i\v</span></td><td>Startstunde des g&uuml;nstigsten X-Stunden-Fensters</td><td>0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iWININ=\i\v</span></td><td>beginnt in ... Stunden (0 = l&auml;uft gerade)</td><td>h</td></tr>
-<tr><td><span class="sp-mono">\iWINCT=\i\v</span></td><td>Durchschnittspreis in diesem Fenster</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iANN=\i\v</span></td><td>1 = Meldefenster (erste 10 min einer aktivierten Stunde) &mdash; Ausl&ouml;ser f&uuml;r den Push</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iPUSH=\i\v</span> / <span class="sp-mono">\iAUDIO=\i\v</span></td><td>Freigaben aus der Plugin-Konfiguration</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iPTEST=\i\v</span></td><td>1 = Test-Pushnachricht angefordert (Reiter Test, 5 min aktiv)</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iCO2=\i\v</span></td><td>CO&#8322;-Intensit&auml;t des Strommixes JETZT</td><td>g/kWh</td></tr>
-<tr><td><span class="sp-mono">\iCO2MIN=\i\v</span> / <span class="sp-mono">\iCO2MINH=\i\v</span></td><td>sauberste Stunde der n&auml;chsten 24 h / deren Uhrzeit</td><td>g/kWh, 0&ndash;23</td></tr>
-<tr><td><span class="sp-mono">\iCO2CLEAN=\i\v</span></td><td>1 = unter der Sauber-Schwelle (&bdquo;&Ouml;kostrom-Zeit&ldquo;)</td><td>&mdash;</td></tr>
-<tr><td><span class="sp-mono">\iWPCUR=\i\v</span> / <span class="sp-mono">\iWPNEXT=\i\v</span></td><td>Preis nach &sect;&nbsp;14a (W&auml;rmepumpe/Wallbox) jetzt / n&auml;chste Stunde</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iFIX=\i\v</span> / <span class="sp-mono">\iDYNM=\i\v</span></td><td>eigener Festpreis / dynamischer Monatsschnitt (gewichtet)</td><td>ct/kWh</td></tr>
-<tr><td><span class="sp-mono">\iDIFFM=\i\v</span> / <span class="sp-mono">\iEUROM=\i\v</span></td><td>Vorteil dynamisch (positiv) bzw. fest (negativ) im laufenden Monat</td><td>ct/kWh, EUR</td></tr>
-<tr><td><span class="sp-mono">\iSHIFTJ=\i\v</span></td><td>Ersparnis-Potenzial pro Jahr durch verschobenen Verbrauch</td><td>EUR</td></tr>
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_2_BEFEHLSERKENNUNGEN'); ?></b> <?php echo spot_t('TEXT.JE_EIN_VIRTUELLER_HTTP_EINGANG_BEF'); ?>
+<span class="sm-mono">\i...\i</span> <?php echo spot_t('TEXT.SUCHTEXT'); ?> <span class="sm-mono">\v</span> <?php echo spot_t('TEXT.ZAHL_DAHINTER'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('TEXT.BEFEHLSERKENNUNG'); ?></th><th><?php echo spot_t('TEXT.BEDEUTUNG'); ?></th><th>Einheit</th></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICUR_I_V'); ?></span></td><td><?php echo spot_t('TEXT.ENDPREIS_DER_AKTUELLEN_STUNDE'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.INEXT_I_V'); ?></span></td><td><?php echo spot_t('TEXT.ENDPREIS_DER_NCHSTEN_STUNDE'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICURB_I_V'); ?></span></td><td><?php echo spot_t('TEXT.REINER_BRSENANTEIL_DER_AKTUELLEN_S'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.INEG_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_BRSENPREIS_NEGATIV'); ?></td><td><?php echo spot_t('TEXT.TEXT_4'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IRANK_I_V'); ?></span></td><td><?php echo spot_t('TEXT.RANG_DER_AKTUELLEN_STUNDE_IN_DEN_N'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IRANKD_I_V'); ?></span></td><td><?php echo spot_t('TEXT.RANG_ABSTEIGEND_1_TEUERSTE'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ILEVEL_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_GNSTIG_2_NORMAL_3_TEUER_SCHWELLE'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IHMINP_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IHMINH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.GNSTIGSTER_PREIS_HEUTE_DESSEN_STUN'); ?></td><td><?php echo spot_t('TEXT.CT_KWH_023'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IHMAXP_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IHMAXH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.TEUERSTER_PREIS_HEUTE_DESSEN_STUND'); ?></td><td>ct/kWh, <?php echo spot_t('TEXT.023'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IHAVG_I_V'); ?></span></td><td><?php echo spot_t('TEXT.TAGESDURCHSCHNITT_HEUTE'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IMINP_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IMINH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.GNSTIGSTER_PREIS_MORGEN_DESSEN_STU'); ?></td><td>ct/kWh, 0&ndash;23</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IMAXP_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IMAXH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.TEUERSTER_PREIS_MORGEN_DESSEN_STUN'); ?></td><td>ct/kWh, 0&ndash;23</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IAVG_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IOK_I_V'); ?></span></td><td><?php echo spot_t('TEXT.DURCHSCHNITT_MORGEN_1_PREISE_FR_MO'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IWINH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.STARTSTUNDE_DES_GNSTIGSTEN_X_STUND'); ?></td><td>0&ndash;23</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IWININ_I_V'); ?></span></td><td><?php echo spot_t('TEXT.BEGINNT_IN_STUNDEN_0_LUFT_GERADE'); ?></td><td>h</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IWINCT_I_V'); ?></span></td><td><?php echo spot_t('TEXT.DURCHSCHNITTSPREIS_IN_DIESEM_FENST'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IANN_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_MELDEFENSTER_ERSTE_10_MIN_EINER_'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IPUSH_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IAUDIO_I_V'); ?></span></td><td><?php echo spot_t('TEXT.FREIGABEN_AUS_DER_PLUGIN_KONFIGURA'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IPTEST_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_TEST_PUSHNACHRICHT_ANGEFORDERT_R'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2_I_V'); ?></span></td><td><?php echo spot_t('TEXT.CO_8322_INTENSITT_DES_STROMMIXES_J'); ?></td><td>g/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2MIN_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.ICO2MINH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.SAUBERSTE_STUNDE_DER_NCHSTEN_24_H_'); ?></td><td><?php echo spot_t('TEXT.G_KWH_023'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2CLEAN_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_UNTER_DER_SAUBER_SCHWELLE_OUML_K'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IWPCUR_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IWPNEXT_I_V'); ?></span></td><td><?php echo spot_t('TEXT.PREIS_NACH_14A_WRMEPUMPE_WALLBOX_J'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IFIX_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IDYNM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.EIGENER_FESTPREIS_DYNAMISCHER_MONA'); ?></td><td>ct/kWh</td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IDIFFM_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IEUROM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.VORTEIL_DYNAMISCH_POSITIV_BZW_FEST'); ?></td><td><?php echo spot_t('TEXT.CT_KWH_EUR'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ISHIFTJ_I_V'); ?></span></td><td><?php echo spot_t('TEXT.ERSPARNIS_POTENZIAL_PRO_JAHR_DURCH'); ?></td><td>EUR</td></tr>
 </table>
-<span class="sp-small">Alle Preise sind <b>ct/kWh als Endpreis</b>. Wer die alten EUR-Werte gewohnt ist:
-Einheit in der Kachel auf <span class="sp-mono">&lt;v.1&gt; ct</span> stellen.</span>
+<span class="sm-small"><?php echo spot_t('TEXT.ALLE_PREISE_SIND'); ?> <b><?php echo spot_t('TEXT.CT_KWH_ALS_ENDPREIS'); ?></b><?php echo spot_t('TEXT.WER_DIE_ALTEN_EUR_WERTE_GEWOHNT_IS'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span> <?php echo spot_t('TEXT.STELLEN'); ?></span>
 </div>
 
-<div class="sp-step"><b>Schritt 3: Kacheln f&uuml;r die App</b><br>
-CUR, NEXT, HAVG, MINP/MAXP als Analogeing&auml;nge mit Einheit <span class="sp-mono">&lt;v.1&gt; ct</span>;
-MINH/MAXH/WINH mit <span class="sp-mono">&lt;v.0&gt; Uhr</span>; RANK ohne Einheit. Visualisierung freigeben,
-Raum/Kategorie zuordnen. Sch&ouml;n: einen Statusbaustein bauen, der aus LEVEL die Texte
-&bdquo;Strom ist gerade g&uuml;nstig / normal / teuer&ldquo; anzeigt.
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_3_KACHELN_FR_DIE_APP'); ?></b><br>
+<?php echo spot_t('TEXT.CUR_NEXT_HAVG_MINP_MAXP_ALS_ANALOG'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span><?php echo spot_t('TEXT.MINH_MAXH_WINH_MIT'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.V_0_UHR'); ?></span><?php echo spot_t('TEXT.RANK_OHNE_EINHEIT_VISUALISIERUNG_F'); ?>
 </div>
 
-<div class="sp-step"><b>Schritt 4: Komplette Baustein-Liste zum 1:1-Nachbauen</b><br>
-<b>4a) Stundenansage-Push</b> (die Ansage selbst spricht das Plugin)
-<table class="sp-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S1</td><td>Meldefenster aktiv</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; ANN</td></tr>
-<tr><td>Schwellwertschalter S2</td><td>Push freigegeben</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; PUSH</td></tr>
-<tr><td>UND U1</td><td>Preis-Push jetzt</td><td></td><td>S1 &amp; S2</td></tr>
-<tr><td>ODER O1</td><td>Push-Sammler</td><td>einzige Quelle des Benachrichtigungs-Bausteins!</td><td>U1</td></tr>
-<tr><td>Benachrichtigungs-Baustein</td><td>Push &bdquo;Aktueller Strompreis&ldquo;</td><td>Text z. B. &bdquo;Strompreis jetzt &lt;v1.1&gt; ct/kWh&ldquo; (Statusbaustein davor h&auml;ngen, um CUR einzublenden)</td><td>&larr; O1</td></tr>
-<tr><td>Benachrichtigungs-Baustein 2</td><td>Test-Push</td><td>eigener Baustein NUR f&uuml;r den Test</td><td>&larr; Schwellwertschalter an PTEST (Ein 0,5/Aus 0,4)</td></tr>
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
+<b><?php echo spot_t('TEXT.4A_STUNDENANSAGE_PUSH'); ?></b> <?php echo spot_t('TEXT.DIE_ANSAGE_SELBST_SPRICHT_DAS_PLUG'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('TEXT.BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.NAME'); ?></th><th><?php echo spot_t('TEXT.EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.EINGNGE'); ?></th></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S1'); ?></td><td><?php echo spot_t('TEXT.MELDEFENSTER_AKTIV'); ?></td><td><?php echo spot_t('TEXT.EIN_0_5_AUS_0_4'); ?></td><td><?php echo spot_t('TEXT.ANN_2'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S2'); ?></td><td><?php echo spot_t('TEXT.PUSH_FREIGEGEBEN'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo spot_t('TEXT.PUSH_3'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.UND_U1'); ?></td><td><?php echo spot_t('TEXT.PREIS_PUSH_JETZT'); ?></td><td></td><td><?php echo spot_t('TEXT.S1_S2'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.ODER_O1'); ?></td><td><?php echo spot_t('TEXT.PUSH_SAMMLER'); ?></td><td><?php echo spot_t('TEXT.EINZIGE_QUELLE_DES_BENACHRICHTIGUN'); ?></td><td>U1</td></tr>
+<tr><td><?php echo spot_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.PUSH_AKTUELLER_STROMPREIS'); ?></td><td><?php echo spot_t('TEXT.TEXT_Z_B_STROMPREIS_JETZT_V1_1_CT_'); ?></td><td><?php echo spot_t('TEXT.O1'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN_2'); ?></td><td><?php echo spot_t('TEXT.TEST_PUSH'); ?></td><td><?php echo spot_t('TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST'); ?></td><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_AN_PTEST_EIN_0'); ?></td></tr>
 </table>
-<b>4b) G&uuml;nstig-/Teuer-Schaltung f&uuml;r gro&szlig;e Verbraucher</b>
-<table class="sp-tbl">
+<b><?php echo spot_t('TEXT.4B_GNSTIG_TEUER_SCHALTUNG_FR_GROE_'); ?></b>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S3</td><td>Strom ist g&uuml;nstig</td><td>invertiert: Ein bei <b>Unterschreiten</b> (Ein 1,5 / Aus 1,6 an LEVEL) oder direkt an CUR mit der eigenen ct-Schwelle</td><td>&larr; LEVEL bzw. CUR</td></tr>
-<tr><td>Schwellwertschalter S4</td><td>Strom ist teuer</td><td>Ein 2,5 / Aus 2,4 an LEVEL</td><td>&larr; LEVEL</td></tr>
-<tr><td>Schwellwertschalter S5</td><td>B&ouml;rsenpreis negativ</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; NEG</td></tr>
-<tr><td>ODER O2</td><td>Freigabe gro&szlig;e Verbraucher</td><td>&rarr; auf Freigabe-Eingang von Wallbox, W&auml;rmepumpe, Boiler, Speicher-Netzladen</td><td>S3 | S5</td></tr>
-<tr><td>UND U2</td><td>Sperre bei Hochpreis</td><td>&rarr; z. B. Heizstab/Boiler sperren</td><td>S4 &amp; (eigene Freigabe)</td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S3'); ?></td><td><?php echo spot_t('TEXT.STROM_IST_GNSTIG'); ?></td><td><?php echo spot_t('TEXT.INVERTIERT_EIN_BEI'); ?> <b><?php echo spot_t('TEXT.UNTERSCHREITEN'); ?></b> <?php echo spot_t('TEXT.EIN_1_5_AUS_1_6_AN_LEVEL_ODER_DIRE'); ?></td><td><?php echo spot_t('TEXT.LEVEL_BZW_CUR'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S4'); ?></td><td><?php echo spot_t('TEXT.STROM_IST_TEUER'); ?></td><td><?php echo spot_t('TEXT.EIN_2_5_AUS_2_4_AN_LEVEL'); ?></td><td><?php echo spot_t('TEXT.LEVEL_2'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S5'); ?></td><td><?php echo spot_t('TEXT.BRSENPREIS_NEGATIV_2'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo spot_t('TEXT.NEG_2'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.ODER_O2'); ?></td><td><?php echo spot_t('TEXT.FREIGABE_GROE_VERBRAUCHER'); ?></td><td><?php echo spot_t('TEXT.AUF_FREIGABE_EINGANG_VON_WALLBOX_W'); ?></td><td>S3 | S5</td></tr>
+<tr><td><?php echo spot_t('TEXT.UND_U2'); ?></td><td><?php echo spot_t('TEXT.SPERRE_BEI_HOCHPREIS'); ?></td><td><?php echo spot_t('TEXT.Z_B_HEIZSTAB_BOILER_SPERREN'); ?></td><td><?php echo spot_t('TEXT.S4_EIGENE_FREIGABE'); ?></td></tr>
 </table>
-<b>4c) G&uuml;nstigstes Fenster nutzen</b> (Waschmaschine, Sp&uuml;lmaschine, E-Auto)
-<table class="sp-tbl">
+<b><?php echo spot_t('TEXT.4C_GNSTIGSTES_FENSTER_NUTZEN'); ?></b> <?php echo spot_t('TEXT.WASCHMASCHINE_SPLMASCHINE_E_AUTO'); ?>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S6</td><td>G&uuml;nstigstes Fenster l&auml;uft</td><td>invertiert: Ein bei Unterschreiten von 0,5 (WININ = 0)</td><td>&larr; WININ</td></tr>
-<tr><td>UND U3</td><td>Start-Freigabe Ger&auml;t</td><td>&rarr; Schaltsteckdose / Ger&auml;te-Startbefehl</td><td>S6 &amp; Taster &bdquo;Start bei g&uuml;nstigem Strom&ldquo;</td></tr>
-<tr><td>Statusbaustein</td><td>Hinweis-Kachel</td><td>Text: &bdquo;G&uuml;nstigstes Fenster ab &lt;v1.0&gt; Uhr (&lt;v2.1&gt; ct)&ldquo;</td><td>I1 &larr; WINH, I2 &larr; WINCT</td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S6'); ?></td><td><?php echo spot_t('TEXT.GNSTIGSTES_FENSTER_LUFT'); ?></td><td><?php echo spot_t('TEXT.INVERTIERT_EIN_BEI_UNTERSCHREITEN_'); ?></td><td><?php echo spot_t('TEXT.WININ'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.UND_U3'); ?></td><td><?php echo spot_t('TEXT.START_FREIGABE_GERT'); ?></td><td><?php echo spot_t('TEXT.SCHALTSTECKDOSE_GERTE_STARTBEFEHL'); ?></td><td><?php echo spot_t('TEXT.S6_TASTER_START_BEI_GNSTIGEM_STROM'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.HINWEIS_KACHEL'); ?></td><td><?php echo spot_t('TEXT.TEXT_GNSTIGSTES_FENSTER_AB_V1_0_UH'); ?></td><td><?php echo spot_t('TEXT.I1_WINH_I2_WINCT'); ?></td></tr>
 </table>
-<b>4d) Ansage &bdquo;Preise f&uuml;r morgen sind da&ldquo; und Tagesplanung</b>
-<table class="sp-tbl">
+<b><?php echo spot_t('TEXT.4D_ANSAGE_PREISE_FR_MORGEN_SIND_DA'); ?></b>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S7</td><td>Preise f&uuml;r morgen vorhanden</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; OK</td></tr>
-<tr><td>Impulsgeber bei Uhrzeit</td><td>Impuls 20:00 Tagesvorschau</td><td>20:00 Uhr</td><td></td></tr>
-<tr><td>UND U4 + Statusbaustein</td><td>Push &bdquo;Morgen g&uuml;nstigste Stunde&ldquo;</td><td>Text: &bdquo;Morgen am g&uuml;nstigsten um &lt;v1.0&gt; Uhr (&lt;v2.1&gt; ct), am teuersten um &lt;v3.0&gt; Uhr&ldquo;</td><td>U4: Impuls &amp; S7; Status: I1&larr;MINH, I2&larr;MINP, I3&larr;MAXH</td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S7'); ?></td><td><?php echo spot_t('TEXT.PREISE_FR_MORGEN_VORHANDEN'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo spot_t('TEXT.OK'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.IMPULSGEBER_BEI_UHRZEIT'); ?></td><td><?php echo spot_t('TEXT.IMPULS_20_00_TAGESVORSCHAU'); ?></td><td><?php echo spot_t('TEXT.20_00_UHR'); ?></td><td></td></tr>
+<tr><td><?php echo spot_t('TEXT.UND_U4_STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.PUSH_MORGEN_GNSTIGSTE_STUNDE'); ?></td><td><?php echo spot_t('TEXT.TEXT_MORGEN_AM_GNSTIGSTEN_UM_V1_0_'); ?></td><td><?php echo spot_t('TEXT.U4_IMPULS_S7_STATUS_I1MINH_I2MINP_'); ?></td></tr>
 </table>
-<b>4e) CO&#8322;-optimiertes Schalten</b> (unabh&auml;ngig vom Preis)
-<table class="sp-tbl">
+<b><?php echo spot_t('TEXT.4E_CO_8322_OPTIMIERTES_SCHALTEN'); ?></b> <?php echo spot_t('TEXT.UNABHNGIG_VOM_PREIS'); ?>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S8</td><td>&Ouml;kostrom-Zeit</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; CO2CLEAN</td></tr>
-<tr><td>ODER O3</td><td>Freigabe &bdquo;sauber ODER g&uuml;nstig&ldquo;</td><td>&rarr; z. B. Warmwasser-Nachheizung, Speicher-Netzladen</td><td>S8 | S3</td></tr>
-<tr><td>Statusbaustein</td><td>Kachel &bdquo;Strommix&ldquo;</td><td>Text: &bdquo;&lt;v1.0&gt; g CO2/kWh &mdash; sauberste Stunde um &lt;v2.0&gt; Uhr&ldquo;</td><td>I1 &larr; CO2, I2 &larr; CO2MINH</td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S8'); ?></td><td><?php echo spot_t('TEXT.OUML_KOSTROM_ZEIT'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo spot_t('TEXT.CO2CLEAN'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.ODER_O3'); ?></td><td><?php echo spot_t('TEXT.FREIGABE_SAUBER_ODER_GNSTIG'); ?></td><td><?php echo spot_t('TEXT.Z_B_WARMWASSER_NACHHEIZUNG_SPEICHE'); ?></td><td>S8 | S3</td></tr>
+<tr><td>Statusbaustein</td><td><?php echo spot_t('TEXT.KACHEL_STROMMIX'); ?></td><td><?php echo spot_t('TEXT.TEXT_V1_0_G_CO2_KWH_SAUBERSTE_STUN'); ?></td><td><?php echo spot_t('TEXT.I1_CO2_I2_CO2MINH'); ?></td></tr>
 </table>
-<b>4f) Tarifvergleich als Monatsbericht</b>
-<table class="sp-tbl">
+<b><?php echo spot_t('TEXT.4F_TARIFVERGLEICH_ALS_MONATSBERICH'); ?></b>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Analogspeicher + Statusbaustein</td><td>Monatsbericht Tarifvergleich</td><td>Text: &bdquo;Dynamisch &lt;v1.1&gt; ct gegen fest &lt;v2.1&gt; ct &mdash; Vorteil &lt;v3.1&gt; ct/kWh&ldquo;; Trigger: Impuls am Monatsersten 8:05</td><td>I1 &larr; DYNM, I2 &larr; FIX, I3 &larr; DIFFM</td></tr>
-<tr><td>Schwellwertschalter S9</td><td>Dynamisch w&auml;re g&uuml;nstiger</td><td>Ein 0,5 / Aus 0,4 an DIFFM</td><td>&rarr; Push &bdquo;Tarifwechsel pr&uuml;fen&ldquo;</td></tr>
+<tr><td><?php echo spot_t('TEXT.ANALOGSPEICHER_STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.MONATSBERICHT_TARIFVERGLEICH'); ?></td><td><?php echo spot_t('TEXT.TEXT_DYNAMISCH_V1_1_CT_GEGEN_FEST_'); ?></td><td><?php echo spot_t('TEXT.I1_DYNM_I2_FIX_I3_DIFFM'); ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S9'); ?></td><td><?php echo spot_t('TEXT.DYNAMISCH_WRE_GNSTIGER'); ?></td><td><?php echo spot_t('TEXT.EIN_0_5_AUS_0_4_AN_DIFFM'); ?></td><td><?php echo spot_t('TEXT.PUSH_TARIFWECHSEL_PRFEN'); ?></td></tr>
 </table>
-<span class="sp-small">Das Plugin sendet denselben Bericht am Monatsersten auch selbst als Ansage (wenn Audio aktiv) und schreibt ihn ins Protokoll.</span>
-<br><br><b>Praxis-Erfahrungen zum Benachrichtigungs-Baustein</b> (erspart lange Fehlersuche):<br>
-&bull; Er sendet NUR bei einer 0&rarr;1-Flanke. NIEMALS mehrere Quellen direkt an den Eingang legen &mdash;
-eine dauerhaft aktive Quelle verschluckt alle weiteren Ausl&ouml;ser. Immer erst im ODER-Baustein sammeln.<br>
-&bull; F&uuml;r den Test (PTEST) einen EIGENEN Benachrichtigungs-Baustein verwenden.<br>
-&bull; Invertierte Schwellwertschalter (Ein-Wert kleiner als Aus-Wert = Ein bei Unterschreiten) funktionieren zuverl&auml;ssig.
+<span class="sm-small"><?php echo spot_t('TEXT.DAS_PLUGIN_SENDET_DENSELBEN_BERICH'); ?></span>
+<br><br><b><?php echo spot_t('TEXT.PRAXIS_ERFAHRUNGEN_ZUM_BENACHRICHT'); ?></b> <?php echo spot_t('TEXT.ERSPART_LANGE_FEHLERSUCHE'); ?><br>
+<?php echo spot_t('TEXT.ER_SENDET_NUR_BEI_EINER_01_FLANKE_'); ?><br>
+<?php echo spot_t('TEXT.FR_DEN_TEST_PTEST_EINEN_EIGENEN_BE'); ?><br>
+<?php echo spot_t('TEXT.INVERTIERTE_SCHWELLWERTSCHALTER_EI'); ?>
 </div>
 
-<div class="sp-step"><b>Schritt 5: MQTT-Alternative + JSON</b><br>
-Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellungen &rarr; MQTT) unter
-<span class="sp-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/...</span> &mdash; und als JSON f&uuml;r Drittsoftware
-(inkl. <b>aller Stundenwerte</b> f&uuml;r eigene Diagramme):
-<span class="sp-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?>/spot.php?json=1</span>
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_5_MQTT_ALTERNATIVE_JSON'); ?></b><br>
+<?php echo spot_t('TEXT.ALLE_WERTE_GIBT_ES_AUCH_BER_DAS_LO'); ?>
+<span class="sm-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/...</span> <?php echo spot_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE_INKL'); ?> <b><?php echo spot_t('TEXT.ALLER_STUNDENWERTE'); ?></b> <?php echo spot_t('TEXT.FR_EIGENE_DIAGRAMME'); ?>
+<span class="sm-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?><?php echo spot_t('TEXT.SPOT_PHP_JSON_1'); ?></span>
 </div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sp-pane" id="tab-test">
+<div class="sm-pane" id="tab-test">
 <h2>Test</h2>
-<div class="sp-legende">
-<span><i class="sp-punkt sp-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
-<span><i class="sp-punkt sp-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
-<span><i class="sp-punkt sp-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+
+<h3 class="sm-h3"><?php echo spot_t('REGEL.H_SELBSTTEST'); ?></h3>
+<p class="sm-small"><?php echo spot_t('REGEL.SELBSTTEST_TEXT'); ?></p>
+<?php
+/* Die Vorlage und die Ausgabe muessen dieselben Feldnamen kennen. Steht in
+ * der Vorlage ein Suchmuster, das die Zeile nicht liefert, bleibt der
+ * virtuelle Eingang in Loxone stumm - ohne Fehlermeldung. Deshalb wird hier
+ * die Zeile wirklich erzeugt und gegen spot_felder() gehalten. */
+$sp_pruef = array();
+if (function_exists('spot_felder') && function_exists('spot_zeile')) {
+    $sp_zeile = spot_zeile(spot_state(), $sp_cfg);
+    foreach (spot_felder() as $sp_fn => $sp_fd) {
+        if (strpos($sp_zeile, ';' . $sp_fn . '=') === false
+            && strpos($sp_zeile, "\n" . $sp_fn . '=') === false) {
+            $sp_pruef[] = $sp_fn;
+        }
+    }
+}
+$sp_xmlok = 1;
+if (function_exists('spot_vorlage')) {
+    $sp_v = spot_vorlage();
+    $sp_alt2 = libxml_use_internal_errors(true);
+    $sp_xmlok = simplexml_load_string($sp_v[1]) !== false ? 1 : 0;
+    libxml_clear_errors();
+    libxml_use_internal_errors($sp_alt2);
+}
+?>
+<div class="sm-alert <?= ($sp_pruef || !$sp_xmlok) ? 'sm-warn' : 'sm-info' ?>">
+<?php if ($sp_pruef) {
+    echo sprintf(spot_t('REGEL.SELBSTTEST_FEHL'), sp_e(implode(', ', $sp_pruef)));
+} elseif (!$sp_xmlok) {
+    echo spot_t('REGEL.SELBSTTEST_XML');
+} else {
+    echo sprintf(spot_t('REGEL.SELBSTTEST_OK'), count(spot_felder()));
+} ?>
 </div>
 
-<h3 class="sp-h3">Ansehen</h3>
-<div class="sp-knopfreihe">
-<a class="sp-btn sp-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php" target="_blank">Loxone-Zeile abrufen</a>
-<a class="sp-btn sp-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?json=1" target="_blank">JSON-Ansicht</a>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
 </div>
 
-<h3 class="sp-h3">Technische Auskunft</h3>
-<div class="sp-knopfreihe">
-<a class="sp-btn sp-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?debug=1" target="_blank">Debug (alle Stundenpreise)</a>
-<a class="sp-btn sp-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
+<h3 class="sm-h3"><?php echo spot_t('TEXT.ANSEHEN'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php" target="_blank"><?php echo spot_t('TEXT.LOXONE_ZEILE_ABRUFEN'); ?></a>
+<a class="sm-btn sm-b-lesen"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?json=1" target="_blank"><?php echo spot_t('TEXT.JSON_ANSICHT'); ?></a>
 </div>
 
-<h3 class="sp-h3">L&ouml;st etwas aus</h3>
-<div class="sp-knopfreihe">
-<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?say=1" target="_blank">Test-Ansage (aktueller Preis)</a>
-<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?saytomorrow=1" target="_blank">Test-Ansage (Preise morgen)</a>
-<a class="sp-btn sp-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?ptest=1" target="_blank">Test-Pushnachricht</a>
+<h3 class="sm-h3"><?php echo spot_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?debug=1" target="_blank"><?php echo spot_t('TEXT.DEBUG_ALLE_STUNDENPREISE'); ?></a>
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?refresh=1&amp;debug=1" target="_blank"><?php echo spot_t('TEXT.NEU_ABRUFEN_DEBUG'); ?></a>
+</div>
+
+<h3 class="sm-h3"><?php echo spot_t('TEXT.LST_ETWAS_AUS'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?say=1" target="_blank"><?php echo spot_t('TEXT.TEST_ANSAGE_AKTUELLER_PREIS'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?saytomorrow=1" target="_blank"><?php echo spot_t('TEXT.TEST_ANSAGE_PREISE_MORGEN'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?ptest=1" target="_blank"><?php echo spot_t('TEXT.TEST_PUSHNACHRICHT_2'); ?></a>
 </div>
 
 
-<div class="sp-small">
-&bull; <b>Loxone-Zeile</b> zeigt genau das, was der Miniserver bekommt.<br>
-&bull; <b>Debug</b> listet alle Stundenpreise heute und morgen &mdash; jeweils Endpreis und B&ouml;rsenanteil.<br>
-&bull; <b>Test-Ansage</b> spricht sofort in den konfigurierten Zonen.<br>
-&bull; <b>Test-Pushnachricht</b> setzt <span class="sp-mono">PTEST=1</span> f&uuml;r 5 Minuten &mdash; der Push kommt &uuml;ber den
-Test-Benachrichtigungsbaustein in Loxone (Schritt 4a) innerhalb des 300-s-Abfragetakts.<br>
-&bull; Die Tabellen unten f&uuml;llen sich mit jedem Tag, den das Plugin l&auml;uft (Tageswerte werden um 23:50 gesichert).
+<div class="sm-small">
+<?php echo spot_t('TEXT.TEXT_5'); ?> <b><?php echo spot_t('TEXT.LOXONE_ZEILE'); ?></b> <?php echo spot_t('TEXT.ZEIGT_GENAU_DAS_WAS_DER_MINISERVER'); ?><br>
+&bull; <b><?php echo spot_t('TEXT.DEBUG'); ?></b> <?php echo spot_t('TEXT.LISTET_ALLE_STUNDENPREISE_HEUTE_UN'); ?><br>
+&bull; <b><?php echo spot_t('TEXT.TEST_ANSAGE'); ?></b> <?php echo spot_t('TEXT.SPRICHT_SOFORT_IN_DEN_KONFIGURIERT'); ?><br>
+&bull; <b><?php echo spot_t('TEXT.TEST_PUSHNACHRICHT'); ?></b> <?php echo spot_t('TEXT.SETZT'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.PTEST_1'); ?></span> <?php echo spot_t('TEXT.FR_5_MINUTEN_DER_PUSH_KOMMT_BER_DE'); ?><br>
+<?php echo spot_t('TEXT.DIE_TABELLEN_UNTEN_FLLEN_SICH_MIT_'); ?>
 </div>
 <?php $sp_mc = function_exists('spot_month_compare') ? spot_month_compare(12) : array(); if ($sp_mc) { ?>
-<h2>Monatsvergleich der Arbeitspreise</h2>
-<div class="sp-small" style="margin-bottom:6px;">Dynamisch = lastprofil-gewichteter Monatsschnitt der Endpreise.
-&bdquo;Vorteil&ldquo; positiv = der dynamische Tarif w&auml;re g&uuml;nstiger gewesen. Die Euro-Spalte rechnet mit
+<h2><?php echo spot_t('TEXT.MONATSVERGLEICH_DER_ARBEITSPREISE'); ?></h2>
+<div class="sm-small" style="margin-bottom:6px;"><?php echo spot_t('TEXT.DYNAMISCH_LASTPROFIL_GEWICHTETER_M'); ?>
 <?= $sp_mon['use'] ? '<b>den gepflegten Monatsmengen</b>' : (int) $sp_cfg['consumption'] . ' kWh Jahresverbrauch (gleichm&auml;&szlig;ig verteilt)' ?>
-&mdash; die Spalte &bdquo;kWh&ldquo; zeigt die dabei angesetzte Menge f&uuml;r die bereits erfassten Tage.
+&mdash; die Spalte &bdquo;kWh&ldquo; zeigt die dabei angesetzte Menge f&uuml;r die bereits erfassten <?php echo spot_t('TEXT.TAGE'); ?>.
 Die Tabelle f&uuml;llt sich mit jedem erfassten Tag.</div>
-<table class="sp-tbl"><tr><th>Monat</th><th>Tage</th><th>kWh</th><th>dynamisch (gewichtet)</th><th>dynamisch (einfach)</th><th>fest</th><th>Vorteil</th><th>Euro</th></tr>
+<table class="sm-tbl"><tr><th><?php echo spot_t('TEXT.MONAT'); ?></th><th>Tage</th><th>kWh</th><th><?php echo spot_t('TEXT.DYNAMISCH_GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.DYNAMISCH_EINFACH'); ?></th><th><?php echo spot_t('TEXT.FEST'); ?></th><th><?php echo spot_t('TEXT.VORTEIL'); ?></th><th><?php echo spot_t('TEXT.EURO'); ?></th></tr>
 <?php foreach ($sp_mc as $sp_m) { ?>
 <tr><td><?= sp_e(substr($sp_m['monat'], 4, 2) . '/' . substr($sp_m['monat'], 0, 4)) ?></td>
 <td><?= (int) $sp_m['tage'] ?></td>
-<td><?= sp_n($sp_m['kwh'], 1) ?><?= $sp_m['quelle'] === 'monat' ? '' : '<span class="sp-small" title="aus dem Jahresverbrauch abgeleitet"> *</span>' ?></td>
+<td><?= sp_n($sp_m['kwh'], 1) ?><?= $sp_m['quelle'] === 'monat' ? '' : '<span class="sm-small" title="aus dem Jahresverbrauch abgeleitet"> *</span>' ?></td>
 <td><b><?= sp_n($sp_m['dynp'], 2) ?> ct</b></td><td><?= sp_n($sp_m['dyn'], 2) ?> ct</td>
 <td><?= sp_n($sp_m['fix'], 2) ?> ct</td>
 <td style="color:<?= $sp_m['diff'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><b><?= ($sp_m['diff'] >= 0 ? '+' : '') . sp_n($sp_m['diff'], 2) ?> ct</b></td>
-<td style="color:<?= $sp_m['euro'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><?= ($sp_m['euro'] >= 0 ? '+' : '') . sp_n($sp_m['euro'], 2) ?> &euro;</td></tr>
+<td style="color:<?= $sp_m['euro'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><?= ($sp_m['euro'] >= 0 ? '+' : '') . sp_n($sp_m['euro'], 2) ?> <?php echo spot_t('TEXT.TEXT_6'); ?></td></tr>
 <?php } ?></table>
-<div class="sp-small">* Menge aus dem Jahresverbrauch abgeleitet &mdash; f&uuml;r diesen Monat ist im Reiter Einstellungen kein eigener Wert gepflegt.</div>
+<div class="sm-small"><?php echo spot_t('TEXT.MENGE_AUS_DEM_JAHRESVERBRAUCH_ABGE'); ?></div>
 <?php } ?>
 <?php $sp_sh = function_exists('spot_shift_saving') ? spot_shift_saving(7) : array(); if (!empty($sp_sh['tage'])) { ?>
-<h2>Ersparnis durch verschobenen Verbrauch</h2>
-<div class="sp-alert sp-ok">Mittlere Spanne zwischen Tagesschnitt und g&uuml;nstigster Stunde der letzten
-<?= (int) $sp_sh['tage'] ?> Tage: <b><?= sp_n($sp_sh['ct'], 2) ?> ct/kWh</b>.
-Wer t&auml;glich <?= sp_n($sp_sh['kwh'], 1) ?> kWh in die g&uuml;nstigste Zeit verschiebt, spart daraus rechnerisch
-<b><?= sp_n($sp_sh['euro'], 2) ?> &euro;</b> in diesen <?= (int) $sp_sh['tage'] ?> Tagen &mdash; hochgerechnet
-<b><?= sp_n($sp_sh['euro_jahr'], 2) ?> &euro; im Jahr</b> (zus&auml;tzlich zum reinen Tarifvergleich oben).</div>
+<h2><?php echo spot_t('TEXT.ERSPARNIS_DURCH_VERSCHOBENEN_VERBR'); ?></h2>
+<div class="sm-alert sm-ok"><?php echo spot_t('TEXT.MITTLERE_SPANNE_ZWISCHEN_TAGESSCHN'); ?>
+<?= (int) $sp_sh['tage'] ?> <?php echo spot_t('TEXT.TAGE_2'); ?> <b><?= sp_n($sp_sh['ct'], 2) ?> ct/kWh</b><?php echo spot_t('TEXT.WER_TGLICH'); ?> <?= sp_n($sp_sh['kwh'], 1) ?> <?php echo spot_t('TEXT.KWH_IN_DIE_GNSTIGSTE_ZEIT_VERSCHIE'); ?>
+<b><?= sp_n($sp_sh['euro'], 2) ?> &euro;</b> <?php echo spot_t('TEXT.IN_DIESEN'); ?> <?= (int) $sp_sh['tage'] ?> <?php echo spot_t('TEXT.TAGEN_HOCHGERECHNET'); ?>
+<b><?= sp_n($sp_sh['euro_jahr'], 2) ?> &euro; im Jahr</b> <?php echo spot_t('TEXT.ZUSTZLICH_ZUM_REINEN_TARIFVERGLEIC'); ?></div>
 <?php } ?>
 <?php $sp_hist = function_exists('spot_history_read') ? spot_history_read(14) : array(); if ($sp_hist) { ?>
-<h2>Tageswerte der letzten Tage</h2>
-<table class="sp-tbl"><tr><th>Tag</th><th>Schnitt</th><th>gewichtet</th><th>Minimum</th><th>Maximum</th><th>CO&#8322;</th></tr>
+<h2><?php echo spot_t('TEXT.TAGESWERTE_DER_LETZTEN_TAGE'); ?></h2>
+<table class="sm-tbl"><tr><th>Tag</th><th>Schnitt</th><th><?php echo spot_t('TEXT.GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.MINIMUM'); ?></th><th><?php echo spot_t('TEXT.MAXIMUM'); ?></th><th>CO&#8322;</th></tr>
 <?php foreach (array_reverse($sp_hist) as $sp_r) { ?>
 <tr><td><?= sp_e(substr($sp_r[0], 6, 2) . '.' . substr($sp_r[0], 4, 2) . '.' . substr($sp_r[0], 0, 4)) ?></td>
 <td><?= sp_n($sp_r[1], 2) ?> ct</td><td><?= $sp_r[4] > 0 ? sp_n($sp_r[4], 2) . ' ct' : '&ndash;' ?></td>
@@ -879,65 +1017,57 @@ Wer t&auml;glich <?= sp_n($sp_sh['kwh'], 1) ?> kWh in die g&uuml;nstigste Zeit v
 </div>
 
 <!-- ================= Reiter: Kostenvergleich ================= -->
-<div class="sp-pane" id="tab-costs">
+<div class="sm-pane" id="tab-costs">
 <?php $sp_cc = function_exists('spot_cost_compare') ? spot_cost_compare() : null; if ($sp_cc) { ?>
-<h2>Kostenvergleich auf ein Jahr hochgerechnet</h2>
-<div class="sp-small" style="margin-bottom:6px;">Beide Tarife mit allen Bestandteilen: Arbeitspreis, Grundpreis,
-Rabatt und Boni. Grundlage: <b><?= sp_n($sp_cc['kwh'], 0) ?> kWh</b> Jahresverbrauch
-<?= $sp_mon['use'] ? '(aus den Monatswerten)' : '(Jahreswert, gleichm&auml;&szlig;ig verteilt)' ?>,
-Preisniveau aus <?= (int) $sp_cc['monate_gemessen'] ?> Monat(en) eigener Aufzeichnung
-<?= $sp_cc['monate_gemessen'] < 12 ? '&mdash; f&uuml;r die &uuml;brigen Monate mit dem bisherigen Schnitt von ' . sp_n($sp_cc['schnitt'], 2) . ' ct/kWh' : '' ?>.
-Je l&auml;nger das Plugin l&auml;uft, desto belastbarer wird die Zahl.</div>
-<table class="sp-tbl" style="width:100%;">
-<tr><th>Position</th><th style="text-align:right;">fester Tarif</th><th style="text-align:right;">dynamischer Tarif</th></tr>
-<tr><td>Arbeitspreis (Jahr)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_arbeit'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_arbeit'], 2) ?> &euro;</td></tr>
-<tr><td>Grundpreis (12 Monate)</td><td style="text-align:right;"><?= sp_n($sp_cc['fix_grund'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_grund'], 2) ?> &euro;</td></tr>
-<tr><td>Zwischensumme</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_zwischen'], 2) ?> &euro;</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b></td></tr>
+<h2><?php echo spot_t('TEXT.KOSTENVERGLEICH_AUF_EIN_JAHR_HOCHG'); ?></h2>
+<div class="sm-small" style="margin-bottom:6px;"><?php echo spot_t('TEXT.BEIDE_TARIFE_MIT_ALLEN_BESTANDTEIL'); ?> <b><?= sp_n($sp_cc['kwh'], 0) ?> kWh</b> <?php echo spot_t('TEXT.JAHRESVERBRAUCH'); ?>
+<?= $sp_mon['use'] ? '(aus den Monatswerten)' : '(Jahreswert, gleichm&auml;&szlig;ig verteilt)' ?><?php echo spot_t('TEXT.PREISNIVEAU_AUS'); ?> <?= (int) $sp_cc['monate_gemessen'] ?> <?php echo spot_t('TEXT.MONAT_EN_EIGENER_AUFZEICHNUNG'); ?>
+<?= $sp_cc['monate_gemessen'] < 12 ? '&mdash; f&uuml;r die &uuml;brigen Monate mit dem bisherigen Schnitt von ' . sp_n($sp_cc['schnitt'], 2) . ' ct/kWh' : '' ?><?php echo spot_t('TEXT.JE_LNGER_DAS_PLUGIN_LUFT_DESTO_BEL'); ?></div>
+<table class="sm-tbl" style="width:100%;">
+<tr><th><?php echo spot_t('TEXT.POSITION'); ?></th><th style="text-align:right;"><?php echo spot_t('TEXT.FESTER_TARIF'); ?></th><th style="text-align:right;"><?php echo spot_t('TEXT.DYNAMISCHER_TARIF'); ?></th></tr>
+<tr><td><?php echo spot_t('TEXT.ARBEITSPREIS_JAHR'); ?></td><td style="text-align:right;"><?= sp_n($sp_cc['fix_arbeit'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_arbeit'], 2) ?> &euro;</td></tr>
+<tr><td><?php echo spot_t('TEXT.GRUNDPREIS_12_MONATE'); ?></td><td style="text-align:right;"><?= sp_n($sp_cc['fix_grund'], 2) ?> &euro;</td><td style="text-align:right;"><?= sp_n($sp_cc['dyn_grund'], 2) ?> &euro;</td></tr>
+<tr><td><?php echo spot_t('TEXT.ZWISCHENSUMME'); ?></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_zwischen'], 2) ?> &euro;</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b></td></tr>
 <?php if ($sp_cc['rabatt'] > 0) { ?>
-<tr><td>Abschlagsrabatt (<?= sp_n($sp_cc['rabatt_pct'], 1) ?> %)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['rabatt'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
+<tr><td><?php echo spot_t('TEXT.ABSCHLAGSRABATT'); ?><?= sp_n($sp_cc['rabatt_pct'], 1) ?> %)</td><td style="text-align:right;color:#2e7d32;"><?php echo spot_t('TEXT.TEXT_7'); ?> <?= sp_n($sp_cc['rabatt'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
 <?php } ?>
 <?php if ($sp_cc['boni'] > 0) { ?>
-<tr><td>Boni (nur erstes Jahr)</td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['boni'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
+<tr><td><?php echo spot_t('TEXT.BONI_NUR_ERSTES_JAHR'); ?></td><td style="text-align:right;color:#2e7d32;">&minus; <?= sp_n($sp_cc['boni'], 2) ?> &euro;</td><td style="text-align:right;">&ndash;</td></tr>
 <?php } ?>
-<tr style="background:#f5f5f5;"><td><b>Kosten erstes Jahr</b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_jahr1'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monat1'], 2) ?> &euro;/Monat</span></td>
-<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
-<tr style="background:#f5f5f5;"><td><b>Kosten Folgejahr</b> (ohne Boni)</td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_folge'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['fix_monatf'], 2) ?> &euro;/Monat</span></td>
-<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sp-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
+<tr style="background:#f5f5f5;"><td><b><?php echo spot_t('TEXT.KOSTEN_ERSTES_JAHR'); ?></b></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_jahr1'], 2) ?> &euro;</b><br><span class="sm-small"><?= sp_n($sp_cc['fix_monat1'], 2) ?> <?php echo spot_t('TEXT.MONAT_2'); ?></span></td>
+<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sm-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
+<tr style="background:#f5f5f5;"><td><b><?php echo spot_t('TEXT.KOSTEN_FOLGEJAHR'); ?></b> <?php echo spot_t('TEXT.OHNE_BONI'); ?></td><td style="text-align:right;"><b><?= sp_n($sp_cc['fix_folge'], 2) ?> &euro;</b><br><span class="sm-small"><?= sp_n($sp_cc['fix_monatf'], 2) ?> &euro;/Monat</span></td>
+<td style="text-align:right;"><b><?= sp_n($sp_cc['dyn_jahr'], 2) ?> &euro;</b><br><span class="sm-small"><?= sp_n($sp_cc['dyn_monat'], 2) ?> &euro;/Monat</span></td></tr>
 </table>
-<div class="sp-alert <?= $sp_cc['vorteilf'] >= 0 ? 'sp-ok' : 'sp-warn' ?>">
-<b>Erstes Jahr:</b> <?= $sp_cc['vorteil1'] >= 0
+<div class="sm-alert <?= $sp_cc['vorteilf'] >= 0 ? 'sm-ok' : 'sm-warn' ?>">
+<b><?php echo spot_t('TEXT.ERSTES_JAHR'); ?></b> <?= $sp_cc['vorteil1'] >= 0
     ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger gewesen.'
     : 'Der feste Tarif ist um <b>' . sp_n(abs($sp_cc['vorteil1']), 2) . ' &euro;</b> g&uuml;nstiger &mdash; die Boni machen den Unterschied.' ?><br>
-<b>Folgejahr:</b> <?= $sp_cc['vorteilf'] >= 0
+<b><?php echo spot_t('TEXT.FOLGEJAHR'); ?></b> <?= $sp_cc['vorteilf'] >= 0
     ? 'Der dynamische Tarif w&auml;re um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.'
     : 'Der feste Tarif bleibt um <b>' . sp_n(abs($sp_cc['vorteilf']), 2) . ' &euro;</b> g&uuml;nstiger.' ?>
-<div class="sp-small" style="margin-top:4px;">Das Folgejahr ist die ehrlichere Zahl: Sofort- und Neukundenboni gibt es nur einmal,
-der Abschlagsrabatt dagegen dauerhaft. Nicht ber&uuml;cksichtigt sind Boni des dynamischen Anbieters und die Ersparnis
-durch verschobenen Verbrauch (Reiter <b>Test</b>) &mdash; beides w&uuml;rde den dynamischen Tarif zus&auml;tzlich verbessern.</div>
+<div class="sm-small" style="margin-top:4px;"><?php echo spot_t('TEXT.DAS_FOLGEJAHR_IST_DIE_EHRLICHERE_Z'); ?> <b>Test</b><?php echo spot_t('TEXT.BEIDES_WRDE_DEN_DYNAMISCHEN_TARIF_'); ?></div>
 </div>
 <?php } ?>
 <?php if (!$sp_cc) { ?>
 <h2>Kostenvergleich auf ein Jahr hochgerechnet</h2>
-<div class="sp-alert sp-info">Noch keine Auswertung m&ouml;glich &mdash; das Plugin sichert die Tageswerte jeweils um
-23:50&nbsp;Uhr. Nach dem ersten vollst&auml;ndigen Tag erscheint hier der Vergleich, und mit jedem weiteren Monat
-wird er belastbarer. Pr&uuml;fen Sie im Reiter <b>Einstellungen</b>, ob fester Arbeitspreis, Grundpreis und
-Jahres- bzw. Monatsverbrauch eingetragen sind.</div>
+<div class="sm-alert sm-info"><?php echo spot_t('TEXT.NOCH_KEINE_AUSWERTUNG_MGLICH_DAS_P'); ?> <b>Einstellungen</b><?php echo spot_t('TEXT.OB_FESTER_ARBEITSPREIS_GRUNDPREIS_'); ?></div>
 <?php } ?>
 </div>
 
-<!-- ================= Reiter: Logdateien ================= -->
-<div class="sp-pane" id="tab-log">
+<!-- ================= Reiter: <?php echo spot_t('TEXT.LOGDATEI'); ?>en ================= -->
+<div class="sm-pane" id="tab-log">
 <h2>Logdatei</h2>
-<div class="sp-small" style="margin-bottom:8px;">Protokolliert werden Preis&auml;nderungen (Strukturwechsel, kein Zahlenspam), Ansagen, Ver&ouml;ffentlichung der Folgetagspreise und Fehler. Neueste Eintr&auml;ge oben (max. 300 angezeigt).<br>Datei: <span class="sp-mono"><?= sp_e($sp_logfile) ?></span></div>
+<div class="sm-small" style="margin-bottom:8px;"><?php echo spot_t('TEXT.PROTOKOLLIERT_WERDEN_PREISNDERUNGE'); ?><br><?php echo spot_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= sp_e($sp_logfile) ?></span></div>
 <?php if ($sp_loglines) { ?>
-<div class="sp-log"><?= sp_e(implode("\n", $sp_loglines)) ?></div>
+<div class="sm-log"><?= sp_e(implode("\n", $sp_loglines)) ?></div>
 <?php } else { ?>
-<div class="sp-alert sp-info">Noch keine Protokoll-Eintr&auml;ge vorhanden.</div>
+<div class="sm-alert sm-info"><?php echo spot_t('TEXT.NOCH_KEINE_PROTOKOLL_EINTRGE_VORHA'); ?></div>
 <?php } ?>
-<form method="post" style="margin-top:10px;">
+<form action="index.php" method="post" style="margin-top:10px;">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="sp-btn" type="submit" style="background:#c62828;">Log leeren</button>
+    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo spot_t('TEXT.LOG_LEEREN'); ?></button>
 </form>
 </div>
 
@@ -958,7 +1088,7 @@ function spMarket() {
 }
 function spSum() {
     var sum = 0, gepflegt = false;
-    document.querySelectorAll('.sp-mkwh').forEach(function (i) {
+    document.querySelectorAll('.sm-mkwh').forEach(function (i) {
         var v = parseFloat(String(i.value).replace(',', '.'));
         if (!isNaN(v) && v > 0) { sum += v; gepflegt = true; }
     });
@@ -986,10 +1116,10 @@ function spHours(mode) {
     });
 }
 (function () {
-    var tabs = document.querySelectorAll('.sp-tab');
+    var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {
-        tabs.forEach(function (t) { t.classList.toggle('sp-active', t.dataset.pane === id); });
-        document.querySelectorAll('.sp-pane').forEach(function (p) { p.classList.toggle('sp-active', p.id === id); });
+        tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
+        document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
     tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
     activate(<?= json_encode($sp_tab) ?>);
