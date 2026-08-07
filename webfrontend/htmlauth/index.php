@@ -187,7 +187,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         @mkdir($sp_cfgdir, 0775, true);
     }
     $sp_json = json_encode($sp_new, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (@file_put_contents($sp_cfgfile, $sp_json) !== false) {
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+    if ($sp_json !== false && @file_put_contents($sp_cfgfile, $sp_json) !== false) {
         $sp_saved = true;
         @copy($sp_cfgfile, $sp_bkfile);
         @unlink('/tmp/spotpreis/state.json'); // Preise mit neuen Aufschlaegen neu rechnen
