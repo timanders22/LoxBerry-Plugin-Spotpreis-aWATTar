@@ -1,0 +1,51 @@
+#!/bin/bash
+# Spotpreis aWATTar - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft trotzdem weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt beim Deinstallieren alle Ordner weg, die dem Plugin
+# gehoeren - bin/, config/, data/, log/, templates/ und die beiden
+# webfrontend-Ordner - und entfernt den Cron-Eintrag. Zwei Dinge liegen
+# aber ausserhalb und blieben sonst liegen:
+#
+#   1. config/plugins/<ordner>.backup.json
+#      Diese Sicherung liegt bewusst NEBEN dem Konfigordner, damit die
+#      Tarifeinstellungen ein Update und sogar eine Neuinstallation
+#      ueberstehen (spot_paths()['backup'], postinstall.sh,
+#      postupgrade.sh). Beim Deinstallieren ist genau das falsch.
+#
+#   2. /tmp/spotpreis
+#      Zwischenspeicher fuer Marktdaten, Ansage-Merker und die
+#      MQTT-Signatur. /tmp ist auf dem LoxBerry eine Ramdisk, der Ordner
+#      verschwindet also spaetestens beim naechsten Neustart - bis dahin
+#      wuerde er aber weiter dastehen.
+#
+# Was NICHT aufgeraeumt werden muss: MQTT. Das Plugin sendet ueber das
+# UDP-Relais des Gateways mit "publish", nicht mit "retain"
+# (spot_lib.php, spot_mqtt_publish). Im Broker bleibt nichts stehen.
+
+PDIR=$3
+[ -n "$PDIR" ] || PDIR="spotpreis"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+BK="$BASE/config/plugins/$PDIR.backup.json"
+if [ -f "$BK" ]; then
+    rm -f "$BK" && echo "<OK> Sicherung der Tarifeinstellungen entfernt: $PDIR.backup.json"
+else
+    echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
+
+# Nur den eigenen Ordner, und nur wenn es wirklich einer ist.
+if [ -d "/tmp/spotpreis" ]; then
+    rm -rf "/tmp/spotpreis" && echo "<OK> Zwischenspeicher /tmp/spotpreis entfernt."
+fi
+
+echo "<INFO> Im MQTT-Broker bleibt nichts stehen - das Plugin sendet ohne Retain-Merker."
+exit 0

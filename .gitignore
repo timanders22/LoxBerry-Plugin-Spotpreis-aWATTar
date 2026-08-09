@@ -1,3 +1,6 @@
+# Nichts von alldem gehoert ins Plugin-Archiv: Protokolle entstehen erst auf
+# dem LoxBerry, der Rest sind Ablagen von Windows und macOS, die beim
+# Bearbeiten der Dateien nebenher anfallen.
 *.log
 .DS_Store
 Thumbs.db

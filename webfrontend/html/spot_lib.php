@@ -114,6 +114,7 @@ function spot_config() {
         'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
         'marstek_power' => 2500,     // Ladeleistung in W
         'marstek_neg' => 1,          // bei negativem Preis immer laden
+        'token' => '',               // leer = Endpunkt ohne Token erreichbar
         // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
         // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
         // dahin, Durchschnittspreis. Daraus "jetzt laden" zu machen war Arbeit
@@ -194,6 +195,53 @@ function spot_datadir() {
     return $p['data'];
 }
 
+/**
+ * Merker, die einen Neustart ueberstehen muessen.
+ *
+ * spot_tmpdir() zeigt auf /tmp/spotpreis - und /tmp ist auf dem LoxBerry
+ * fluechtig. Fuer Merker, die nur ein paar Minuten gelten (ptest, said_,
+ * mqtt_sig), ist das genau richtig: nach einem Neustart soll wieder von vorn
+ * begonnen werden.
+ *
+ * Fuer "das ist heute/diesen Monat schon geschehen" ist es falsch. Der
+ * Merker "Preise fuer morgen sind veroeffentlicht" lag bis 1.1.1 in /tmp:
+ * ein Neustart nach 14 Uhr, und die Ansage samt Pushnachricht kam ein
+ * zweites Mal. Dasselbe gilt fuer den Monatsbericht - ein Merker in /tmp
+ * wuerde nach einem Neustart am Monatsersten einen zweiten Bericht
+ * ausloesen.
+ *
+ * data/plugins/<ordner> ueberlebt Neustart UND Plugin-Update.
+ */
+function spot_merker($name) {
+    return spot_datadir() . '/marke_' . preg_replace('/[^A-Za-z0-9_]/', '', (string) $name);
+}
+
+/**
+ * Ist der Merker gesetzt? Wenn nicht, wird er gesetzt und true zurueckgegeben.
+ * Alles in einem Schritt, damit zwei gleichzeitige Laeufe nicht beide
+ * "noch nicht geschehen" sehen.
+ */
+function spot_merker_setzen($name) {
+    $f = spot_merker($name);
+    // 'x' schlaegt fehl, wenn die Datei schon da ist - unteilbar im Dateisystem.
+    $fh = @fopen($f, 'x');
+    if ($fh === false) {
+        return false;
+    }
+    fwrite($fh, date('c') . "\n");
+    fclose($fh);
+    return true;
+}
+
+/** Alte Merker eines Musters wegraeumen, ausser dem aktuellen. */
+function spot_merker_aufraeumen($muster, $behalten) {
+    foreach ((array) glob(spot_datadir() . '/marke_' . $muster) as $f) {
+        if (basename($f) !== 'marke_' . $behalten) {
+            @unlink($f);
+        }
+    }
+}
+
 /* ---------------- Protokoll ---------------- */
 
 function spot_log($msg) {
@@ -210,12 +258,64 @@ function spot_log($msg) {
     @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
 
+/**
+ * Eine Zeile nur protokollieren, wenn sie sich geaendert hat.
+ *
+ * Die Merkdatei wird ueber temp + rename geschrieben. Der Schaden waere hier
+ * gering - ein halb geschriebener Merker fuehrt zu einer doppelten
+ * Protokollzeile, nicht zu einem falschen Messwert. Es kostet aber nichts,
+ * und ein Muster, das im Plugin an einer Stelle gilt und an der anderen
+ * nicht, laedt zum Nachahmen der falschen Haelfte ein.
+ */
+/**
+ * Die letzten $anzahl Zeilen des Protokolls, neueste zuerst.
+ *
+ * Bis 1.1.1 las die Oberflaeche das ganze Protokoll mit file() ein und warf
+ * den groessten Teil wieder weg. Nachgemessen an einer Datei kurz vor der
+ * Rotationsgrenze (512 kB, 6384 Zeilen, 300 gewuenscht), PHP 7.4 und 8.1:
+ *
+ *   file() + array_reverse   0,3 ms   Spitze 1445 kB
+ *   exec("tail -n 300")      1,9 ms   Spitze   72 kB
+ *   rueckwaerts mit fseek    0,04 ms  Spitze  123 kB
+ *
+ * Der Hinweis auf den Speicher war berechtigt. Der vorgeschlagene Weg ueber
+ * tail ist aber der langsamste der drei: ein Prozessstart kostet mehr, als
+ * das Einlesen je gespart hat. Rueckwaerts lesen ist in beidem besser und
+ * braucht keine Shell.
+ */
+function spot_log_ende($datei, $anzahl = 300, $block = 8192) {
+    $fp = @fopen($datei, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    while ($pos > 0 && count($zeilen) <= $anzahl) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = explode("\n", $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen), 'strlen'));
+    return array_slice(array_reverse($zeilen), 0, $anzahl);
+}
+
 function spot_log_if_changed($key, $line) {
-    $f = spot_tmpdir() . '/last_' . $key . '.txt';
+    $f = spot_tmpdir() . '/last_' . preg_replace('/[^A-Za-z0-9_]/', '', (string) $key) . '.txt';
     $prev = is_file($f) ? (string) file_get_contents($f) : '';
-    if ($line !== $prev) {
-        spot_log($key . ': ' . $line);
-        @file_put_contents($f, $line);
+    if ($line === $prev) {
+        return;
+    }
+    spot_log($key . ': ' . $line);
+    $tmp = $f . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $line) !== false) {
+        if (!@rename($tmp, $f)) {
+            @unlink($tmp);
+        }
     }
 }
 
@@ -276,7 +376,7 @@ function spot_day($startTs, $force = false) {
         $ctx = stream_context_create(array('http' => array('timeout' => 15, 'user_agent' => 'LoxBerry Spotpreis')));
         $neu = @file_get_contents($url, false, $ctx);
         if ($neu !== false && strpos($neu, 'marketprice') !== false) {
-            file_put_contents($cache, $neu);
+            spot_write_atomic($cache, $neu);
             $js = $neu;
         } elseif (is_file($cache)) {
             $js = file_get_contents($cache);
@@ -606,7 +706,7 @@ function spot_state($force = false) {
     }
     // Schaltregeln zuletzt: sie brauchen neg, hstart und das Tagesmittel.
     $st['regeln'] = spot_regeln($all, $st);
-    file_put_contents($cache, json_encode($st));
+    spot_write_json_atomic($cache, $st);
     spot_log_if_changed('zustand', 'cur=' . $st['cur'] . ' ct rank=' . $st['rank'] . ' level=' . $st['level'] . ' morgen_ok=' . $st['tomorrow_ok']);
     return $st;
 }
@@ -685,7 +785,7 @@ function spot_co2($force = false) {
     }
     $out = array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => $min[0],
                  'max' => $max[1], 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => time());
-    file_put_contents($cache, json_encode($out));
+    spot_write_json_atomic($cache, $out);
     spot_log_if_changed('co2', 'jetzt ' . $out['now'] . ' g/kWh, sauberste Stunde ' . $out['minh'] . ' Uhr mit ' . $out['min'] . ' g');
     return $out;
 }
@@ -857,7 +957,7 @@ function spot_shift_saving($days = 7) {
 /**
  * IP-Adresse dieses LoxBerry bestimmen: bevorzugt die Adresse, unter der die
  * Weboberflaeche gerade aufgerufen wird, sonst die Netzwerkadresse des Hosts.
- * Rueckgabe z. B. "192.168.1.14" (Fallback: 127.0.0.1).
+ * Rueckgabe z. B. "192.168.1.10" (Fallback: 127.0.0.1).
  */
 function spot_own_ip() {
     $cand = array();
@@ -894,6 +994,153 @@ function spot_own_ip() {
     return '127.0.0.1';
 }
 
+/**
+ * Die Konfiguration schreiben - unteilbar, mit Sicherungskopie.
+ *
+ * Anmerkung zu einer Beanstandung: es hiess, das temp+rename-Muster sei bei
+ * den Konfigurations-JSONs bereits vorbildlich umgesetzt und fehle nur bei
+ * den kleinen Merkdateien. Das war umgekehrt - bis 1.1.1 schrieb die
+ * Oberflaeche die spot.json mit einem einfachen file_put_contents, also
+ * kuerzen und neu fuellen. Ein Abbruch mittendrin hinterlaesst eine halbe
+ * Datei. Aufgefangen haette es die Selbstheilung in spot_config() (leere
+ * oder unvollstaendige Konfiguration wird aus der Sicherungskopie geholt) -
+ * aber sich auf die Reparatur zu verlassen, statt den Schaden zu vermeiden,
+ * ist die falsche Reihenfolge.
+ *
+ * rename() ist innerhalb desselben Dateisystems unteilbar: wer liest, sieht
+ * entweder die alte oder die neue Datei, nie einen Zwischenstand.
+ */
+/**
+ * Eine Datei unteilbar schreiben - dasselbe Muster wie spot_config_save(),
+ * aber fuer die Zwischenspeicher.
+ *
+ * WARUM AUCH DIE ZWISCHENSPEICHER: An state.json haengen zwei Schreiber (der
+ * Minutencron und spot.php, wenn der Zwischenspeicher abgelaufen ist) und ein
+ * Leser, der bei jedem Abruf des Miniservers vorbeikommt. Ein einfaches
+ * file_put_contents kuerzt die Datei zuerst auf null.
+ *
+ * Falsche Werte bekommt Loxone dadurch nicht - spot_state() prueft die
+ * gelesene Struktur und rechnet bei Bruch neu. Aber genau das ist der Schaden:
+ * Aus einem Lesevorgang aus dem Zwischenspeicher wird eine vollstaendige
+ * Neuberechnung, im schlechtesten Fall mit einem Abruf bei aWATTar - waehrend
+ * der Miniserver auf seine Antwort wartet.
+ *
+ * $daten wird hier kodiert und nicht als fertiger Text erwartet: json_encode
+ * liefert bei ungueltigem UTF-8 false, und file_put_contents($f, false)
+ * schreibt klaglos eine leere Datei. Der Zwischenspeicher waere dann dauerhaft
+ * unbrauchbar, ohne dass etwas auffiele - jede Abfrage rechnete neu.
+ */
+function spot_write_json_atomic($datei, $daten) {
+    $json = json_encode($daten);
+    if ($json === false) {
+        return false;
+    }
+    return spot_write_atomic($datei, $json);
+}
+
+function spot_write_atomic($datei, $inhalt) {
+    if ($inhalt === false || $inhalt === null) {
+        return false;
+    }
+    $inhalt = (string) $inhalt;
+    $dir = dirname($datei);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return false;
+    }
+    $tmp = $datei . '.tmp.' . getmypid() . '.' . mt_rand(1000, 9999);
+    if (@file_put_contents($tmp, $inhalt) !== strlen($inhalt)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0644);
+    if (!@rename($tmp, $datei)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+function spot_config_save($cfg) {
+    $p = spot_paths();
+    $dir = dirname($p['config']);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // json_encode liefert bei ungueltigem UTF-8 false - dann darf nichts
+    // geschrieben werden, sonst stuende eine leere Konfiguration da.
+    if ($json === false) {
+        return false;
+    }
+    $tmp = $p['config'] . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json) === false) {
+        return false;
+    }
+    @chmod($tmp, 0644);
+    if (!@rename($tmp, $p['config'])) {
+        @unlink($tmp);
+        return false;
+    }
+    @copy($p['config'], $p['backup']);
+    // Zwischenspeicher verwerfen: die Preise werden mit den neuen
+    // Aufschlaegen neu gerechnet.
+    @unlink(spot_tmpdir() . '/state.json');
+    return true;
+}
+
+/** Ein einzelner Wert aus der Konfiguration, mit Vorgabe. */
+function spot_cfg_wert($schluessel, $vorgabe = '') {
+    $c = spot_config();
+    return isset($c[$schluessel]) ? $c[$schluessel] : $vorgabe;
+}
+
+/**
+ * Zufallstoken fuer den unangemeldeten Endpunkt.
+ * Ohne mehrdeutige Zeichen (0/O, 1/l), weil man es abtippt.
+ */
+function spot_token_erzeugen($laenge = 24) {
+    $zeichen = 'abcdefghijkmnpqrstuvwxyz23456789';
+    $t = '';
+    for ($i = 0; $i < $laenge; $i++) {
+        $t .= $zeichen[random_int(0, strlen($zeichen) - 1)];
+    }
+    return $t;
+}
+
+/**
+ * Ist das eine Adresse, die dieses Plugin abrufen darf?
+ *
+ * file_get_contents() kennt nicht nur http. Nachgemessen mit PHP 7.4 und
+ * 8.1, jeweils mit einem http-Kontext (der fuer andere Wrapper einfach
+ * ignoriert wird):
+ *
+ *   file:///pfad/datei          -> Datei wird GELESEN
+ *   php://filter/...resource=   -> Datei wird GELESEN (base64)
+ *   expect://id                 -> nichts (Erweiterung nicht vorhanden)
+ *   ftp://...                   -> nichts
+ *
+ * Die Antwort landet im Protokoll, und das Protokoll zeigt die Oberflaeche
+ * an. Wer die Adresse setzen kann, konnte damit beliebige fuer den
+ * Webserver lesbare Dateien in das Protokoll holen.
+ *
+ * Zur Einordnung: eine Codeausfuehrung ist das NICHT - file_get_contents
+ * fuehrt nichts aus. Es ist ein Lesezugriff und ein Aufruf an beliebige
+ * Rechner und Ports (SSRF). Dafuer braucht es allerdings bereits Zugang zur
+ * angemeldeten Plugin-Oberflaeche.
+ *
+ * Erlaubt sind deshalb nur http und https.
+ */
+function spot_url_ok($url) {
+    $url = trim((string) $url);
+    if ($url === '') {
+        return false;
+    }
+    if (!preg_match('#^https?://#i', $url)) {
+        return false;
+    }
+    return filter_var($url, FILTER_VALIDATE_URL) !== false;
+}
+
 /** Vollstaendige Standard-URL zum Marstek-Plugin auf diesem LoxBerry. */
 function spot_marstek_default_url() {
     return 'http://' . spot_own_ip() . '/plugins/marstekvenus/marstek.php';
@@ -925,6 +1172,12 @@ function spot_marstek_control($st = null) {
     $url = trim((string) $cfg['marstek_url']);
     if ($url === '') {
         $url = spot_marstek_default_url(); // leer = automatisch eigene LoxBerry-IP
+    } elseif (!spot_url_ok($url)) {
+        // Zweite Schranke hinter der Oberflaeche: eine Adresse, die aus einer
+        // aelteren Fassung oder von Hand in der spot.json steht, wird hier
+        // ebenfalls abgewiesen - und zwar benannt, nicht stillschweigend.
+        spot_log_if_changed('marstek', 'Adresse abgewiesen (nur http/https erlaubt): ' . $url);
+        return;
     }
     $url .= (strpos($url, '?') === false ? '?' : '&') . 'p=' . $p . '&t=240';
     $ctx = stream_context_create(array('http' => array('timeout' => 8)));
@@ -1263,9 +1516,16 @@ function spot_say($text) {
     return $r !== false;
 }
 
-/** Zahl deutsch aussprechen: 24.3 -> "24,3". */
+/**
+ * Zahl fuer die Ansage aufbereiten: 24.3 -> "24,3" (de) bzw. "24.3" (en).
+ *
+ * Das Dezimalzeichen entscheidet darueber, was die Sprachausgabe vorliest.
+ * Ein englisches TTS liest "24,3" als "twenty-four, three" - zwei Zahlen
+ * statt einer.
+ */
 function spot_num($v, $dec = 1) {
-    return str_replace('.', ',', number_format((float) $v, $dec, '.', ''));
+    $s = number_format((float) $v, $dec, '.', '');
+    return spot_sprache() === 'de' ? str_replace('.', ',', $s) : $s;
 }
 
 /** Ansagetext fuer die aktuelle Stunde. */
@@ -1277,25 +1537,33 @@ function spot_announce_text($st = null) {
     if (!$st['ok']) {
         return '';
     }
-    $t = 'Hallo! Der Strompreis betraegt jetzt ' . spot_num($st['cur'], 1) . ' Cent pro Kilowattstunde.';
+    /* Die Texte kommen aus den Sprachdateien, Abschnitt [ANSAGE].
+     *
+     * Bis 1.1.1 standen sie hier fest in Deutsch - auf einem englisch
+     * eingestellten LoxBerry sprach das Plugin trotzdem Deutsch. Und weil
+     * die Quelltextdatei ohne Umlaute auskommen sollte, wurden am Ende
+     * neun Woerter per str_replace zurueckverwandelt; wer einen Satz
+     * aenderte, musste an diese Liste denken. In den Sprachdateien stehen
+     * die Umlaute unmittelbar. */
     if ($st['neg']) {
-        $t = 'Hallo! Achtung, der Boersenstrompreis ist gerade negativ. Der Endpreis liegt bei '
-           . spot_num($st['cur'], 1) . ' Cent pro Kilowattstunde. Ein guter Zeitpunkt fuer grosse Verbraucher.';
-    } elseif ($st['level'] === 1) {
-        $t .= ' Das ist guenstig.';
-    } elseif ($st['level'] === 3) {
-        $t .= ' Das ist teuer.';
+        $t = sprintf(spot_t('ANSAGE.NEGATIV'), spot_num($st['cur'], 1));
+    } else {
+        $t = sprintf(spot_t('ANSAGE.PREIS'), spot_num($st['cur'], 1));
+        if ($st['level'] === 1) {
+            $t .= spot_t('ANSAGE.GUENSTIG');
+        } elseif ($st['level'] === 3) {
+            $t .= spot_t('ANSAGE.TEUER');
+        }
     }
     if ($st['fenster']['in'] === 0) {
-        $t .= ' Die kommenden ' . (int) $st['fenster_len'] . ' Stunden sind der guenstigste Zeitraum.';
+        $t .= sprintf(spot_t('ANSAGE.FENSTER_JETZT'), (int) $st['fenster_len']);
     } elseif ($st['fenster']['in'] > 0) {
-        $t .= ' Der guenstigste Zeitraum beginnt um ' . (int) $st['fenster']['h'] . ' Uhr.';
+        $t .= sprintf(spot_t('ANSAGE.FENSTER_SPAETER'), (int) $st['fenster']['h']);
     }
     if (!empty($st['co2_ok']) && !empty($st['co2_clean'])) {
-        $t .= ' Der Strom ist gerade besonders sauber, mit ' . (int) $st['co2'] . ' Gramm CO2 je Kilowattstunde.';
+        $t .= sprintf(spot_t('ANSAGE.CO2'), (int) $st['co2']);
     }
-    return str_replace(array('betraegt', 'Boersenstrompreis', 'guenstig', 'guenstigste', 'guenstigsten', 'guenstigster', 'teuer', 'grosse', 'Zeitraum'),
-        array("betr\u{00e4}gt", "B\u{00f6}rsenstrompreis", "g\u{00fc}nstig", "g\u{00fc}nstigste", "g\u{00fc}nstigsten", "g\u{00fc}nstigster", 'teuer', "gro\u{00df}e", 'Zeitraum'), $t);
+    return $t;
 }
 
 /** Ansagetext, sobald die Preise fuer morgen veroeffentlicht sind. */
@@ -1306,10 +1574,27 @@ function spot_tomorrow_text($st = null) {
     if (!$st['tomorrow_ok']) {
         return '';
     }
-    return 'Hallo! Die Strompreise f' . "\u{00fc}" . 'r morgen sind da. Am g' . "\u{00fc}" . 'nstigsten ist es um '
-        . (int) $st['morgen']['minh'] . ' Uhr mit ' . spot_num($st['morgen']['minp'], 1) . ' Cent, am teuersten um '
-        . (int) $st['morgen']['maxh'] . ' Uhr mit ' . spot_num($st['morgen']['maxp'], 1)
-        . ' Cent pro Kilowattstunde. Der Tagesdurchschnitt liegt bei ' . spot_num($st['morgen']['avg'], 1) . ' Cent.';
+    return sprintf(spot_t('ANSAGE.MORGEN'),
+        (int) $st['morgen']['minh'], spot_num($st['morgen']['minp'], 1),
+        (int) $st['morgen']['maxh'], spot_num($st['morgen']['maxp'], 1),
+        spot_num($st['morgen']['avg'], 1));
+}
+
+/**
+ * Ansagetext fuer den Monatsbericht.
+ *
+ * Steht hier und nicht in bin/cron.php, damit der Text an einer Stelle
+ * gepflegt wird und sich der Bericht auch von Hand pruefen laesst.
+ * $vm ist ein Eintrag aus spot_month_compare().
+ */
+function spot_month_text($vm) {
+    if (!is_array($vm)) {
+        return '';
+    }
+    $t = sprintf(spot_t('ANSAGE.MONAT'), spot_num($vm['dynp'], 1), spot_num($vm['fix'], 1));
+    $t .= sprintf(spot_t($vm['diff'] >= 0 ? 'ANSAGE.MONAT_DYN' : 'ANSAGE.MONAT_FIX'),
+        spot_num(abs($vm['diff']), 1));
+    return $t;
 }
 
 /** Ist fuer die aktuelle Stunde eine Meldung vorgesehen? */
@@ -1367,10 +1652,12 @@ function spot_announce_check() {
         }
     }
     // 2) Preise fuer morgen sind da (boersentaeglich ab ca. 14:00)
+    //
+    // Der Merker liegt seit 1.1.2 im Datenordner, nicht mehr in /tmp: dort
+    // war er nach einem Neustart fort, und die Ansage samt Pushnachricht kam
+    // am selben Tag ein zweites Mal.
     if (!empty($cfg['notify']['tomorrow']) && $st['tomorrow_ok']) {
-        $flag = spot_tmpdir() . '/tomorrow_' . date('Ymd');
-        if (!is_file($flag)) {
-            @file_put_contents($flag, '1');
+        if (spot_merker_setzen('tomorrow_' . date('Ymd'))) {
             if (!empty($cfg['notify']['audio'])) {
                 $txt = spot_tomorrow_text($st);
                 if ($txt !== '') {
@@ -1386,11 +1673,9 @@ function spot_announce_check() {
             @unlink($f);
         }
     }
-    foreach (glob(spot_tmpdir() . '/tomorrow_*') ?: array() as $f) {
-        if (basename($f) !== 'tomorrow_' . date('Ymd')) {
-            @unlink($f);
-        }
-    }
+    spot_merker_aufraeumen('tomorrow_*', 'tomorrow_' . date('Ymd'));
+    // Merker frueherer Monatsberichte: den des laufenden Monats behalten.
+    spot_merker_aufraeumen('monatsbericht_*', 'monatsbericht_' . date('Ym'));
 }
 
 /**

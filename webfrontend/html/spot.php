@@ -26,6 +26,32 @@
 
 require_once __DIR__ . '/spot_lib.php';
 
+/* ---------------- Token, falls eingerichtet ----------------
+ *
+ * Dieser Ordner ist bewusst der UNANGEMELDETE Bereich: der Miniserver soll
+ * ohne Zugangsdaten lesen koennen. Damit erreicht ihn aber auch jedes andere
+ * Geraet im Netz - und der Endpunkt kann mehr als lesen: ?say=1 spielt eine
+ * Ansage ueber die Lautsprecher ab, ?ptest=1 loest eine Pushnachricht aus,
+ * ?refresh=1 stoesst einen Abruf bei aWATTar an.
+ *
+ * Das Token ist FREIWILLIG. Wird im Reiter "Einbindung in Loxone" keines
+ * gesetzt, verhaelt sich der Endpunkt wie bisher. Ein Pflichttoken wuerde
+ * bei jedem bestehenden Aufbau die Werte im Miniserver abreissen lassen,
+ * ohne dass jemand versteht, warum.
+ */
+$spot_soll = (string) spot_cfg_wert('token', '');
+if ($spot_soll !== '') {
+    $spot_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+    // hash_equals statt ==: ein zeichenweiser Vergleich verraet ueber die
+    // Antwortzeit, wie viele Zeichen schon stimmen.
+    if (!hash_equals($spot_soll, $spot_ist)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "SPOT;OK=0;GRUND=TOKEN\n";
+        exit;
+    }
+}
+
 /* ---------- JSON ---------- */
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');

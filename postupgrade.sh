@@ -1,18 +1,60 @@
 #!/bin/bash
-# Spotpreis aWATTar - postupgrade: Konfiguration + Log wiederherstellen
+# Spotpreis aWATTar - postupgrade: Konfiguration wiederherstellen
+#
+# command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# Zum Sicherungsort und zur Bedeutung der Argumente siehe preupgrade.sh.
+#
+# Anmerkung zur Notwendigkeit: dieses Plugin liefert KEINEN config-Ordner
+# mit, der Installer kann die spot.json also gar nicht ueberschreiben, und
+# LoxBerry loescht config/plugins/<ordner> beim Upgrade nicht. Die Sicherung
+# ist damit ein zweiter Boden, kein tragendes Teil - sie bleibt trotzdem,
+# weil sie nichts kostet und der Tag kommt, an dem doch eine Vorlage
+# mitgeliefert wird.
+
 ARGV1=$1
 ARGV3=$3
 ARGV5=$5
+ARGV6=$6
+
 PFOLDER="${ARGV3:-spotpreis}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" "$BASE/data/plugins/$PFOLDER" 2>/dev/null
-[ -f "$ARGV1/spot.json" ] && cp -p "$ARGV1/spot.json" "$BASE/config/plugins/$PFOLDER/spot.json"
-[ -f "$ARGV1/spot.log" ] && cp -p "$ARGV1/spot.log" "$BASE/log/plugins/$PFOLDER/spot.log"
+MERKER="$BASE/config/plugins/$PFOLDER/.upgrade_pfad"
+
+if [ -r "$MERKER" ]; then
+    SICHERUNG=$(cat "$MERKER")
+elif [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
+    SICHERUNG="$ARGV6/spotpreis_upgrade"
+else
+    SICHERUNG="${ARGV1:-spotpreis}_upgrade"
+fi
+
+mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" \
+         "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+
+if [ -f "$SICHERUNG/spot.json" ]; then
+    cp -p "$SICHERUNG/spot.json" "$BASE/config/plugins/$PFOLDER/spot.json" && \
+        echo "<OK> Konfiguration wiederhergestellt."
+else
+    echo "<INFO> Keine gesicherte Konfiguration unter $SICHERUNG - vorhandene bleibt unveraendert."
+fi
+
+# Zweiter Boden: die Sicherungskopie, die die Oberflaeche bei jedem
+# Speichern neben dem Konfigordner ablegt.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/spot.json"
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF"
+        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Sicherungskopie geholt."
     fi
 fi
+
+rm -f "$MERKER" 2>/dev/null
+# Der Arbeitsordner des Installers wird von LoxBerry selbst aufgeraeumt.
+# Nur der Rueckfallweg gehoert uns.
+case "$SICHERUNG" in
+    /*) : ;;
+    *)  rm -rf "$SICHERUNG" ;;
+esac
+
 exit 0
