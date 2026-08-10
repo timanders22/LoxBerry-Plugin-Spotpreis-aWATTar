@@ -18,13 +18,24 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
+/* Der Fahrplaner. Er liegt als eigene Datei daneben, weil dasselbe
+ * Rechenwerk auch im Octopus-Plugin steckt - byteweise gleich. Naeheres im
+ * Kopf von planer.php. */
+require_once __DIR__ . '/planer.php';
+
 /** Anzahl der Schaltregeln. Vier decken Wallbox, Speicher, Warmwasser und
  *  Waermepumpe ab - mehr macht die Oberflaeche unuebersichtlich. */
 define('SPOT_REGELN', 4);
 
-/** Vorgabe einer Schaltregel. */
+/**
+ * Vorgabe einer Schaltregel.
+ *
+ * Die Felder des Fahrplaners (Rang, Leistung, Energie, Frist, Sperren)
+ * kommen aus plan_regel_vorgabe() dazu. Ihre Vorgaben sind so gewaehlt,
+ * dass sich fuer eine bestehende Regel nichts aendert.
+ */
 function spot_regel_vorgabe() {
-    return array(
+    return array_merge(array(
         'aktiv' => 0,
         'name' => '',
         'art' => 'fenster',   // fenster | stunden | schwelle | mittel
@@ -35,7 +46,7 @@ function spot_regel_vorgabe() {
         'schwelle' => 20.0,   // ct/kWh Endpreis (art=schwelle)
         'prozent' => 20,      // % unter dem Tagesmittel (art=mittel)
         'neg' => 1,           // bei negativem Boersenpreis immer einschalten
-    );
+    ), plan_regel_vorgabe());
 }
 
 function spot_paths() {
@@ -132,7 +143,18 @@ function spot_config() {
         'mqtt_topic' => 'spot_awattar',
         'notify' => array(),
         'tts' => array(),
-    );
+        // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
+        // Vorgabe 0 heisst jeweils "aus" - wer nichts einstellt, bekommt
+        // das Verhalten der Fassung davor.
+        'pv_quelle' => '',           // '' | forecast_solar | objekt | liste
+        'pv_url' => '',
+        'pv_pfad' => '',
+        'pv_zeitfeld' => '',
+        'pv_wertfeld' => '',
+        'pv_einheit' => 'wh',        // wh | w | kw
+        'soc_url' => '',
+        'soc_pfad' => '',
+    ) + plan_global_vorgabe();
     // Alte Konfigurationen trugen hier 0/1 - auf die neuen Namen heben.
     if ($cfg['profil_ein'] === 1 || $cfg['profil_ein'] === '1' || $cfg['profil_ein'] === true) {
         $cfg['profil_ein'] = 'absolut';
@@ -157,7 +179,28 @@ function spot_config() {
         $r['horizont'] = max(1, min(48, (int) $r['horizont']));
         $r['schwelle'] = (float) $r['schwelle'];
         $r['prozent'] = max(0, min(90, (int) $r['prozent']));
+        // Felder des Fahrplaners. Hier wird gekappt, nicht abgewiesen: das
+        // Abweisen macht die Oberflaeche beim Speichern, und was schon in der
+        // Datei steht, soll das Plugin nicht zum Absturz bringen.
+        $r['rang'] = max(1, min(99, (int) $r['rang']));
+        $r['leistung'] = max(0.0, min(100.0, (float) $r['leistung']));
+        $r['energie'] = max(0.0, min(500.0, (float) $r['energie']));
+        $r['frist'] = (int) $r['frist'];
+        if ($r['frist'] < 0 || $r['frist'] > 23) { $r['frist'] = -1; }
+        $r['pv_sperre'] = max(0.0, min(500.0, (float) $r['pv_sperre']));
+        $r['soc_min'] = max(0, min(100, (int) $r['soc_min']));
+        $r['soc_max'] = max(0, min(100, (int) $r['soc_max']));
         $cfg['regeln'][$i] = $r;
+    }
+    // Fahrplaner, global
+    $cfg['budget_kw'] = max(0.0, min(200.0, (float) $cfg['budget_kw']));
+    $cfg['pv_bonus'] = max(0.0, min(100.0, (float) $cfg['pv_bonus']));
+    $cfg['pv_schwelle'] = max(1, min(100000, (int) $cfg['pv_schwelle']));
+    if (!in_array($cfg['pv_quelle'], array('', 'forecast_solar', 'objekt', 'liste'), true)) {
+        $cfg['pv_quelle'] = '';
+    }
+    if (!in_array($cfg['pv_einheit'], array('wh', 'w', 'kw'), true)) {
+        $cfg['pv_einheit'] = 'wh';
     }
     if (!is_array($cfg['notify'])) { $cfg['notify'] = array(); }
     if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
@@ -580,19 +623,170 @@ function spot_regel_werte($r, $all, $st) {
     return $erg;
 }
 
-/** Alle Regeln auswerten. Rueckgabe: Liste mit Name, Art und Werten. */
+/* ==================================================================
+ * Fremde Auskuenfte fuer den Fahrplaner
+ *
+ * PV-Prognose und Speicherstand kommen von irgendwo her - von
+ * forecast.solar, von einem anderen LoxBerry-Plugin, von einem eigenen
+ * Skript. Das Plugin holt sie und reicht sie an den Planer weiter; das
+ * AUSWERTEN steckt in planer.php und ist dort ohne Netz durchgeprueft.
+ *
+ * Zwischengespeichert wird 15 Minuten. Eine Prognose aendert sich nicht
+ * schneller, und ein Fremddienst, den jedes Plugin im Minutentakt fragt,
+ * sperrt irgendwann aus.
+ * ================================================================== */
+
+function spot_umwelt($force = false) {
+    $cfg = spot_config();
+    $leer = array('pv' => null, 'pv_summe' => null, 'soc' => null,
+                  'pv_meldung' => '', 'soc_meldung' => '', 'ts' => 0);
+    $cache = spot_tmpdir() . '/umwelt.json';
+    if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
+        $c = json_decode((string) @file_get_contents($cache), true);
+        if (is_array($c)) { return $c + $leer; }
+    }
+    $erg = $leer;
+    $erg['ts'] = time();
+    $jetzt = time() - (time() % 3600);
+
+    if ($cfg['pv_quelle'] !== '' && trim((string) $cfg['pv_url']) !== '') {
+        $roh = spot_holen($cfg['pv_url']);
+        if ($roh === null) {
+            $erg['pv_meldung'] = 'NICHT_ERREICHBAR';
+        } else {
+            list($pv, $m) = plan_pv_lesen($roh, $cfg['pv_quelle'], $cfg['pv_pfad'],
+                $cfg['pv_zeitfeld'], $cfg['pv_wertfeld'], $cfg['pv_einheit'], 3600);
+            $erg['pv_meldung'] = $m;
+            if ($pv) {
+                $erg['pv'] = $pv;
+                $erg['pv_summe'] = plan_pv_summe($pv, $jetzt, 24);
+            }
+        }
+    }
+
+    if (trim((string) $cfg['soc_url']) !== '') {
+        $roh = spot_holen($cfg['soc_url']);
+        if ($roh === null) {
+            $erg['soc_meldung'] = 'NICHT_ERREICHBAR';
+        } else {
+            list($soc, $m) = plan_soc_lesen($roh, $cfg['soc_pfad']);
+            $erg['soc_meldung'] = $m;
+            $erg['soc'] = $soc;
+        }
+    }
+
+    spot_write_json_atomic($cache, $erg);
+    return $erg;
+}
+
+/**
+ * Den Sperrgrund als Zahl - Loxone rechnet mit Zahlen, nicht mit Woertern.
+ * 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll.
+ */
+function spot_sperre_zahl($grund) {
+    if ($grund === 'pv') { return 1; }
+    if ($grund === 'soc_min') { return 2; }
+    if ($grund === 'soc_max') { return 3; }
+    return 0;
+}
+
+/** Eine JSON-Adresse holen. Rueckgabe: Feld oder null. */
+function spot_holen($url) {
+    $url = trim((string) $url);
+    if ($url === '' || !preg_match('#^https?://#i', $url)) { return null; }
+    $ctx = stream_context_create(array('http' => array(
+        'timeout' => 12, 'user_agent' => 'LoxBerry Spotpreis', 'ignore_errors' => true)));
+    $r = @file_get_contents($url, false, $ctx);
+    if ($r === false) { return null; }
+    $d = json_decode($r, true);
+    return is_array($d) ? $d : null;
+}
+
+/**
+ * Alle Regeln auswerten - seit 1.2.0 ueber den gemeinsamen Fahrplaner.
+ *
+ * Bis 1.1.2 rechnete jede Regel fuer sich (spot_regel_werte, steht
+ * unveraendert darueber und wird noch vom Reiter Test benutzt, um die alte
+ * und die neue Rechnung nebeneinander zu zeigen). Der Planer bringt drei
+ * Dinge dazu, die eine einzelne Regel nicht wissen kann: die Frist, das
+ * gemeinsame Leistungsbudget und die PV-Prognose.
+ */
 function spot_regeln($all, $st) {
     $cfg = spot_config();
+    $umwelt = spot_umwelt();
+    $fp = plan_rechnen($all, 3600, (int) $st['hstart'], $cfg['regeln'], array(
+        'pv'       => isset($umwelt['pv']) ? $umwelt['pv'] : null,
+        'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
+        'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
+        'neg'      => !empty($st['neg']) ? 1 : 0,
+        'mittel'   => (float) $st['heute']['avg'],
+    ), array(
+        'budget_kw'   => $cfg['budget_kw'],
+        'pv_bonus'    => $cfg['pv_bonus'],
+        'pv_schwelle' => $cfg['pv_schwelle'],
+    ));
+
     $out = array();
-    foreach ($cfg['regeln'] as $i => $r) {
-        $w = spot_regel_werte($r, $all, $st);
-        $w['nr'] = $i + 1;
-        $w['name'] = $r['name'] !== '' ? $r['name'] : ('Regel ' . ($i + 1));
-        $w['art'] = $r['art'];
+    foreach ($fp as $i => $w) {
+        $r = isset($cfg['regeln'][$i]) ? $cfg['regeln'][$i] : array();
+        // 'in' und 'rest' kommen aus dem Planer in MINUTEN. Dieses Plugin
+        // rechnet seit jeher in Stunden, und daran haengen die virtuellen
+        // Eingaenge im Miniserver - also hier zurueckrechnen.
+        $w['in'] = $w['in'] < 0 ? -1 : (int) round($w['in'] / 60);
+        $w['rest'] = (int) round($w['rest'] / 60);
+        $w['name'] = (isset($r['name']) && $r['name'] !== '') ? $r['name'] : ('Regel ' . ($i + 1));
+        $w['art'] = isset($r['art']) ? $r['art'] : 'fenster';
         $w['ein'] = empty($r['aktiv']) ? 0 : 1;
+        unset($w['slots']);   // die Liste selbst braucht Loxone nicht
         $out[] = $w;
     }
     return $out;
+}
+
+/**
+ * Der Fahrplan MIT den Zeitscheiben - nur fuer die Anzeige.
+ *
+ * spot_regeln() wirft die Scheibenliste weg, weil Loxone sie nicht braucht.
+ * Die Oberflaeche braucht sie sehr wohl: erst daran sieht man, wann welche
+ * Regel laeuft und wie viel Leistung gleichzeitig verplant ist.
+ *
+ * Bewusst ein zweiter Aufruf und kein Zwischenspeicher: die Rechnung ist
+ * reine Arithmetik ueber hoechstens 48 Werte, und ein zweiter Cache waere
+ * eine zweite Stelle, die veralten kann.
+ *
+ * Rueckgabe: array('plan'=>..., 'belegung'=>ts=>kW, 'slotlen'=>Sekunden,
+ *                  'preise'=>ts=>ct)
+ */
+function spot_fahrplan($st = null) {
+    $cfg = spot_config();
+    if ($st === null) { $st = spot_state(); }
+    $all = array();
+    $heute = spot_day(strtotime('today 00:00'));
+    $morgen = spot_day(strtotime('tomorrow 00:00'));
+    foreach (array($heute, $morgen) as $tag) {
+        if (is_array($tag)) {
+            foreach ($tag as $ts => $netto) { $all[$ts] = spot_endprice($netto); }
+        }
+    }
+    ksort($all);
+    $umwelt = spot_umwelt();
+    $plan = plan_rechnen($all, 3600, (int) $st['hstart'], $cfg['regeln'], array(
+        'pv'       => isset($umwelt['pv']) ? $umwelt['pv'] : null,
+        'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
+        'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
+        'neg'      => !empty($st['neg']) ? 1 : 0,
+        'mittel'   => (float) $st['heute']['avg'],
+    ), array(
+        'budget_kw'   => $cfg['budget_kw'],
+        'pv_bonus'    => $cfg['pv_bonus'],
+        'pv_schwelle' => $cfg['pv_schwelle'],
+    ));
+    foreach ($plan as $i => $p) {
+        $plan[$i]['name'] = (isset($cfg['regeln'][$i]['name']) && $cfg['regeln'][$i]['name'] !== '')
+            ? $cfg['regeln'][$i]['name'] : ('Regel ' . ($i + 1));
+    }
+    return array('plan' => $plan, 'belegung' => plan_belegung($plan),
+                 'slotlen' => 3600, 'preise' => $all);
 }
 
 /** Kompletter Zustand (Cache 5 min). */
@@ -704,8 +898,25 @@ function spot_state($force = false) {
         $st['profil_relativ'][$h] = isset($all[$hstart + $h * 3600])
             ? round((float) $all[$hstart + $h * 3600], 3) : 0.0;
     }
+    /* Fremde Auskuenfte vor den Regeln - der Planer braucht sie.
+     * Ein Fehlschlag hier macht den Zustand nicht ungueltig: ohne Prognose
+     * plant der Planer wie vorher, nur ohne Gutschrift. */
+    $umwelt = spot_umwelt();
+    $st['pv_summe'] = isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null;
+    $st['soc'] = isset($umwelt['soc']) ? $umwelt['soc'] : null;
+    $st['pv_meldung'] = isset($umwelt['pv_meldung']) ? $umwelt['pv_meldung'] : '';
+    $st['soc_meldung'] = isset($umwelt['soc_meldung']) ? $umwelt['soc_meldung'] : '';
+
     // Schaltregeln zuletzt: sie brauchen neg, hstart und das Tagesmittel.
     $st['regeln'] = spot_regeln($all, $st);
+
+    /* Verplante Leistung in der laufenden Stunde - die eine Zahl, an der
+     * sich ablesen laesst, ob das Budget greift. */
+    $st['planlast'] = 0.0;
+    foreach ($st['regeln'] as $r) {
+        if (!empty($r['aktiv'])) { $st['planlast'] += (float) $r['leistung']; }
+    }
+    $st['planlast'] = round($st['planlast'], 2);
     spot_write_json_atomic($cache, $st);
     spot_log_if_changed('zustand', 'cur=' . $st['cur'] . ' ct rank=' . $st['rank'] . ' level=' . $st['level'] . ' morgen_ok=' . $st['tomorrow_ok']);
     return $st;
@@ -970,17 +1181,40 @@ function spot_own_ip() {
             $cand[] = $h;
         }
     }
-    // Ohne Web-Kontext (Cron): Adresse ueber eine Test-Verbindung bzw. den Hostnamen
-    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-    if ($s) {
-        if (@socket_connect($s, '8.8.8.8', 53)) {
-            $addr = '';
-            $port = 0;
-            if (@socket_getsockname($s, $addr, $port) && $addr !== '') {
-                $cand[] = $addr;
+    /* Ohne Web-Kontext (Cron): Adresse ueber eine Test-Verbindung.
+     *
+     * GEPRUEFT WIRD, OB ES socket_create() UEBERHAUPT GIBT. Die Erweiterung
+     * 'sockets' ist auf einem LoxBerry nicht garantiert geladen, und ein
+     * Aufruf ohne sie ist kein Fehler zur Laufzeit, sondern ein Fatal error:
+     * die GANZE Seite bleibt weiss, nicht nur diese Zeile. Aufgefallen am
+     * 10.08.2026 in einem PHP ohne die Erweiterung.
+     *
+     * Der Rueckfallweg ueber Datenstroeme kann dasselbe: eine UDP-"Verbindung"
+     * verschickt kein Paket, sie legt nur die Route fest - und daraus liest
+     * stream_socket_get_name() die eigene Adresse. */
+    if (function_exists('socket_create')) {
+        $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if ($s) {
+            if (@socket_connect($s, '8.8.8.8', 53)) {
+                $addr = '';
+                $port = 0;
+                if (@socket_getsockname($s, $addr, $port) && $addr !== '') {
+                    $cand[] = $addr;
+                }
+            }
+            socket_close($s);
+        }
+    } else {
+        $nr = 0; $txt = '';
+        $st = @stream_socket_client('udp://8.8.8.8:53', $nr, $txt, 1);
+        if ($st) {
+            $name = @stream_socket_get_name($st, false);
+            fclose($st);
+            $ip = preg_replace('/:\d+$/', '', (string) $name);
+            if ($ip !== '' && preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $ip)) {
+                $cand[] = $ip;
             }
         }
-        socket_close($s);
     }
     $hn = @gethostbyname(@gethostname());
     if ($hn && preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $hn)) {
@@ -1236,16 +1470,43 @@ function spot_mqtt_publish($st = null) {
         $msgs[$z . 'rest'] = (int) $r['rest'];
         $msgs[$z . 'ct'] = $r['ct'];
         $msgs[$z . 'ein'] = (int) $r['ein'];
+        $msgs[$z . 'verdraengt'] = isset($r['verdraengt']) ? (int) $r['verdraengt'] : 0;
+        $msgs[$z . 'sperre'] = spot_sperre_zahl(isset($r['gesperrt']) ? $r['gesperrt'] : '');
+        $msgs[$z . 'rang'] = isset($r['rang']) ? (int) $r['rang'] : 50;
     }
-    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-    if (!$s) {
+    // Fahrplaner, global
+    $msgs['plan/budget'] = (float) $cfg['budget_kw'];
+    $msgs['plan/last'] = isset($st['planlast']) ? (float) $st['planlast'] : 0.0;
+    if (isset($st['pv_summe']) && $st['pv_summe'] !== null) {
+        $msgs['plan/pv_prognose'] = (float) $st['pv_summe'];
+    }
+    if (isset($st['soc']) && $st['soc'] !== null) {
+        $msgs['plan/soc'] = (float) $st['soc'];
+    }
+    /* Auch hier: die Erweiterung 'sockets' ist nicht garantiert geladen.
+     * Ohne die Pruefung stirbt der Cron-Lauf mit einem Fatal error, und in
+     * der Logdatei steht nichts, was darauf hinweist. */
+    if (function_exists('socket_create')) {
+        $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if (!$s) {
+            return;
+        }
+        foreach ($msgs as $k => $v) {
+            $msg = 'publish ' . $prefix . '/' . $k . ' ' . $v;
+            @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
+        }
+        socket_close($s);
+        return;
+    }
+    $nr = 0; $txt = '';
+    $st = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $nr, $txt, 2);
+    if (!$st) {
         return;
     }
     foreach ($msgs as $k => $v) {
-        $msg = 'publish ' . $prefix . '/' . $k . ' ' . $v;
-        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
+        @fwrite($st, 'publish ' . $prefix . '/' . $k . ' ' . $v);
     }
-    socket_close($s);
+    fclose($st);
 }
 
 /* ==================================================================
@@ -1293,10 +1554,21 @@ function spot_zeile($st, $cfg) {
     $teile = array();
     foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $r) {
         $n = (int) $r['nr'];
-        $teile[] = sprintf('R%d=%d;R%dIN=%d;R%dREST=%d;R%dCT=%.3f',
-            $n, $r['aktiv'], $n, $r['in'], $n, $r['rest'], $n, $r['ct']);
+        $teile[] = sprintf('R%d=%d;R%dIN=%d;R%dREST=%d;R%dCT=%.3f;R%dVERD=%d;R%dSPERRE=%d',
+            $n, $r['aktiv'], $n, $r['in'], $n, $r['rest'], $n, $r['ct'],
+            $n, isset($r['verdraengt']) ? (int) $r['verdraengt'] : 0,
+            $n, spot_sperre_zahl(isset($r['gesperrt']) ? $r['gesperrt'] : ''));
     }
     $o .= 'REGEL;' . implode(';', $teile) . "\n";
+
+    /* Der Fahrplaner als eigene Zeile. Auch hier gilt: die Befehlserkennung
+     * in Loxone sucht Textstellen, nicht Zeilen - bestehende Eingaenge
+     * merken von der neuen Zeile nichts. */
+    $o .= sprintf("PLAN;PVSUM=%.3f;SOC=%d;BUDGET=%.2f;PLANLAST=%.2f\n",
+        isset($st['pv_summe']) && $st['pv_summe'] !== null ? (float) $st['pv_summe'] : 0.0,
+        isset($st['soc']) && $st['soc'] !== null ? (int) round($st['soc']) : -1,
+        (float) $cfg['budget_kw'],
+        isset($st['planlast']) ? (float) $st['planlast'] : 0.0);
 
     // Stundenprofil: PH00..PH23 heute, PM00..PM23 morgen, Endpreis in ct/kWh.
     $modus = (string) $cfg['profil_ein'];
@@ -1366,7 +1638,18 @@ function spot_felder() {
         $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', 'Schaltregel ' . $i . ': Stunden bis zum naechsten Fenster');
         $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', 'Schaltregel ' . $i . ': verbleibende Stunden');
         $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', 'Schaltregel ' . $i . ': Schnitt im Fenster');
+        // Fahrplaner ab 1.2.0. VERD und SPERRE beantworten die Frage, die
+        // sonst im Dunkeln bleibt: warum laeuft es gerade NICHT?
+        $f['R' . $i . 'VERD']   = array(1, 0, 96, '',
+            'Schaltregel ' . $i . ': Stunden, die eine hoeher gereihte Regel weggenommen hat');
+        $f['R' . $i . 'SPERRE'] = array(1, 0, 3, '',
+            'Schaltregel ' . $i . ': 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll');
     }
+    // Fahrplaner, global
+    $f['PVSUM'] = array(1, 0, 1000, 'kWh', 'PV-Prognose der naechsten 24 Stunden');
+    $f['SOC']   = array(1, -1, 100, '%', 'Speicherstand, -1 = keine Auskunft');
+    $f['BUDGET'] = array(1, 0, 200, 'kW', 'Eingestelltes Leistungsbudget, 0 = keines');
+    $f['PLANLAST'] = array(1, 0, 200, 'kW', 'Verplante Leistung in der laufenden Stunde');
     $cfg = spot_config();
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {

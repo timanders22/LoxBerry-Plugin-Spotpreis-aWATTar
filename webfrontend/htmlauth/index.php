@@ -54,6 +54,21 @@ if ((!is_file($sp_cfgfile) || trim((string) @file_get_contents($sp_cfgfile)) ===
 $sp_saved = false;
 $sp_err = '';
 $sp_note = '';
+/* Beanstandungen werden GESAMMELT, nicht ueberschrieben: prueft ein
+ * Speichervorgang mehrere Felder, gehoeren alle Meldungen zusammen
+ * ausgegeben. Eine einzelne Zuweisung verschluckt die vorherigen, und der
+ * Benutzer korrigiert dann einen Fehler nach dem anderen. */
+$sp_fehler = array();
+/* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
+ * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
+$sp_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
+/* Ausgabe des Planer-Selbsttests. Er rechnet nur, spricht mit niemandem und
+ * braucht keine Preise - deshalb ein einfacher Knopf ohne Nebenwirkung. */
+$sp_plantest = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plantest'])) {
+    list($sp_pt_n, $sp_pt_f, $sp_plantest) = plan_selbsttest();
+    $sp_tab = 'tab-test';
+}
 // Der Reiter kommt aus einem abgesendeten Formular (activetab) oder aus der
 // Adresse (?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
 // sind - siehe die Reiterleiste weiter unten.
@@ -156,7 +171,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             'schwelle' => max(-100, min(200, (float) str_replace(',', '.', (string) $sp_g('r_schwelle', 20)))),
             'prozent' => max(0, min(90, (int) $sp_g('r_prozent', 20))),
             'neg' => (int) $sp_g('r_neg', 0) ? 1 : 0,
+            // ---- Fahrplaner ----
+            'rang' => max(1, min(99, (int) $sp_g('r_rang', 50))),
+            'leistung' => max(0, min(100, (float) str_replace(',', '.', (string) $sp_g('r_leistung', 0)))),
+            'energie' => max(0, min(500, (float) str_replace(',', '.', (string) $sp_g('r_energie', 0)))),
+            // -1 heisst "keine Frist". Das Auswahlfeld liefert -1 als Text.
+            'frist' => (in_array((string) $sp_g('r_frist', '-1'), $sp_stunden_wahl, true))
+                       ? (int) $sp_g('r_frist', -1) : -1,
+            'pv_sperre' => max(0, min(500, (float) str_replace(',', '.', (string) $sp_g('r_pv_sperre', 0)))),
+            'soc_min' => max(0, min(100, (int) $sp_g('r_soc_min', 0))),
+            'soc_max' => max(0, min(100, (int) $sp_g('r_soc_max', 0))),
         );
+        /* Ein Fenster, das laenger ist als die Frist erlaubt, ist ein
+         * Widerspruch - und einer, den man beim Eintragen leicht macht
+         * ("6 Stunden, fertig um 5 Uhr", eingestellt um 1 Uhr). Er wird
+         * gemeldet statt still zurechtgebogen; der Planer nimmt dann,
+         * was er kriegen kann, und das faellt sonst niemandem auf. */
+        $sp_rr = $sp_new['regeln'][$sp_i];
+        if ($sp_rr['aktiv'] && $sp_rr['frist'] >= 0 && $sp_rr['energie'] <= 0
+            && $sp_rr['n'] > 24) {
+            $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_FRIST'), $sp_i + 1);
+        }
+        if ($sp_rr['aktiv'] && $sp_rr['energie'] > 0 && $sp_rr['leistung'] <= 0) {
+            $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $sp_i + 1);
+        }
+        if ($sp_rr['soc_min'] > 0 && $sp_rr['soc_max'] > 0
+            && $sp_rr['soc_min'] >= $sp_rr['soc_max']) {
+            $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_SOC_REIHE'), $sp_i + 1);
+        }
+    }
+    // ---- Fahrplaner, global ----
+    $sp_new['budget_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0))));
+    $sp_new['pv_bonus'] = max(0, min(100, (float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0))));
+    $sp_new['pv_schwelle'] = max(1, min(100000, (int) (isset($_POST['pv_schwelle']) ? $_POST['pv_schwelle'] : 500)));
+    $sp_q = (string) (isset($_POST['pv_quelle']) ? $_POST['pv_quelle'] : '');
+    $sp_new['pv_quelle'] = in_array($sp_q, array('', 'forecast_solar', 'objekt', 'liste'), true) ? $sp_q : '';
+    $sp_e2 = (string) (isset($_POST['pv_einheit']) ? $_POST['pv_einheit'] : 'wh');
+    $sp_new['pv_einheit'] = in_array($sp_e2, array('wh', 'w', 'kw'), true) ? $sp_e2 : 'wh';
+    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad') as $sp_f2) {
+        // Nur Steuerzeichen und Anfuehrungszeichen raus. Ein hartes Filtern
+        // auf eine Positivliste zerstoert eingefuegte Adressen - belegt am
+        // ACTi-Plugin am 26.07.2026.
+        $sp_new[$sp_f2] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+            (string) (isset($_POST[$sp_f2]) ? $_POST[$sp_f2] : '')));
+    }
+    foreach (array('pv_url', 'soc_url') as $sp_f2) {
+        if ($sp_new[$sp_f2] !== '' && !preg_match('#^https?://#i', $sp_new[$sp_f2])) {
+            $sp_fehler[] = sprintf(spot_t('PLAN.FEHLER_URL'), spot_t('PLAN.L_' . strtoupper($sp_f2)));
+        }
+    }
+    if ($sp_new['pv_quelle'] === 'liste'
+        && ($sp_new['pv_zeitfeld'] === '' || $sp_new['pv_wertfeld'] === '')) {
+        $sp_fehler[] = spot_t('PLAN.FEHLER_FELDNAMEN');
+    }
+    if ($sp_new['pv_quelle'] !== '' && $sp_new['pv_quelle'] !== 'forecast_solar'
+        && $sp_new['pv_pfad'] === '') {
+        $sp_fehler[] = spot_t('PLAN.FEHLER_PFAD');
     }
     $sp_new['wp_enabled'] = isset($_POST['wp_enabled']) ? 1 : 0;
     $sp_new['wp_name'] = trim((string) (isset($_POST['wp_name']) ? $_POST['wp_name'] : '')) !== '' ? trim((string) $_POST['wp_name']) : 'Wärmepumpe';
@@ -240,7 +310,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 
     // Unteilbar schreiben, Sicherungskopie anlegen, Zwischenspeicher leeren -
     // alles in spot_config_save().
-    if (spot_config_save($sp_new)) {
+    if ($sp_fehler) {
+        // Nichts schreiben, solange etwas beanstandet ist - sonst stuende
+        // die Haelfte der Eingabe in der Datei und die andere nicht.
+        $sp_err = implode(' | ', $sp_fehler);
+    } elseif (spot_config_save($sp_new)) {
         $sp_saved = true;
     } else {
         $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), $sp_cfgfile);
@@ -662,6 +736,93 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     </div>
 </div>
 
+<h2><?php echo spot_t('PLAN.H_TITEL'); ?></h2>
+<div class="sm-hinweis"><?php echo spot_t('PLAN.ERKLAERUNG'); ?></div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('PLAN.L_BUDGET_KW'); ?></label>
+    <input data-role="none" type="text" name="budget_kw" value="<?= sp_e($sp_cfg['budget_kw']) ?>" placeholder="0">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_BUDGET_KW'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_BONUS'); ?></label>
+    <input data-role="none" type="text" name="pv_bonus" value="<?= sp_e($sp_cfg['pv_bonus']) ?>" placeholder="0">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_BONUS'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_SCHWELLE'); ?></label>
+    <input data-role="none" type="number" name="pv_schwelle" value="<?= (int) $sp_cfg['pv_schwelle'] ?>" min="1" max="100000">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_SCHWELLE'); ?></div>
+  </div>
+</div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_QUELLE'); ?></label>
+    <select data-role="none" name="pv_quelle">
+<?php foreach (array('', 'forecast_solar', 'objekt', 'liste') as $sp_q2) { ?>
+      <option value="<?= sp_e($sp_q2) ?>"<?= $sp_cfg['pv_quelle'] === $sp_q2 ? ' selected' : '' ?>><?= sp_e(spot_t('PLAN.QUELLE_' . ($sp_q2 === '' ? 'AUS' : strtoupper($sp_q2)))) ?></option>
+<?php } ?>
+    </select>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_URL'); ?></label>
+    <input data-role="none" type="text" name="pv_url" value="<?= sp_e($sp_cfg['pv_url']) ?>" placeholder="https://api.forecast.solar/estimate/...">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_URL'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_EINHEIT'); ?></label>
+    <select data-role="none" name="pv_einheit">
+<?php foreach (array('wh', 'w', 'kw') as $sp_e3) { ?>
+      <option value="<?= $sp_e3 ?>"<?= $sp_cfg['pv_einheit'] === $sp_e3 ? ' selected' : '' ?>><?= sp_e(spot_t('PLAN.EINHEIT_' . strtoupper($sp_e3))) ?></option>
+<?php } ?>
+    </select>
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_EINHEIT'); ?></div>
+  </div>
+</div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_PFAD'); ?></label>
+    <input data-role="none" type="text" name="pv_pfad" value="<?= sp_e($sp_cfg['pv_pfad']) ?>" placeholder="forecasts">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_PFAD'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_ZEITFELD'); ?></label>
+    <input data-role="none" type="text" name="pv_zeitfeld" value="<?= sp_e($sp_cfg['pv_zeitfeld']) ?>" placeholder="period_end">
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_PV_WERTFELD'); ?></label>
+    <input data-role="none" type="text" name="pv_wertfeld" value="<?= sp_e($sp_cfg['pv_wertfeld']) ?>" placeholder="pv_estimate">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_PV_FELDER'); ?></div>
+  </div>
+</div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('PLAN.L_SOC_URL'); ?></label>
+    <input data-role="none" type="text" name="soc_url" value="<?= sp_e($sp_cfg['soc_url']) ?>" placeholder="http://loxberry/plugins/...">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_SOC_URL'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_SOC_PFAD'); ?></label>
+    <input data-role="none" type="text" name="soc_pfad" value="<?= sp_e($sp_cfg['soc_pfad']) ?>" placeholder="geraete.1.soc">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_SOC_PFAD'); ?></div>
+  </div>
+</div>
+<?php
+$sp_umw = spot_umwelt();
+if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
+<div class="sm-alert <?= (!empty($sp_umw['pv_meldung']) || !empty($sp_umw['soc_meldung'])) ? 'sm-err' : 'sm-info' ?>">
+  <?= sprintf(sp_e(spot_t('PLAN.STAND')),
+      $sp_umw['pv_summe'] === null ? '&ndash;' : sp_n($sp_umw['pv_summe'], 1),
+      $sp_umw['soc'] === null ? '&ndash;' : sp_n($sp_umw['soc'], 0)) ?>
+<?php if (!empty($sp_umw['pv_meldung'])) { ?>
+  <br>PV: <?= sp_e(spot_t('PLANMELD.' . $sp_umw['pv_meldung'])) ?>
+<?php } ?>
+<?php if (!empty($sp_umw['soc_meldung'])) { ?>
+  <br><?php echo spot_t('PLAN.SPEICHER'); ?>: <?= sp_e(spot_t('PLANMELD.' . $sp_umw['soc_meldung'])) ?>
+<?php } ?>
+</div>
+<?php } ?>
+
 <h2><?php echo spot_t('REGEL.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('REGEL.ERKLAERUNG'); ?></div>
 <?php for ($sp_i = 0; $sp_i < SPOT_REGELN; $sp_i++) {
@@ -711,6 +872,49 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <div>
       <label><?php echo spot_t('REGEL.L_HORIZONT'); ?></label>
       <input data-role="none" type="number" name="r_horizont[<?= $sp_i ?>]" value="<?= (int) $sp_r['horizont'] ?>" min="1" max="48">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_FRIST'); ?></label>
+      <select data-role="none" name="r_frist[<?= $sp_i ?>]">
+        <option value="-1"<?= (int) $sp_r['frist'] < 0 ? ' selected' : '' ?>><?php echo spot_t('REGEL.FRIST_KEINE'); ?></option>
+<?php for ($sp_h = 0; $sp_h < 24; $sp_h++) { ?>
+        <option value="<?= $sp_h ?>"<?= (int) $sp_r['frist'] === $sp_h ? ' selected' : '' ?>><?= sprintf('%02d:00', $sp_h) ?></option>
+<?php } ?>
+      </select>
+      <div class="sm-small"><?php echo spot_t('REGEL.H_FRIST'); ?></div>
+    </div>
+  </div>
+  <div class="sm-row">
+    <div>
+      <label><?php echo spot_t('REGEL.L_RANG'); ?></label>
+      <input data-role="none" type="number" name="r_rang[<?= $sp_i ?>]" value="<?= (int) $sp_r['rang'] ?>" min="1" max="99">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_RANG'); ?></div>
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_LEISTUNG'); ?></label>
+      <input data-role="none" type="text" name="r_leistung[<?= $sp_i ?>]" value="<?= sp_e($sp_r['leistung']) ?>" placeholder="0">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_LEISTUNG'); ?></div>
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_ENERGIE'); ?></label>
+      <input data-role="none" type="text" name="r_energie[<?= $sp_i ?>]" value="<?= sp_e($sp_r['energie']) ?>" placeholder="0">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_ENERGIE'); ?></div>
+    </div>
+  </div>
+  <div class="sm-row">
+    <div>
+      <label><?php echo spot_t('REGEL.L_PV_SPERRE'); ?></label>
+      <input data-role="none" type="text" name="r_pv_sperre[<?= $sp_i ?>]" value="<?= sp_e($sp_r['pv_sperre']) ?>" placeholder="0">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_PV_SPERRE'); ?></div>
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_SOC_MIN'); ?></label>
+      <input data-role="none" type="number" name="r_soc_min[<?= $sp_i ?>]" value="<?= (int) $sp_r['soc_min'] ?>" min="0" max="100">
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_SOC_MAX'); ?></label>
+      <input data-role="none" type="number" name="r_soc_max[<?= $sp_i ?>]" value="<?= (int) $sp_r['soc_max'] ?>" min="0" max="100">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_SOC'); ?></div>
     </div>
   </div>
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -994,6 +1198,72 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-pane<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2><?php echo spot_t('TEXT.TEST'); ?></h2>
+
+<h3 class="sm-h3"><?php echo spot_t('PLAN.H_FAHRPLAN'); ?></h3>
+<p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_TEXT'); ?></p>
+<?php
+$sp_fp = spot_fahrplan();
+$sp_bel = $sp_fp['belegung'];
+$sp_sl = (int) $sp_fp['slotlen'];
+$sp_aktiv = array();
+foreach ($sp_fp['plan'] as $sp_pz) {
+    if (!empty($sp_pz['slots'])) { $sp_aktiv[] = $sp_pz; }
+}
+/* Nur die Scheiben zeigen, in denen ueberhaupt etwas geplant ist - eine
+ * Tabelle mit 96 Zeilen, von denen 90 leer sind, liest niemand. Gedeckelt
+ * bei 60 Zeilen; mehr passt auf keinen Bildschirm. */
+$sp_zeiten = array_keys($sp_bel);
+foreach ($sp_aktiv as $sp_pz) {
+    foreach ($sp_pz['slots'] as $sp_ts) { $sp_zeiten[] = $sp_ts; }
+}
+$sp_zeiten = array_values(array_unique($sp_zeiten));
+sort($sp_zeiten);
+$sp_zeiten = array_slice($sp_zeiten, 0, 60);
+$sp_budget = (float) $sp_cfg['budget_kw'];
+?>
+<?php if (!$sp_zeiten) { ?>
+<div class="sm-hinweis"><?php echo spot_t('PLAN.FAHRPLAN_LEER'); ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('PLAN.T_ZEIT'); ?></th><th><?php echo spot_t('PLAN.T_PREIS'); ?></th>
+<?php foreach ($sp_aktiv as $sp_pz) { ?>
+    <th><?php echo sp_e($sp_pz['name']); ?></th>
+<?php } ?>
+    <th><?php echo spot_t('PLAN.T_SUMME'); ?></th></tr>
+<?php foreach ($sp_zeiten as $sp_ts) {
+    $sp_kw = isset($sp_bel[$sp_ts]) ? (float) $sp_bel[$sp_ts] : 0.0;
+    $sp_voll = ($sp_budget > 0 && round($sp_kw, 4) >= round($sp_budget, 4));
+?>
+<tr<?php echo $sp_voll ? ' style="background:#fdf4ec;"' : ''; ?>>
+    <td><span class="sm-mono"><?php echo date($sp_sl >= 3600 ? 'd.m. H:i' : 'd.m. H:i', $sp_ts); ?></span></td>
+    <td><?php echo isset($sp_fp['preise'][$sp_ts])
+        ? sp_n($sp_fp['preise'][$sp_ts], 2) : '&ndash;'; ?></td>
+<?php foreach ($sp_aktiv as $sp_pz) { ?>
+    <td style="text-align:center;"><?php echo in_array($sp_ts, $sp_pz['slots'], true)
+        ? '<span class="sm-an">&#9632;</span>' : '&middot;'; ?></td>
+<?php } ?>
+    <td><?php echo $sp_kw > 0 ? sp_n($sp_kw, 2) . ' kW' : '&ndash;'; ?></td></tr>
+<?php } ?>
+</table>
+<?php if ($sp_budget > 0) { ?>
+<p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_BUDGET'); ?></p>
+<?php } } ?>
+
+<h3 class="sm-h3"><?php echo spot_t('PLAN.H_SELBSTTEST'); ?></h3>
+<p class="sm-small"><?php echo spot_t('PLAN.SELBSTTEST_TEXT'); ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('PLAN.LEGENDE_TECHNIK'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="tab" value="test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="plantest" value="1"><?php echo spot_t('PLAN.K_SELBSTTEST'); ?></button>
+  </form>
+</div>
+<?php if (!empty($sp_plantest)) { ?>
+<div class="sm-pre"><?php echo sp_e($sp_plantest); ?></div>
+<?php } ?>
 
 <h3 class="sm-h3"><?php echo spot_t('REGEL.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo spot_t('REGEL.SELBSTTEST_TEXT'); ?></p>

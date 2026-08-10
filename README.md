@@ -102,6 +102,77 @@ Speicherheizung 1,71 · Elektromobilität 4,28 · Modul 2 pauschal 2,59 ·
 Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe
 Schwachlast 0,61 ct/kWh.
 
+
+## Fassung 1.2.0 — Fahrplaner
+
+Bis 1.1.2 rechnete jede Schaltregel für sich. Wärmepumpe, Wallbox und
+Waschmaschine fanden dieselbe günstigste Stunde und schalteten gleichzeitig.
+Drei Dinge kommen dazu — **alle drei ab Werk aus**, wer nichts einstellt,
+bekommt das Verhalten der Fassung davor:
+
+**Frist und Energiemenge.** Eine Regel kann jetzt sagen „7 kWh bei 3,7 kW,
+fertig bis 7 Uhr". Daraus rechnet der Planer die nötige Laufzeit und sucht
+nur bis zur Frist — auch wenn es danach billiger wäre. Ist die Uhrzeit heute
+schon vorbei, ist morgen gemeint.
+
+**Rangfolge und Leistungsbudget.** Jede Regel bekommt einen Rang und eine
+Leistungsangabe, das Plugin ein Gesamtbudget in kW. Geplant wird in
+Rangfolge: Rang 1 sucht sich die günstigen Stunden zuerst aus, was er belegt
+hat, steht den anderen nicht mehr zur Verfügung. Das ist ein gieriges
+Verfahren, kein optimales — dafür in einem Satz erklärbar: *wer vorne steht,
+sucht sich zuerst aus.* Wer um drei Uhr nachts wissen will, warum die Wallbox
+nicht lädt, bekommt mit `VERD` die Zahl der weggenommenen Stunden und sieht
+es sofort.
+
+**PV-Prognose und Speicherstand.** Für jede Stunde mit Sonnenprognose wird
+eine Gutschrift vom Preis abgezogen — damit gewinnt die sonnige
+Mittagsstunde gegen die billige Nachtstunde. Die Gutschrift steigt linear bis
+zu einer Schwelle; eine reine Ja/Nein-Grenze wäre eine Klippe, an der der
+Fahrplan bei minimal geänderter Prognose um Stunden springt. Dazu zwei
+Sperren je Regel: „nicht laden, wenn morgen mehr als X kWh vom Dach kommen"
+und „nur zwischen diesen beiden Speicherständen".
+
+Als Quelle taugt **forecast.solar** (kostenlos, ohne Konto) oder jede eigene
+Adresse, die JSON liefert — als Objekt Zeit→Wert oder als Liste von Objekten
+mit frei benennbaren Feldern. Für den Speicherstand genügt eine Adresse und
+ein Pfad. Beides wird höchstens alle 15 Minuten geholt.
+
+### Der Planer steckt in einer eigenen Datei
+
+`webfrontend/html/planer.php` ist in **diesem und im Octopus-Plugin
+byteweise gleich** — dieselbe Rechnung, dieselben Prüffälle. Deshalb trägt
+sie das neutrale Kürzel `plan_` statt des Plugin-Kürzels; das ist die einzige
+Ausnahme von der Kürzelregel und bewusst gemacht: zwei auseinanderlaufende
+Kopien derselben Rechnung wären schlimmer als ein zweites Kürzel.
+
+Sie ist reine Rechnung — kein Netz, keine Dateien, keine Uhr außer dem
+übergebenen Zeitpunkt. Deshalb lässt sie sich vollständig durchprüfen:
+**53 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.2 alle grün.
+Darunter die Verdrängung durch das Budget, die Frist über Mitternacht, die
+Einheitenumrechnung Wh/W/kW und der Fall „PV-Gutschrift lässt die
+Sonnenstunde gegen die billigste Stunde gewinnen".
+
+**Was das nicht beweist:** dass die Prognosequelle so antwortet, wie sie
+soll. Das entscheidet der Dienst am anderen Ende. Der Reiter Einstellungen
+zeigt deshalb an, was zuletzt geholt wurde, und nennt den Grund, wenn nichts
+ankam.
+
+### Zwei Altfunde nebenbei
+
+**`socket_create()` ohne Absicherung.** Zwei Stellen riefen die Funktion
+auf, ohne zu prüfen, ob es die Erweiterung `sockets` überhaupt gibt. Das ist
+kein Fehler zur Laufzeit, sondern ein Fatal error: die **ganze Seite** bleibt
+weiß, nicht nur die betroffene Zeile — und beim Cron-Lauf steht nichts im
+Protokoll, was darauf hinweist. Aufgefallen beim Rendern in einem PHP ohne
+die Erweiterung. Beide Stellen haben jetzt einen Rückfallweg über
+Datenströme; das Octopus-Plugin machte es an derselben Stelle seit jeher
+richtig, die beiden waren auseinandergelaufen.
+
+**Zwei Sprachschlüssel mit Anführungszeichen im Wert.** `<span class="…">`
+innerhalb eines quotierten INI-Wertes — HTML-Attribute gehören dort einfach
+gequotet. Betroffen waren `TOKEN_AKTIV` und `TOKEN_ERKLAERUNG` in beiden
+Sprachdateien.
+
 ## Fassung 1.1.1 — aufgeräumt
 
 ### Der Cron-Lauf lag im unangemeldeten Web-Verzeichnis
