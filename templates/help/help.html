@@ -1,46 +1,46 @@
-<h2>Spotpreis aWATTar</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Holt die stündlichen Börsenstrompreise (EPEX SPOT Day-Ahead) über die offene <b>aWATTar-API</b> (Deutschland oder Österreich), rechnet sie mit den eigenen Preisbestandteilen auf den <b>Endpreis in ct/kWh</b> hoch und liefert sie an Loxone, per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<p>Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und <b>LoxBerry 4</b> (reines PHP, läuft mit PHP 7.4 und 8.x).</p>
+<p><TMPL_VAR HILFE.K03></p>
 
-<h3>Funktionen</h3>
+<h3><TMPL_VAR HILFE.K04></h3>
 
-<ul><li><b>Endpreis statt Börsenpreis</b>: Netzentgelte, Stromsteuer, Konzessionsabgabe, Umlagen, Anbieter-Aufschlag und Umsatzsteuer sind einzeln einstellbar (Richtwerte 2026 vorbelegt, DE und AT)</li><li>Aktuelle Stunde, nächste Stunde, Börsenanteil, <b>Rang</b> der laufenden Stunde in den nächsten 24 h, <b>Preisniveau</b> (günstig/normal/teuer über frei wählbare Schwellen), Flag für negative Börsenpreise</li><li>Günstigste/teuerste Stunde und Tagesdurchschnitt für <b>heute und morgen</b></li><li><b>Günstigstes zusammenhängendes X-Stunden-Fenster</b> (Länge einstellbar) — ideal für Waschmaschine, Spülmaschine, E-Auto, Warmwasser</li><li><b>Stündliche Ansage (TTS)</b>, je Stunde per Checkbox aktivierbar; optional nur unterhalb der Günstig-Schwelle, zusätzlich immer bei negativem Preis, und eine Tagesvorschau-Ansage, sobald die Preise für morgen veröffentlicht sind</li><li><b>Push-Auslöser</b> für Loxone (<code>ANN</code>) samt Test-Push-Funktion</li><li><b>CO₂-Intensität</b> des Strommixes als zweite Kennzahl (Fraunhofer ISE Energy-Charts, kostenlos und ohne Konto): aktueller Wert, sauberste Stunde der nächsten 24 h, Flag „Ökostrom-Zeit" — für CO₂-optimiertes Schalten</li><li><b>Zweiter Preissatz nach § 14a EnWG</b> für steuerbare Wärmepumpe oder Wallbox mit eigenem Zählpunkt (reduziertes Netzentgelt + Schwachlast-Konzessionsabgabe)</li><li><b>Tarifvergleich fest ↔ dynamisch</b>: Monatstabelle mit lastprofil-gewichtetem Durchschnitt gegen den eigenen Festpreis, in ct/kWh und Euro — plus Monatsbericht als Ansage/Protokoll am Monatsersten. Der Netzbezug lässt sich <b>je Monat</b> eintragen (wichtig mit PV: im Winter viel Zukauf bei hohen Börsenpreisen, im Sommer wenig); der Jahresverbrauch ergibt sich dann automatisch aus der Summe</li><li><b>Ersparnis durch verschobenen Verbrauch</b>: Was hätte es gebracht, täglich X kWh in die günstigste Stunde zu verschieben (Woche und Jahreshochrechnung)</li><li><b>Optionale Kopplung mit dem Marstek-Speicher-Plugin</b> (Standard aus): lädt den Speicher in den X günstigsten Stunden bzw. bei negativem Preis</li><li><b>MQTT</b> über das LoxBerry MQTT Gateway, <b>JSON</b> inklusive aller Stundenwerte</li><li>Preisdiagramm (heute + morgen) in der Oberfläche, Tageswert-Historie</li><li>Reiter: Einstellungen, Einbindung in Loxone (Schritt-für-Schritt inkl. kompletter Baustein-Liste zum 1:1-Nachbauen), Test, Logdateien</li><li>Konfiguration und Log überleben Updates und Neuinstallation</li></ul>
+<ul><li><TMPL_VAR HILFE.K05></li><li><TMPL_VAR HILFE.K06></li><li><TMPL_VAR HILFE.K07></li><li><TMPL_VAR HILFE.K08></li><li><TMPL_VAR HILFE.K09></li><li><TMPL_VAR HILFE.K10></li><li><TMPL_VAR HILFE.K11></li><li><TMPL_VAR HILFE.K12></li><li><TMPL_VAR HILFE.K13></li><li><TMPL_VAR HILFE.K14></li><li><TMPL_VAR HILFE.K15></li><li><TMPL_VAR HILFE.K16></li><li><TMPL_VAR HILFE.K17></li><li><TMPL_VAR HILFE.K18></li><li><TMPL_VAR HILFE.K19></li></ul>
 
-<h3>Endpunkte</h3>
-
-<table class="sm-tbl">
-<tr><th>Aufruf</th><th>Zweck</th></tr>
-<tr><td><code>/plugins/spotpreis/spot.php</code></td><td>Loxone-Zeile <code>SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..</code></td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?debug=1</code></td><td>alle Stundenpreise heute + morgen</td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?refresh=1</code></td><td>Marktdaten sofort neu abrufen</td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?json=1</code></td><td>kompletter Zustand als JSON</td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?say=1</code></td><td>Test-Ansage (aktueller Preis)</td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?saytomorrow=1</code></td><td>Test-Ansage (Preise für morgen)</td></tr>
-<tr><td><code>/plugins/spotpreis/spot.php?ptest=1</code></td><td>Test-Pushnachricht auslösen</td></tr>
-</table>
-
-<h3>Preisbestandteile (Voreinstellung: deutsche Großstadt, 2026)</h3>
+<h3><TMPL_VAR HILFE.K20></h3>
 
 <table class="sm-tbl">
-<tr><th>Bestandteil</th><th>ct/kWh netto</th></tr>
-<tr><td>Netzentgelt (Arbeitspreis, Grundpreis separat)</td><td>6,47</td></tr>
-<tr><td>Stromsteuer</td><td>2,05</td></tr>
-<tr><td>Konzessionsabgabe (Gemeinde über 500.000 EW)</td><td>2,39</td></tr>
-<tr><td>Umlagen (KWKG 0,446 + Offshore 0,941 + § 19 StromNEV 1,558)</td><td>2,945</td></tr>
-<tr><td>Anbieter-Aufschlag</td><td>0,00</td></tr>
-<tr><td><b>Summe</b></td><td><b>13,855</b></td></tr>
-<tr><td>Umsatzsteuer</td><td>19 % (AT: 20 %)</td></tr>
-<tr><td>Grundpreis (Netz + Messstellenbetrieb, nur informativ)</td><td>5,27 €/Monat</td></tr>
+<tr><th><TMPL_VAR HILFE.K27></th><th><TMPL_VAR HILFE.K28></th></tr>
+<tr><td><TMPL_VAR HILFE.K29></td><td><TMPL_VAR HILFE.K30></td></tr>
+<tr><td><TMPL_VAR HILFE.K31></td><td><TMPL_VAR HILFE.K32></td></tr>
+<tr><td><TMPL_VAR HILFE.K33></td><td><TMPL_VAR HILFE.K34></td></tr>
+<tr><td><TMPL_VAR HILFE.K35></td><td><TMPL_VAR HILFE.K36></td></tr>
+<tr><td><TMPL_VAR HILFE.K37></td><td><TMPL_VAR HILFE.K38></td></tr>
+<tr><td><TMPL_VAR HILFE.K39></td><td><TMPL_VAR HILFE.K40></td></tr>
+<tr><td><TMPL_VAR HILFE.K41></td><td><TMPL_VAR HILFE.K42></td></tr>
 </table>
 
-<p>Beispiel: 8,00 ct Börsenpreis → <b>26,01 ct/kWh</b> Endpreis.</p>
+<h3><TMPL_VAR HILFE.K21></h3>
 
-<p>Alle Werte sind frei änderbar — bitte mit der eigenen Stromrechnung abgleichen. Netzentgelte sind stark regional (typisch 5–12 ct/kWh); das Preisblatt des eigenen Netzbetreibers nennt den Arbeitspreis im „Grundpreis-/Arbeitspreissystem". Konzessionsabgabe nach Gemeindegröße: bis 25.000 EW 1,32 · bis 100.000 EW 1,59 · bis 500.000 EW 1,99 · über 500.000 EW 2,39 ct/kWh.</p>
+<table class="sm-tbl">
+<tr><th><TMPL_VAR HILFE.K43></th><th><TMPL_VAR HILFE.K44></th></tr>
+<tr><td><TMPL_VAR HILFE.K45></td><td><TMPL_VAR HILFE.K46></td></tr>
+<tr><td><TMPL_VAR HILFE.K47></td><td><TMPL_VAR HILFE.K48></td></tr>
+<tr><td><TMPL_VAR HILFE.K49></td><td><TMPL_VAR HILFE.K50></td></tr>
+<tr><td><TMPL_VAR HILFE.K51></td><td><TMPL_VAR HILFE.K52></td></tr>
+<tr><td><TMPL_VAR HILFE.K53></td><td><TMPL_VAR HILFE.K54></td></tr>
+<tr><td><TMPL_VAR HILFE.K55></td><td><TMPL_VAR HILFE.K56></td></tr>
+<tr><td><TMPL_VAR HILFE.K57></td><td><TMPL_VAR HILFE.K58></td></tr>
+<tr><td><TMPL_VAR HILFE.K59></td><td><TMPL_VAR HILFE.K60></td></tr>
+</table>
 
-<p><b>§ 14a EnWG</b> (zweiter Preissatz, optional): steuerbare Wärmepumpe 3,43 · Speicherheizung 1,71 · Elektromobilität 4,28 · Modul 2 pauschal 2,59 · Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe Schwachlast 0,61 ct/kWh.</p>
+<p><TMPL_VAR HILFE.K22></p>
 
-<h3>Datenschutz</h3>
+<p><TMPL_VAR HILFE.K23></p>
 
-<p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten. Alle Einstellungen liegen lokal (<code>config/plugins/spotpreis/spot.json</code>). Externe Verbindungen gibt es ausschließlich zur öffentlichen aWATTar-Preis-API (ohne Kennung).</p>
+<p><TMPL_VAR HILFE.K24></p>
+
+<h3><TMPL_VAR HILFE.K25></h3>
+
+<p><TMPL_VAR HILFE.K26></p>

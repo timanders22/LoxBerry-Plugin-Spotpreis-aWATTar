@@ -406,7 +406,7 @@ $sp_tk  = $sp_token !== '' ? '?token=' . rawurlencode($sp_token) : '';   // erst
 $sp_tk2 = $sp_token !== '' ? '&amp;token=' . rawurlencode($sp_token) : ''; // weiterer Parameter
 $sp_frame = class_exists('LBWeb', false);
 if ($sp_frame) {
-    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', '');
+    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', 'help.html');
 }
 $sp_host = sp_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cfg['konzession'] + (float) $sp_cfg['umlagen'] + (float) $sp_cfg['aufschlag'];
