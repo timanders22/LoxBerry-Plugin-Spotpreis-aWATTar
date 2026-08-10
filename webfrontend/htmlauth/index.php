@@ -12,7 +12,7 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-$sp_lbhome = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+$sp_lbhome = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
 $sp_plugin = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
 if ($sp_lbhome && is_dir($sp_lbhome . '/config/plugins/' . $sp_plugin) === false) {
     $sp_plugin = basename(dirname(__DIR__));
@@ -342,6 +342,35 @@ $sp_st = function_exists('spot_state') ? spot_state() : array();
 $sp_loglines = array();
 if (is_file($sp_logfile)) {
     $sp_loglines = spot_log_ende($sp_logfile, 300);
+}
+
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
 }
 
 function sp_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
