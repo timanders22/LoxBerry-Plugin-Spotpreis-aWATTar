@@ -79,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plantest'])) {
  * Seite, die nach jedem Absenden auf Einstellungen zurueckspringt - und
  * sucht den Grund an der falschen Stelle. Die Beschriftungen brauchen
  * spot_t() und kommen weiter unten dazu. */
-$sp_reiter_ids = array('settings', 'loxone', 'costs', 'test', 'log');
+$sp_reiter_ids = array('settings', 'mqtt', 'loxone', 'costs', 'test', 'log');
 
 $sp_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
     : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
@@ -129,6 +129,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_weg'])) {
     if (spot_config_save($sp_c)) { $sp_note = spot_t('TEXT.TOKEN_WEG'); }
     else { $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), 'spot.json'); }
     $sp_tab = 'tab-loxone';
+}
+
+// ---------- MQTT speichern (eigener Reiter seit 1.2.5, Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $sp_mq = function_exists('spot_config') ? spot_config() : array();
+    if (!is_array($sp_mq)) { $sp_mq = array(); }
+    $sp_mq['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $sp_mq['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'spot_awattar')) ?: 'spot_awattar';
+    if (spot_config_save($sp_mq)) { $sp_saved = true; }
+    else { $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), $sp_cfgfile); }
+    $sp_tab = 'tab-mqtt';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
@@ -274,8 +285,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $sp_new['marstek_hours'] = max(1, min(12, (int) (isset($_POST['marstek_hours']) ? $_POST['marstek_hours'] : 4)));
     $sp_new['marstek_power'] = max(100, min(10000, (int) (isset($_POST['marstek_power']) ? $_POST['marstek_power'] : 2500)));
     $sp_new['marstek_neg'] = isset($_POST['marstek_neg']) ? 1 : 0;
-    $sp_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $sp_new['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'spot_awattar')) ?: 'spot_awattar';
+    // MQTT wohnt seit 1.2.5 im eigenen Reiter mit eigenem Formular - hier
+    // aus dem Bestand uebernehmen (gleiches Muster wie beim Token unten).
+    $sp_altmq = function_exists('spot_config') ? spot_config() : array();
+    $sp_new['mqtt_enabled'] = isset($sp_altmq['mqtt_enabled']) ? (int) $sp_altmq['mqtt_enabled'] : 0;
+    $sp_new['mqtt_topic'] = isset($sp_altmq['mqtt_topic']) && $sp_altmq['mqtt_topic'] !== '' ? $sp_altmq['mqtt_topic'] : 'spot_awattar';
     $sp_hours = array();
     foreach ((array) (isset($_POST['hours']) ? $_POST['hours'] : array()) as $sp_h) {
         $sp_h = (int) $sp_h;
@@ -457,6 +471,8 @@ $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cf
 .sm-warn { background: #fff8e1; border: 1px solid #ffe082; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
@@ -495,6 +511,17 @@ $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cf
 .sm-punkt.sm-b-lesen   { background: #6dac20; }
 .sm-punkt.sm-b-technik { background: #546e7a; }
 .sm-punkt.sm-b-aktion  { background: #e0620d; }
+
+/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
+   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
+   bzw. der Referenzimplementierung uebernommen. */
+.sm-an { color: #1a7f1a; font-weight: 700; }
+.sm-feld { margin: 14px 0; }
+.sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
+.sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
+  overflow: auto; margin: 8px 0; }
+.sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
+  padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 </style>
 <div class="sm-wrap">
 
@@ -539,7 +566,8 @@ $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cf
  * UND Flaeche; das JavaScript spart nur noch den Seitenaufbau.
  */
 $sp_beschriftung = array(
-    'settings' => 'REITER.EINSTELLUNGEN', 'loxone' => 'REITER.LOXONE',
+    'settings' => 'REITER.EINSTELLUNGEN', 'mqtt' => 'REITER.MQTT',
+    'loxone'   => 'REITER.LOXONE',
     'costs'    => 'REITER.KOSTEN',        'test'   => 'REITER.TEST',
     'log'      => 'REITER.LOG',
 );
@@ -1041,6 +1069,21 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
     <span class="sm-mono">ANN=1</span> (<?php echo spot_t('TEXT.ANLEITUNG_SCHRITT4'); ?>).
 </div>
 
+<button data-role="none" class="sm-btn" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
+</form>
+<form action="index.php" method="post" style="margin-top:8px;">
+    <input data-role="none" type="hidden" name="fetchnow" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
+</form>
+</div>
+
+<!-- ================= Reiter: Einbindung in Loxone ================= -->
+<!-- ================= Reiter: MQTT (eigener Reiter seit 1.2.5, Hausstandard) ================= -->
+<div class="sm-pane<?php echo $sp_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo spot_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <?php if (!function_exists('spot_hs_autostart')) { function spot_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (spot_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -1070,14 +1113,8 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 
 <button data-role="none" class="sm-btn" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
-<form action="index.php" method="post" style="margin-top:8px;">
-    <input data-role="none" type="hidden" name="fetchnow" value="1">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
-</form>
 </div>
 
-<!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-pane<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo spot_t('EM.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('EM.EINLEITUNG'); ?></div>
