@@ -1718,12 +1718,13 @@ function spot_felder() {
 function spot_xml_virtual_in_http($kopf, $cmds) {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
+    $o .= '<VirtualInHttp HintText="" ';
     $o .= 'Title="' . spot_x($kopf['title']) . '" ';
     $o .= 'Comment="' . spot_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . spot_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . spot_x(isset($kopf['polling']) ? $kopf['polling'] : '300') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf; // wie Original-Export aus Loxone Config 17.1
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . spot_x($c['title']) . '" ';
@@ -1737,7 +1738,9 @@ function spot_xml_virtual_in_http($kopf, $cmds) {
         $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . (int) $c['min'] . '" ';
-        $o .= 'MaxVal="' . (int) $c['max'] . '"';
+        $o .= 'MaxVal="' . (int) $c['max'] . '" ';
+        $o .= 'Unit="' . spot_x(isset($c['unit']) ? $c['unit'] : '<v>') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1774,6 +1777,7 @@ function spot_vorlage() {
             'title' => 'SPOT_' . $name,
             'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check' => '\i' . $name . '=\i\v',
+            'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
             'analog' => $analog, 'min' => $min, 'max' => $max,
         );
     }

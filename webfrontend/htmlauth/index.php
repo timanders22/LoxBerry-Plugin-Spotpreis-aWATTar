@@ -1042,6 +1042,7 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 </div>
 
 <h2><?php echo spot_t('TEXT.MQTT_OPTIONAL'); ?></h2>
+<?php if (!function_exists('spot_hs_autostart')) { function spot_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (spot_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
