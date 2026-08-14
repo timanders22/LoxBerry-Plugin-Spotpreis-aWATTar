@@ -1,4 +1,18 @@
 <?php
+/* ---- Sperre gegen Parallellaeufe (Muster fer_sperre, FerienFeiertage) ----
+ *
+ * Der Abruf der Boersenpreise wartet auf ein Netz. Dauert der Lauf laenger als der Cron-Takt,
+ * startet der naechste, waehrend dieser noch laeuft: doppelte Abrufe,
+ * doppelte Meldungen, im schlimmsten Fall zwei Schreibvorgaenge auf dieselbe
+ * Datei. Die Sperre ist nicht blockierend - wer nicht drankommt, geht
+ * kommentarlos wieder (der naechste Takt kommt ohnehin gleich).
+ */
+$spot_sperrdatei = sys_get_temp_dir() . '/spot_cron.lock';
+$spot_sperre = @fopen($spot_sperrdatei, 'c');
+if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 /**
  * Spotpreis aWATTar - minutlicher Cron-Lauf (via cron/cron.01min)
  *
