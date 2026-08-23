@@ -18,4 +18,22 @@ if [ -f "$BK" ]; then
     fi
 fi
 echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und Preisbestandteile pruefen."
+
+# ---------- Langzeitwerte zurueckholen ----------
+# Gegenstueck zu preupgrade.sh. Zwischen beiden Skripten hat der Installer
+# data/plugins/<x>/ vollstaendig geloescht; der Nachbar mit dem Punkt hat es
+# ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
+# findet nichts vor und faengt sauber bei null an.
+LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+if [ -d "$LANG_SICHER" ]; then
+    for LANG_F in history.csv; do
+        if [ -f "$LANG_SICHER/$LANG_F" ] \
+           && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
+            mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" \
+                2>/dev/null && echo "<OK> $LANG_F ueber das Update gerettet."
+        fi
+    done
+    rm -rf "$LANG_SICHER" 2>/dev/null
+fi
 exit 0
