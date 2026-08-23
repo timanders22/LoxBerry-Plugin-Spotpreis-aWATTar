@@ -11,7 +11,7 @@
 #
 # LoxBerry raeumt beim Deinstallieren alle Ordner weg, die dem Plugin
 # gehoeren - bin/, config/, data/, log/, templates/ und die beiden
-# webfrontend-Ordner - und entfernt den Cron-Eintrag. Zwei Dinge liegen
+# webfrontend-Ordner - und entfernt den Cron-Eintrag. Drei Dinge liegen
 # aber ausserhalb und blieben sonst liegen:
 #
 #   1. config/plugins/<ordner>.backup.json
@@ -25,6 +25,14 @@
 #      MQTT-Signatur. /tmp ist auf dem LoxBerry eine Ramdisk, der Ordner
 #      verschwindet also spaetestens beim naechsten Neustart - bis dahin
 #      wuerde er aber weiter dastehen.
+#
+#   3. data/plugins/<ordner>.upgrade_sicherung
+#      Seit 1.2.9 liegt die Sicherung beim Aktualisieren NEBEN dem
+#      Datenordner, weil purge_installation ihn auch im Upgrade-Zweig
+#      bedingungslos loescht (sbin/plugininstall.pl :886, :1629 ff.).
+#      Genau deshalb uebersteht sie auch das Deinstallieren. Darin liegt
+#      history.csv - die Preisgeschichte, keine Zugangsdaten, aber sie
+#      gehoert nach dem Entfernen nicht mehr auf die Karte.
 #
 # Was NICHT aufgeraeumt werden muss: MQTT. Das Plugin sendet ueber das
 # UDP-Relais des Gateways mit "publish", nicht mit "retain"
@@ -51,6 +59,12 @@ fi
 # Nur den eigenen Ordner, und nur wenn es wirklich einer ist.
 if [ -d "/tmp/spotpreis" ]; then
     rm -rf "/tmp/spotpreis" && echo "<OK> Zwischenspeicher /tmp/spotpreis entfernt."
+fi
+
+# Der Nachbar des Datenordners - siehe Punkt 3 oben.
+SICH="$BASE/data/plugins/$PDIR.upgrade_sicherung"
+if [ -d "$SICH" ]; then
+    rm -rf "$SICH" && echo "<OK> Sicherung des Aktualisierens entfernt: $PDIR.upgrade_sicherung"
 fi
 
 echo "<INFO> Im MQTT-Broker bleibt nichts stehen - das Plugin sendet ohne Retain-Merker."
