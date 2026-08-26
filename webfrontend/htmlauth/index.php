@@ -86,6 +86,23 @@ $sp_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
 $sp_tab = preg_match('/^tab-(' . implode('|', $sp_reiter_ids) . ')$/', $sp_wunsch)
     ? $sp_wunsch : 'tab-' . $sp_reiter_ids[0];
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 // ---------- Loxone-Vorlage herunterladen ----------
 // Vor jeder Ausgabe, sonst stehen HTML-Reste in der XML-Datei.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('spot_vorlage')) {
@@ -448,9 +465,6 @@ $sp_token = isset($sp_cfg['token']) ? (string) $sp_cfg['token'] : '';
 $sp_tk  = $sp_token !== '' ? '?token=' . rawurlencode($sp_token) : '';   // erster Parameter
 $sp_tk2 = $sp_token !== '' ? '&amp;token=' . rawurlencode($sp_token) : ''; // weiterer Parameter
 $sp_frame = class_exists('LBWeb', false);
-if ($sp_frame) {
-    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', 'help.html');
-}
 $sp_host = sp_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cfg['konzession'] + (float) $sp_cfg['umlagen'] + (float) $sp_cfg['aufschlag'];
 
@@ -499,6 +513,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['spot_zurueck'])) {
             $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($sp_frame) {
+    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
