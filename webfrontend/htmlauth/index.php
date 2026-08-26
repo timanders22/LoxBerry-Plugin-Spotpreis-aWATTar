@@ -453,6 +453,54 @@ if ($sp_frame) {
 }
 $sp_host = sp_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cfg['konzession'] + (float) $sp_cfg['umlagen'] + (float) $sp_cfg['aufschlag'];
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['spot_sichern'])) {
+    $spot_js = json_encode(spot_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($spot_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="spotpreis_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $spot_js;
+        exit;
+    }
+    $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['spot_zurueck'])) {
+    if (!isset($_FILES['spot_sicherung']) || !is_array($_FILES['spot_sicherung'])
+        || !isset($_FILES['spot_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['spot_sicherung']['tmp_name'])) {
+        $sp_fehler[] = spot_t('TEXT.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['spot_sicherung']['size'] > 262144) {
+        $sp_fehler[] = spot_t('TEXT.SICH_ZU_GROSS');
+    } else {
+        list($spot_neu, $spot_mangel, $spot_n) = spot_sicherung_lesen(
+            (string) @file_get_contents($_FILES['spot_sicherung']['tmp_name']));
+        if ($spot_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $sp_fehler[] = spot_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $spot_mangel);
+        } elseif (spot_config_save($spot_neu)) {
+            $sp_note = sprintf(spot_t('TEXT.SICH_UEBERNOMMEN'), $spot_n);
+        } else {
+            $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -1515,6 +1563,25 @@ if (function_exists('spot_vorlage')) {
 </form>
 </div>
 
+
+<h2><?= spot_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= spot_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= spot_t('TEXT.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="spot_sichern" value="1"><?= spot_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="spot_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="spot_zurueck" value="1"><?= spot_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 <script>
 function spTtsMode() {

@@ -104,6 +104,83 @@ function spot_paths() {
     );
 }
 
+function spot_vorgaben()
+{
+    /* Herausgezogen aus spot_config(): die Vorgaben stehen weiterhin an
+     * EINER Stelle, jetzt aber an einer abrufbaren. Die Sicherung
+     * braucht die Schluesselliste, um Fremdes zu erkennen - ohne sie
+     * koennte sie nur alles durchwinken. */
+    return array(
+    'market' => 'de',            // de oder at
+    // Preisbestandteile in ct/kWh (netto). Voreinstellung: Netzgebiet einer
+    // deutschen Grossstadt 2026 - bitte mit der eigenen Rechnung abgleichen.
+    'netz' => 6.47,              // Netzentgelt Arbeitspreis (Grundpreis separat!)
+    'steuer' => 2.05,            // Stromsteuer
+    'konzession' => 2.39,        // Konzessionsabgabe (Gemeinde ueber 500.000 EW)
+    'umlagen' => 2.945,          // KWKG 0,446 + Offshore 0,941 + Par. 19 StromNEV 1,558
+    'aufschlag' => 0.0,          // Anbieter-Aufschlag auf den Boersenpreis
+    'grundpreis' => 5.27,        // EUR/Monat (Netz-Grundpreis + Messstellenbetrieb)
+    'vat' => 19.0,               // Umsatzsteuer in % (DE 19, AT 20)
+    'cheap' => 20.0,             // Schwelle "guenstig" in ct/kWh (Endpreis)
+    'expensive' => 35.0,         // Schwelle "teuer" in ct/kWh (Endpreis)
+    'window' => 3,               // Laenge des gesuchten guenstigsten Fensters (h)
+    // Zweiter Preissatz: steuerbare Verbrauchseinrichtung nach Par. 14a EnWG
+    // (eigener Zaehlpunkt, Modul 1) - z. B. Waermepumpe oder Wallbox
+    'wp_enabled' => 0,
+    'wp_name' => "W\u{00e4}rmepumpe",
+    'wp_netz' => 3.43,           // Netzentgelt steuerbare Waermepumpe (Wallbox: 4.28)
+    'wp_konzession' => 0.61,     // Konzessionsabgabe Schwachlast/Sondervertrag
+    // CO2-Intensitaet (Fraunhofer ISE Energy-Charts, ohne Konto)
+    'co2_enabled' => 1,
+    'co2_clean' => 200,          // Schwelle "sauber" in g CO2/kWh
+    // Vergleich fester Tarif <-> dynamischer Tarif
+    'fixed_price' => 30.90,      // eigener fester Arbeitspreis in ct/kWh (brutto)
+    'fix_grund' => 12.90,        // Grundpreis des festen Tarifs in EUR/Monat
+    'fix_sofortbonus' => 0.0,    // einmaliger Sofortbonus in EUR
+    'fix_neubonus' => 0.0,       // Neukundenbonus in EUR
+    'fix_neubonus_pct' => 0.0,   // ODER Neukundenbonus in % des Jahresbetrags
+    'fix_rabatt' => 0.0,         // laufender Rabatt auf den Rechnungsbetrag in %
+    'consumption' => 3500,       // Jahresverbrauch kWh (Summe der Monate, falls gepflegt)
+    'months' => array(),         // Netzbezug je Monat in kWh (12 Werte, 0 = nicht gepflegt)
+    'shift_kwh' => 3.0,          // taeglich verschiebbare Menge in kWh
+    // Optionale Kopplung mit dem Marstek-Plugin (Standard AUS)
+    'marstek_enabled' => 0,
+    'marstek_url' => '',         // leer = automatisch (eigene LoxBerry-IP)
+    'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
+    'marstek_power' => 2500,     // Ladeleistung in W
+    'marstek_neg' => 1,          // bei negativem Preis immer laden
+    'token' => '',               // leer = Endpunkt ohne Token erreichbar
+    // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
+    // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
+    // dahin, Durchschnittspreis. Daraus "jetzt laden" zu machen war Arbeit
+    // im Miniserver. Siehe spot_regel_werte().
+    'regeln' => array(),
+    // Stundenprofil: aus | absolut | relativ | beides
+    //   absolut  PH00..PH23 heute, PM00..PM23 morgen -> Spot Price
+    //            Optimizer im Modus "Absolut" (Eingaenge 00:00 bis 23:00)
+    //   relativ  PR00..PR23 ab der laufenden Stunde   -> Modus "Relativ"
+    //            (Eingaenge +0 bis +23)
+    // Nicht beides als Vorgabe: jeder Wert ist ein virtueller Eingang im
+    // Miniserver, und 72 davon legt man nicht versehentlich an.
+    'profil_ein' => 'absolut',
+    'mqtt_enabled' => 0,
+    'mqtt_topic' => 'spot_awattar',
+    'notify' => array(),
+    'tts' => array(),
+    // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
+    // Vorgabe 0 heisst jeweils "aus" - wer nichts einstellt, bekommt
+    // das Verhalten der Fassung davor.
+    'pv_quelle' => '',           // '' | forecast_solar | objekt | liste
+    'pv_url' => '',
+    'pv_pfad' => '',
+    'pv_zeitfeld' => '',
+    'pv_wertfeld' => '',
+    'pv_einheit' => 'wh',        // wh | w | kw
+    'soc_url' => '',
+    'soc_pfad' => '',
+) + plan_global_vorgabe();
+}
+
 function spot_config() {
     $p = spot_paths();
     // Selbstheilung: fehlende/leere Konfiguration aus Sicherung wiederherstellen
@@ -115,75 +192,7 @@ function spot_config() {
     if (!is_array($cfg)) {
         $cfg = array();
     }
-    $cfg += array(
-        'market' => 'de',            // de oder at
-        // Preisbestandteile in ct/kWh (netto). Voreinstellung: Netzgebiet einer
-        // deutschen Grossstadt 2026 - bitte mit der eigenen Rechnung abgleichen.
-        'netz' => 6.47,              // Netzentgelt Arbeitspreis (Grundpreis separat!)
-        'steuer' => 2.05,            // Stromsteuer
-        'konzession' => 2.39,        // Konzessionsabgabe (Gemeinde ueber 500.000 EW)
-        'umlagen' => 2.945,          // KWKG 0,446 + Offshore 0,941 + Par. 19 StromNEV 1,558
-        'aufschlag' => 0.0,          // Anbieter-Aufschlag auf den Boersenpreis
-        'grundpreis' => 5.27,        // EUR/Monat (Netz-Grundpreis + Messstellenbetrieb)
-        'vat' => 19.0,               // Umsatzsteuer in % (DE 19, AT 20)
-        'cheap' => 20.0,             // Schwelle "guenstig" in ct/kWh (Endpreis)
-        'expensive' => 35.0,         // Schwelle "teuer" in ct/kWh (Endpreis)
-        'window' => 3,               // Laenge des gesuchten guenstigsten Fensters (h)
-        // Zweiter Preissatz: steuerbare Verbrauchseinrichtung nach Par. 14a EnWG
-        // (eigener Zaehlpunkt, Modul 1) - z. B. Waermepumpe oder Wallbox
-        'wp_enabled' => 0,
-        'wp_name' => "W\u{00e4}rmepumpe",
-        'wp_netz' => 3.43,           // Netzentgelt steuerbare Waermepumpe (Wallbox: 4.28)
-        'wp_konzession' => 0.61,     // Konzessionsabgabe Schwachlast/Sondervertrag
-        // CO2-Intensitaet (Fraunhofer ISE Energy-Charts, ohne Konto)
-        'co2_enabled' => 1,
-        'co2_clean' => 200,          // Schwelle "sauber" in g CO2/kWh
-        // Vergleich fester Tarif <-> dynamischer Tarif
-        'fixed_price' => 30.90,      // eigener fester Arbeitspreis in ct/kWh (brutto)
-        'fix_grund' => 12.90,        // Grundpreis des festen Tarifs in EUR/Monat
-        'fix_sofortbonus' => 0.0,    // einmaliger Sofortbonus in EUR
-        'fix_neubonus' => 0.0,       // Neukundenbonus in EUR
-        'fix_neubonus_pct' => 0.0,   // ODER Neukundenbonus in % des Jahresbetrags
-        'fix_rabatt' => 0.0,         // laufender Rabatt auf den Rechnungsbetrag in %
-        'consumption' => 3500,       // Jahresverbrauch kWh (Summe der Monate, falls gepflegt)
-        'months' => array(),         // Netzbezug je Monat in kWh (12 Werte, 0 = nicht gepflegt)
-        'shift_kwh' => 3.0,          // taeglich verschiebbare Menge in kWh
-        // Optionale Kopplung mit dem Marstek-Plugin (Standard AUS)
-        'marstek_enabled' => 0,
-        'marstek_url' => '',         // leer = automatisch (eigene LoxBerry-IP)
-        'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
-        'marstek_power' => 2500,     // Ladeleistung in W
-        'marstek_neg' => 1,          // bei negativem Preis immer laden
-        'token' => '',               // leer = Endpunkt ohne Token erreichbar
-        // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
-        // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
-        // dahin, Durchschnittspreis. Daraus "jetzt laden" zu machen war Arbeit
-        // im Miniserver. Siehe spot_regel_werte().
-        'regeln' => array(),
-        // Stundenprofil: aus | absolut | relativ | beides
-        //   absolut  PH00..PH23 heute, PM00..PM23 morgen -> Spot Price
-        //            Optimizer im Modus "Absolut" (Eingaenge 00:00 bis 23:00)
-        //   relativ  PR00..PR23 ab der laufenden Stunde   -> Modus "Relativ"
-        //            (Eingaenge +0 bis +23)
-        // Nicht beides als Vorgabe: jeder Wert ist ein virtueller Eingang im
-        // Miniserver, und 72 davon legt man nicht versehentlich an.
-        'profil_ein' => 'absolut',
-        'mqtt_enabled' => 0,
-        'mqtt_topic' => 'spot_awattar',
-        'notify' => array(),
-        'tts' => array(),
-        // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
-        // Vorgabe 0 heisst jeweils "aus" - wer nichts einstellt, bekommt
-        // das Verhalten der Fassung davor.
-        'pv_quelle' => '',           // '' | forecast_solar | objekt | liste
-        'pv_url' => '',
-        'pv_pfad' => '',
-        'pv_zeitfeld' => '',
-        'pv_wertfeld' => '',
-        'pv_einheit' => 'wh',        // wh | w | kw
-        'soc_url' => '',
-        'soc_pfad' => '',
-    ) + plan_global_vorgabe();
+    $cfg += spot_vorgaben();
     // Alte Konfigurationen trugen hier 0/1 - auf die neuen Namen heben.
     if ($cfg['profil_ein'] === 1 || $cfg['profil_ein'] === '1' || $cfg['profil_ein'] === true) {
         $cfg['profil_ein'] = 'absolut';
@@ -2142,4 +2151,43 @@ function spot_t($schluessel)
     }
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
+ * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
+ * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
+ * als die alte, und man sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function spot_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(spot_t('TEXT.SICH_KEIN_JSON')), 0);
+    }
+    $neu = spot_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(spot_t('TEXT.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = spot_t('TEXT.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }
