@@ -62,13 +62,37 @@ $sp_fehler = array();
 /* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
  * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
 $sp_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
-/* Ausgabe des Planer-Selbsttests. Er rechnet nur, spricht mit niemandem und
- * braucht keine Preise - deshalb ein einfacher Knopf ohne Nebenwirkung. */
-$sp_plantest = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plantest'])) {
-    list($sp_pt_n, $sp_pt_f, $sp_plantest) = plan_selbsttest();
-    $sp_tab = 'tab-test';
+
+/* ==================================================================
+ * WACHPOSTEN - EIN Posten, nicht eine Abfrage je Zweig
+ * ==================================================================
+ *
+ * Traegt die Anfrage kein gueltiges Formularmerkmal, wird $_POST GELEERT.
+ * Damit laeuft danach kein einziger Zweig mehr an, ohne dass einer von
+ * ihnen davon wissen muss.
+ *
+ * Der naheliegende Weg - je Zweig ein "&& $sp_ist_post" - wirkt nur, wenn
+ * wirklich JEDER Zweig daran haengt, und einen vergisst man. Im Bestand
+ * sind es bei anderen Linien 15 von 17 und 13 von 15 gewesen.
+ *
+ * Der aktive Reiter wird ausdruecklich aufgehoben: sonst springt die Seite
+ * nach einer Abweisung auf Einstellungen zurueck, und der Anwender sucht
+ * seine Meldung dort, wo sie nicht steht.
+ *
+ * ACHTUNG bei jeder Erweiterung: ein neuer Knopf braucht spot_fmt() in
+ * seinem Formular, sonst tut er nichts und meldet einen Fehler, den es
+ * nicht gibt. Der Reiter Test zaehlt beides gegeneinander.
+ * ================================================================== */
+$sp_ist_post = ($_SERVER['REQUEST_METHOD'] === 'POST');
+$sp_fmt_fehlt = false;
+if ($sp_ist_post && function_exists('spot_formtoken_ok') && !spot_formtoken_ok()) {
+    $sp_behalten = isset($_POST['activetab']) ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($sp_behalten !== null) { $_POST['activetab'] = $sp_behalten; }
+    $sp_ist_post = false;
+    $sp_fmt_fehlt = true;
 }
+
 // Der Reiter kommt aus einem abgesendeten Formular (activetab) oder aus der
 // Adresse (?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
 // sind - siehe die Reiterleiste weiter unten.
@@ -85,6 +109,16 @@ $sp_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
     : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
 $sp_tab = preg_match('/^tab-(' . implode('|', $sp_reiter_ids) . ')$/', $sp_wunsch)
     ? $sp_wunsch : 'tab-' . $sp_reiter_ids[0];
+
+/* Ausgabe des Planer-Selbsttests. Er rechnet nur, spricht mit niemandem und
+ * braucht keine Preise - deshalb ein einfacher Knopf ohne Nebenwirkung.
+ * Stand bis 1.2.12 VOR der Reiterwahl und hat sie danach ueberschrieben;
+ * jetzt steht er dahinter, wie alle anderen Zweige auch. */
+$sp_plantest = '';
+if ($sp_ist_post && isset($_POST['plantest'])) {
+    list($sp_pt_n, $sp_pt_f, $sp_plantest) = plan_selbsttest();
+    $sp_tab = 'tab-test';
+}
 
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
@@ -105,7 +139,7 @@ $sp_tab = preg_match('/^tab-(' . implode('|', $sp_reiter_ids) . ')$/', $sp_wunsc
  * ================================================================== */
 // ---------- Loxone-Vorlage herunterladen ----------
 // Vor jeder Ausgabe, sonst stehen HTML-Reste in der XML-Datei.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('spot_vorlage')) {
+if ($sp_ist_post && isset($_POST['vorlage']) && function_exists('spot_vorlage')) {
     list($sp_vname, $sp_vinhalt) = spot_vorlage();
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $sp_vname . '"');
@@ -114,14 +148,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && functio
 }
 
 // ---------- Protokoll leeren ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
+if ($sp_ist_post && isset($_POST['clearlog'])) {
     @mkdir(dirname($sp_logfile), 0775, true);
     @file_put_contents($sp_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n");
     $sp_tab = 'tab-log';
 }
 
 // ---------- Jetzt abrufen ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['fetchnow']) && function_exists('spot_state')) {
+if ($sp_ist_post && isset($_POST['fetchnow']) && function_exists('spot_state')) {
     $sp_s = spot_state(true);
     // $sp_note geht durch sp_e() - hier gehoert Klartext hin, keine HTML-Entities.
     $sp_note = $sp_s['ok']
@@ -132,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['fetchnow']) && functi
 }
 
 // ---------- Speichern ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
+if ($sp_ist_post && isset($_POST['token_neu'])) {
     $sp_c = spot_config();
     $sp_c['token'] = spot_token_erzeugen();
     if (spot_config_save($sp_c)) { $sp_note = spot_t('TEXT.TOKEN_NEU'); }
@@ -140,7 +174,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
     $sp_tab = 'tab-loxone';
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_weg'])) {
+if ($sp_ist_post && isset($_POST['token_weg'])) {
     $sp_c = spot_config();
     $sp_c['token'] = '';
     if (spot_config_save($sp_c)) { $sp_note = spot_t('TEXT.TOKEN_WEG'); }
@@ -149,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_weg'])) {
 }
 
 // ---------- MQTT speichern (eigener Reiter seit 1.2.5, Hausstandard) ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+if ($sp_ist_post && isset($_POST['mqtt_save'])) {
     $sp_mq = function_exists('spot_config') ? spot_config() : array();
     if (!is_array($sp_mq)) { $sp_mq = array(); }
     $sp_mq['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
@@ -159,7 +193,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
     $sp_tab = 'tab-mqtt';
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+if ($sp_ist_post && isset($_POST['save'])) {
     function sp_f($k, $def) {
         $v = str_replace(',', '.', (string) (isset($_POST[$k]) ? $_POST[$k] : ''));
         return is_numeric($v) ? (float) $v : $def;
@@ -236,17 +270,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $sp_new['pv_quelle'] = in_array($sp_q, array('', 'forecast_solar', 'objekt', 'liste'), true) ? $sp_q : '';
     $sp_e2 = (string) (isset($_POST['pv_einheit']) ? $_POST['pv_einheit'] : 'wh');
     $sp_new['pv_einheit'] = in_array($sp_e2, array('wh', 'w', 'kw'), true) ? $sp_e2 : 'wh';
-    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad') as $sp_f2) {
+    // ---- Eigener Lastgang (ab 1.2.13, ab Werk aus) ----
+    $sp_lq = (string) (isset($_POST['last_quelle']) ? $_POST['last_quelle'] : '');
+    $sp_new['last_quelle'] = in_array($sp_lq, array('', 'objekt', 'liste'), true) ? $sp_lq : '';
+    $sp_le = (string) (isset($_POST['last_einheit']) ? $_POST['last_einheit'] : 'kwh');
+    $sp_new['last_einheit'] = in_array($sp_le, array('kwh', 'wh', 'w', 'kw'), true) ? $sp_le : 'kwh';
+    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad',
+                   'last_url', 'last_pfad', 'last_zeitfeld', 'last_wertfeld') as $sp_f2) {
         // Nur Steuerzeichen und Anfuehrungszeichen raus. Ein hartes Filtern
         // auf eine Positivliste zerstoert eingefuegte Adressen - belegt am
         // ACTi-Plugin am 26.07.2026.
         $sp_new[$sp_f2] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
             (string) (isset($_POST[$sp_f2]) ? $_POST[$sp_f2] : '')));
     }
-    foreach (array('pv_url', 'soc_url') as $sp_f2) {
+    foreach (array('pv_url', 'soc_url', 'last_url') as $sp_f2) {
         if ($sp_new[$sp_f2] !== '' && !preg_match('#^https?://#i', $sp_new[$sp_f2])) {
             $sp_fehler[] = sprintf(spot_t('PLAN.FEHLER_URL'), spot_t('PLAN.L_' . strtoupper($sp_f2)));
         }
+    }
+    /* Dieselben Wachen wie bei der PV-Prognose - eine Quelle ohne Pfad
+     * oder ohne Feldnamen kann nichts liefern, und das faellt sonst erst
+     * auf, wenn der Monatsvergleich still auf das Modellprofil zurueckfaellt. */
+    if ($sp_new['last_quelle'] === 'liste'
+        && ($sp_new['last_zeitfeld'] === '' || $sp_new['last_wertfeld'] === '')) {
+        $sp_fehler[] = spot_t('LAST.FEHLER_FELDNAMEN');
+    }
+    if ($sp_new['last_quelle'] !== '' && $sp_new['last_pfad'] === '') {
+        $sp_fehler[] = spot_t('LAST.FEHLER_PFAD');
+    }
+    if ($sp_new['last_quelle'] !== '' && $sp_new['last_url'] === '') {
+        $sp_fehler[] = spot_t('LAST.FEHLER_URL_FEHLT');
     }
     if ($sp_new['pv_quelle'] === 'liste'
         && ($sp_new['pv_zeitfeld'] === '' || $sp_new['pv_wertfeld'] === '')) {
@@ -344,7 +397,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     if ($sp_fehler) {
         // Nichts schreiben, solange etwas beanstandet ist - sonst stuende
         // die Haelfte der Eingabe in der Datei und die andere nicht.
-        $sp_err = implode(' | ', $sp_fehler);
+        // Ausgegeben wird weiter unten, an EINER Stelle fuer alle Zweige.
+        $sp_nichts_gespeichert = true;
     } elseif (spot_config_save($sp_new)) {
         $sp_saved = true;
     } else {
@@ -352,17 +406,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     }
 }
 
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ *
+ * DER BLOCK STEHT VOR DEM LADEN - das ist nicht Geschmackssache.
+ * Bis 1.2.12 stand er dahinter, und das hatte zwei Folgen, beide gemessen:
+ * nach einem erfolgreichen Zurueckspielen zeigte die Seite weiter den ALTEN
+ * Stand (die Konfiguration war zu diesem Zeitpunkt laengst gelesen), und
+ * ein Klick auf Speichern nahm die Sicherung wieder zurueck. */
+if ($sp_ist_post && isset($_POST['spot_sichern'])) {
+    list($sp_sname, $sp_sinhalt) = spot_sicherung_schreiben();
+    if ($sp_sname !== '') {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $sp_sname . '"');
+        echo $sp_sinhalt;
+        exit;
+    }
+    $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Verlauf als CSV ----------------
+ * Auch ein Download, also auch hier oben - und mit exit. */
+if ($sp_ist_post && isset($_POST['spot_csv'])) {
+    list($sp_cname, $sp_cinhalt) = spot_history_csv();
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $sp_cname . '"');
+    echo $sp_cinhalt;
+    exit;
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($sp_ist_post && isset($_POST['spot_zurueck'])) {
+    if (!isset($_FILES['spot_sicherung']) || !is_array($_FILES['spot_sicherung'])
+        || !isset($_FILES['spot_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['spot_sicherung']['tmp_name'])) {
+        $sp_fehler[] = spot_t('TEXT.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['spot_sicherung']['size'] > 262144) {
+        $sp_fehler[] = spot_t('TEXT.SICH_ZU_GROSS');
+    } else {
+        list($spot_neu, $spot_mangel, $spot_n) = spot_sicherung_lesen(
+            (string) @file_get_contents($_FILES['spot_sicherung']['tmp_name']));
+        if ($spot_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $sp_fehler[] = spot_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $spot_mangel);
+        } elseif (spot_config_save($spot_neu)) {
+            $sp_note = sprintf(spot_t('TEXT.SICH_UEBERNOMMEN'), $spot_n);
+        } else {
+            $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 // ---------- Laden ----------
+/* Die Vorgaben kommen aus spot_vorgaben() und NICHT aus einer zweiten,
+ * hier abgeschriebenen Liste. Bis 1.2.12 stand hier eine Kopie mit 25 von
+ * 49 Schluesseln - jeder neue Schluessel musste an zwei Stellen nachgezogen
+ * werden, und wer es vergass, bekam keine Fehlermeldung, sondern eine
+ * undefinierte Variable, die PHP lautlos als leer behandelt.
+ * spot_config() vervollstaendigt ohnehin aus derselben Quelle. */
 $sp_cfg = function_exists('spot_config') ? spot_config() : array();
 if (!is_array($sp_cfg)) { $sp_cfg = array(); }
-$sp_cfg += array('market' => 'de', 'netz' => 6.47, 'steuer' => 2.05, 'konzession' => 2.39, 'umlagen' => 2.945,
-    'aufschlag' => 0.0, 'grundpreis' => 5.27, 'vat' => 19.0, 'cheap' => 20.0, 'expensive' => 35.0, 'window' => 3,
-    'wp_enabled' => 0, 'wp_name' => 'Wärmepumpe', 'wp_netz' => 3.43, 'wp_konzession' => 0.61,
-    'co2_enabled' => 1, 'co2_clean' => 200, 'fixed_price' => 30.90, 'consumption' => 3500,
-    'months' => array(), 'shift_kwh' => 3.0,
-    'marstek_enabled' => 0, 'marstek_url' => '', 'token' => '',
-    'marstek_hours' => 4, 'marstek_power' => 2500, 'marstek_neg' => 1,
-    'mqtt_enabled' => 0, 'mqtt_topic' => 'spot_awattar', 'notify' => array(), 'tts' => array());
+if (function_exists('spot_vorgaben')) { $sp_cfg += spot_vorgaben(); }
 $sp_notify = is_array($sp_cfg['notify']) ? $sp_cfg['notify'] : array();
 $sp_notify += array('audio' => 0, 'push' => 0, 'hours' => array(), 'only_cheap' => 0, 'negative' => 1, 'tomorrow' => 0);
 $sp_hoursel = array_map('intval', (array) $sp_notify['hours']);
@@ -468,53 +582,29 @@ $sp_frame = class_exists('LBWeb', false);
 $sp_host = sp_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cfg['konzession'] + (float) $sp_cfg['umlagen'] + (float) $sp_cfg['aufschlag'];
 
-/* ---------------- Einstellungen sichern ----------------
+/* ==================================================================
+ * BEANSTANDUNGEN AUSGEBEN - an EINER Stelle, fuer ALLE Zweige
+ * ==================================================================
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['spot_sichern'])) {
-    $spot_js = json_encode(spot_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($spot_js !== false) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="spotpreis_einstellungen_'
-               . date('Ymd_His') . '.json"');
-        echo $spot_js;
-        exit;
-    }
-    $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
-}
-
-/* ---------------- Einstellungen zurueckspielen ----------------
+ * Bis 1.2.12 wurde $sp_fehler nur INNERHALB des Speicherzweigs in $sp_err
+ * gefaltet. Alles, was der Sicherungszweig hineinschrieb, fiel damit
+ * heraus: eine abgelehnte Sicherungsdatei erzeugte gar keine Meldung - die
+ * Seite lud neu und sah aus wie vorher. Gemessen mit einer fremden Datei:
+ * 0 Fehlerkaesten, 0 Ablehnungstexte, Konfiguration richtigerweise
+ * unveraendert - nur erfuhr es niemand.
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['spot_zurueck'])) {
-    if (!isset($_FILES['spot_sicherung']) || !is_array($_FILES['spot_sicherung'])
-        || !isset($_FILES['spot_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['spot_sicherung']['tmp_name'])) {
-        $sp_fehler[] = spot_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['spot_sicherung']['size'] > 262144) {
-        $sp_fehler[] = spot_t('TEXT.SICH_ZU_GROSS');
-    } else {
-        list($spot_neu, $spot_mangel, $spot_n) = spot_sicherung_lesen(
-            (string) @file_get_contents($_FILES['spot_sicherung']['tmp_name']));
-        if ($spot_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $sp_fehler[] = spot_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $spot_mangel);
-        } elseif (spot_config_save($spot_neu)) {
-            $sp_note = sprintf(spot_t('TEXT.SICH_UEBERNOMMEN'), $spot_n);
-        } else {
-            $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
-        }
-    }
+ * Wer einen Zweig ergaenzt, schreibt seine Beanstandungen nach
+ * $sp_fehler[] und muss sich um die Ausgabe nicht mehr kuemmern.
+ * ================================================================== */
+if ($sp_fehler) {
+    $sp_err = ($sp_err !== '' ? $sp_err . ' | ' : '') . implode(' | ', $sp_fehler);
 }
-
+/* Der Wachposten hat abgewiesen. Das ist KEIN Bedienfehler des Anwenders -
+ * die haeufigste Ursache ist eine Seite, die zu lange offen stand. Der Text
+ * sagt deshalb, was zu tun ist, statt "Zugriff verweigert" zu rufen. */
+if ($sp_fmt_fehlt) {
+    $sp_err = ($sp_err !== '' ? $sp_err . ' | ' : '') . spot_t('TEXT.FMT_ABGEWIESEN');
+}
 
 if ($sp_frame) {
     LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', 'help.html');
@@ -646,12 +736,36 @@ foreach ($sp_reiter_ids as $sp_i) {
         ? spot_t($sp_beschriftung[$sp_i]) : $sp_i;
 }
 ?>
+<?php
+/* DIE REITERLEISTE STEHT AUSGESCHRIEBEN - das ist Absicht.
+ *
+ * Bis 1.2.12 entstand sie aus einer foreach-Schleife. Das sieht sauberer
+ * aus und hat einen Preis, den man nicht sieht: hausstandard_pruefen.py
+ * findet die Reiter dann nicht mehr und meldet in der Spalte "tab" einen
+ * Strich - seit jeher, ohne dass es jemandem aufgefallen waere. Eine
+ * Korrektur, die eine Pruefung blind macht, ist keine.
+ *
+ * Die Aufloesung ist nicht "Schleife oder Hand", sondern beides:
+ * ausschreiben UND die Uebereinstimmung im Reiter Test nachrechnen lassen.
+ * Die Zeile PRUEF.REITER haelt die drei Stellen gegeneinander - die Liste
+ * $sp_reiter_ids, diese Leiste und die ids der Flaechen. Wer einen Reiter
+ * ergaenzt und eine der drei vergisst, bekommt dort ein Kreuz statt einer
+ * Seite, die nach jedem Absenden auf Einstellungen zurueckspringt.
+ */
+?>
 <div class="sm-tabs">
-<?php foreach ($sp_reiter as $sp_id => $sp_bez) { ?>
-    <a class="sm-tab<?php echo $sp_tab === $sp_id ? ' sm-active' : ''; ?>"
-       data-pane="<?php echo sp_e($sp_id); ?>"
-       href="index.php?tab=<?php echo sp_e(substr($sp_id, 4)); ?>"><?php echo $sp_bez; ?></a>
-<?php } ?>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-settings' ? ' sm-active' : ''; ?>"
+       data-pane="tab-settings" href="index.php?tab=settings"><?php echo $sp_reiter['tab-settings']; ?></a>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>"
+       data-pane="tab-mqtt" href="index.php?tab=mqtt"><?php echo $sp_reiter['tab-mqtt']; ?></a>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>"
+       data-pane="tab-loxone" href="index.php?tab=loxone"><?php echo $sp_reiter['tab-loxone']; ?></a>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-costs' ? ' sm-active' : ''; ?>"
+       data-pane="tab-costs" href="index.php?tab=costs"><?php echo $sp_reiter['tab-costs']; ?></a>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>"
+       data-pane="tab-test" href="index.php?tab=test"><?php echo $sp_reiter['tab-test']; ?></a>
+    <a class="sm-tab<?php echo $sp_tab === 'tab-log' ? ' sm-active' : ''; ?>"
+       data-pane="tab-log" href="index.php?tab=log"><?php echo $sp_reiter['tab-log']; ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -659,6 +773,7 @@ foreach ($sp_reiter_ids as $sp_i) {
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?php echo spot_fmt(); ?>
 
 <h2><?php echo spot_t('TEXT.MARKT'); ?></h2>
 <div class="sm-row">
@@ -682,7 +797,16 @@ foreach ($sp_reiter_ids as $sp_i) {
     </div>
     <div>
         <label><?php echo spot_t('TEXT.STROMSTEUER'); ?></label>
-        <input data-role="none" type="text" name="s<?php echo spot_t('TEXT.TEUER'); ?>" value="<?= sp_e($sp_cfg['steuer']) ?>" placeholder="2.05">
+        <?php /* Der Feldname heisst "steuer" und wird NICHT uebersetzt.
+                 Bis 1.2.12 stand hier name="s<?= spot_t('TEXT.TEUER') ?>" -
+                 ein Rest des automatischen Uebersetzungslaufs, der das Wort
+                 "teuer" INNERHALB von "steuer" durch einen Sprachschluessel
+                 ersetzt hatte. Auf Deutsch ergab das zufaellig wieder
+                 "steuer", auf Englisch "sexpensive": das Feld kam nie an,
+                 und jedes Speichern schrieb still den Vorgabewert 2,05
+                 statt des angezeigten Werts. Gemessen an 8.4 und 7.4.
+                 Ein Feldname ist eine Schnittstelle, kein Anzeigetext. */ ?>
+        <input data-role="none" type="text" name="steuer" value="<?= sp_e($sp_cfg['steuer']) ?>" placeholder="2.05">
         <div class="sm-small"><?php echo spot_t('TEXT.DE_2_05_AT_ELEKTRIZITTSABGABE_1_50'); ?></div>
     </div>
     <div>
@@ -931,6 +1055,65 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <div class="sm-small"><?php echo spot_t('PLAN.H_SOC_PFAD'); ?></div>
   </div>
 </div>
+
+<h2><?php echo spot_t('LAST.H_TITEL'); ?></h2>
+<div class="sm-hinweis"><?php echo spot_t('LAST.ERKLAERUNG'); ?></div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('LAST.L_QUELLE'); ?></label>
+    <select data-role="none" name="last_quelle">
+<?php foreach (array('', 'objekt', 'liste') as $sp_lq2) { ?>
+      <option value="<?= sp_e($sp_lq2) ?>"<?= (string) $sp_cfg['last_quelle'] === $sp_lq2 ? ' selected' : '' ?>><?= sp_e(spot_t('LAST.QUELLE_' . ($sp_lq2 === '' ? 'AUS' : strtoupper($sp_lq2)))) ?></option>
+<?php } ?>
+    </select>
+    <div class="sm-small"><?php echo spot_t('LAST.H_QUELLE'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('LAST.L_URL'); ?></label>
+    <input data-role="none" type="text" name="last_url" value="<?= sp_e($sp_cfg['last_url']) ?>" placeholder="http://loxberry/plugins/smartmeter/...">
+    <div class="sm-small"><?php echo spot_t('LAST.H_URL'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('LAST.L_EINHEIT'); ?></label>
+    <select data-role="none" name="last_einheit">
+<?php foreach (array('kwh', 'wh', 'w', 'kw') as $sp_le2) { ?>
+      <option value="<?= $sp_le2 ?>"<?= (string) $sp_cfg['last_einheit'] === $sp_le2 ? ' selected' : '' ?>><?= sp_e(spot_t('LAST.EINHEIT_' . strtoupper($sp_le2))) ?></option>
+<?php } ?>
+    </select>
+  </div>
+</div>
+<div class="sm-row">
+  <div>
+    <label><?php echo spot_t('LAST.L_PFAD'); ?></label>
+    <input data-role="none" type="text" name="last_pfad" value="<?= sp_e($sp_cfg['last_pfad']) ?>" placeholder="stunden">
+    <div class="sm-small"><?php echo spot_t('LAST.H_PFAD'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('LAST.L_ZEITFELD'); ?></label>
+    <input data-role="none" type="text" name="last_zeitfeld" value="<?= sp_e($sp_cfg['last_zeitfeld']) ?>" placeholder="zeit">
+  </div>
+  <div>
+    <label><?php echo spot_t('LAST.L_WERTFELD'); ?></label>
+    <input data-role="none" type="text" name="last_wertfeld" value="<?= sp_e($sp_cfg['last_wertfeld']) ?>" placeholder="kwh">
+    <div class="sm-small"><?php echo spot_t('LAST.H_FELDER'); ?></div>
+  </div>
+</div>
+<?php
+/* Was zuletzt wirklich angekommen ist - und der Grund, wenn nichts kam.
+ * Eine Einstellung, die man nicht nachsehen kann, ist eine Behauptung. */
+if ($sp_cfg['last_quelle'] !== '' && trim((string) $sp_cfg['last_url']) !== '') {
+    $sp_lg = spot_lastgang();
+    $sp_lg_n = count($sp_lg['werte']);
+?>
+<div class="sm-alert <?= $sp_lg['meldung'] !== '' ? 'sm-err' : ($sp_lg_n > 0 ? 'sm-ok' : 'sm-warn') ?>">
+<?php if ($sp_lg['meldung'] !== '') { ?>
+  <?= sp_e(spot_t('PLANMELD.' . $sp_lg['meldung'])) ?>
+<?php } else { ?>
+  <?= sprintf(sp_e(spot_t('LAST.STAND')), (int) $sp_lg_n,
+        $sp_lg['ts'] > 0 ? date('H:i', (int) $sp_lg['ts']) : '&ndash;') ?>
+<?php } ?>
+</div>
+<?php } ?>
 <?php
 $sp_umw = spot_umwelt();
 if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
@@ -1141,8 +1324,40 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <form action="index.php" method="post" style="margin-top:8px;">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php echo spot_fmt(); ?>
     <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
+
+<?php /* ===== Einstellungen sichern und zurueckspielen =====
+         Bis 1.2.12 stand dieser Block AUSSERHALB jeder Reiterflaeche und
+         war deshalb unter jedem Reiter sichtbar - auch unter Logdateien und
+         dem Kostenvergleich. Gemessen an der gerenderten Seite: ueber dem
+         Knopf standen nur sm-wrap und sm-knopfreihe, keine sm-pane.
+         Er gehoert hierher, wo die Einstellungen stehen, die er sichert. */ ?>
+<h2><?= spot_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= spot_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= spot_t('TEXT.SICH_WARNUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php echo spot_fmt(); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="spot_sichern" value="1"><?= spot_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?php echo spot_fmt(); ?>
+    <input data-role="none" type="file" name="spot_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="spot_zurueck" value="1"><?= spot_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
@@ -1151,8 +1366,26 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="mqtt_save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<?php echo spot_fmt(); ?>
 <h2><?php echo spot_t('TEXT.MQTT_OPTIONAL'); ?></h2>
-<?php if (!function_exists('spot_hs_autostart')) { function spot_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (spot_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
+<?php
+/* Autostart und Fassung kommen aus EINER Funktion in der Bibliothek.
+ *
+ * Bis 1.2.12 stand hier eine eigene, inline definierte spot_hs_autostart()
+ * mit einem fest verdrahteten Rueckfall auf /opt/loxberry - ein harter
+ * Systempfad in einer Oberflaeche, die den Wurzelordner ohnehin kennt.
+ * Und sie las nur den Autostart; die FASSUNG des Gateways, die darueber
+ * entscheidet, was der Anwender ueberhaupt tun muss, hat sie ignoriert.
+ * Beides liest spot_mqtt_gateway_info() aus demselben Block - also ohne
+ * zweiten Dateizugriff. */
+$sp_gw_mq = function_exists('spot_mqtt_gateway_info') ? spot_mqtt_gateway_info() : null;
+if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
+<div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div>
+<?php } ?>
+<div class="sm-small"><?= sprintf(spot_t('LOX.ABO_FASSUNG'),
+      ($sp_gw_mq !== null && (int) $sp_gw_mq['fassung'] > 0)
+          ? (string) (int) $sp_gw_mq['fassung'] : spot_t('LOX.ABO_FASSUNG_UNBEKANNT')) ?>
+<?php echo spot_t('LOX.ABO_VERWEIS'); ?></div>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
@@ -1174,7 +1407,9 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
         <b><?php echo spot_t('TEXT.KOSTENVERGLEICH'); ?></b> <span class="sm-mono"><?php echo spot_t('TEXT.FIX'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.DYN_MONAT'); ?></span>,
         <span class="sm-mono"><?php echo spot_t('TEXT.DIFF_MONAT'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.EURO_MONAT'); ?></span>,
         <span class="sm-mono"><?php echo spot_t('TEXT.SHIFT_JAHR'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.WP_CUR'); ?></span>, <span class="sm-mono"><?php echo spot_t('TEXT.WP_NEXT'); ?></span><br>
+        <b><?php echo spot_t('LEBEN.T_TITEL'); ?></b> <span class="sm-mono">/status/ts</span>, <span class="sm-mono">/status/zaehler</span>, <span class="sm-mono">/status/ok</span><br>
         <?php echo spot_t('TEXT.DAS_MELDEFENSTER'); ?> <span class="sm-mono">/ann</span> <?php echo spot_t('TEXT.WIRD_SOFORT_VERFFENTLICHT_WENN_ES_'); ?></div>
+<div class="sm-hinweis"><?php echo spot_t('LEBEN.MQTT_ERKLAERUNG'); ?></div>
     </div>
 </div>
 
@@ -1214,6 +1449,7 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <div class="sm-hinweis"><?php echo spot_t('REGEL.H_VORLAGE_TEXT'); ?></div>
 <form action="index.php" method="post" style="margin-bottom:14px;">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <?php echo spot_fmt(); ?>
   <input data-role="none" type="hidden" name="vorlage" value="1">
   <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo spot_t('REGEL.K_VORLAGE'); ?></button>
 </form>
@@ -1260,7 +1496,10 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IFIX_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IDYNM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.EIGENER_FESTPREIS_DYNAMISCHER_MONA'); ?></td><td>ct/kWh</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IDIFFM_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IEUROM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.VORTEIL_DYNAMISCH_POSITIV_BZW_FEST'); ?></td><td><?php echo spot_t('TEXT.CT_KWH_EUR'); ?></td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ISHIFTJ_I_V'); ?></span></td><td><?php echo spot_t('TEXT.ERSPARNIS_POTENZIAL_PRO_JAHR_DURCH'); ?></td><td>EUR</td></tr>
+<tr><td><span class="sm-mono">\iTS=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_TS'); ?></td><td>s</td></tr>
+<tr><td><span class="sm-mono">\iLAUF=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_LAUF'); ?></td><td>&mdash;</td></tr>
 </table>
+<div class="sm-warnung"><?php echo spot_t('LEBEN.ERKLAERUNG'); ?></div>
 <span class="sm-small"><?php echo spot_t('TEXT.ALLE_PREISE_SIND'); ?> <b><?php echo spot_t('TEXT.CT_KWH_ALS_ENDPREIS'); ?></b><?php echo spot_t('TEXT.WER_DIE_ALTEN_EUR_WERTE_GEWOHNT_IS'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span> <?php echo spot_t('TEXT.STELLEN'); ?></span>
 </div>
 
@@ -1315,6 +1554,14 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <tr><td><?php echo spot_t('TEXT.ANALOGSPEICHER_STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.MONATSBERICHT_TARIFVERGLEICH'); ?></td><td><?php echo spot_t('TEXT.TEXT_DYNAMISCH_V1_1_CT_GEGEN_FEST_'); ?></td><td><?php echo spot_t('TEXT.I1_DYNM_I2_FIX_I3_DIFFM'); ?></td></tr>
 <tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S9'); ?></td><td><?php echo spot_t('TEXT.DYNAMISCH_WRE_GNSTIGER'); ?></td><td><?php echo spot_t('TEXT.EIN_0_5_AUS_0_4_AN_DIFFM'); ?></td><td><?php echo spot_t('TEXT.PUSH_TARIFWECHSEL_PRFEN'); ?></td></tr>
 </table>
+<b><?php echo spot_t('LEBEN.H_BAUSTEINE'); ?></b> <?php echo spot_t('LEBEN.BAUSTEINE_TEXT'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
+<tr><td><?php echo spot_t('LEBEN.B_STATUS'); ?></td><td><?php echo spot_t('LEBEN.B_STATUS_NAME'); ?></td><td><?php echo spot_t('LEBEN.B_STATUS_EIN'); ?></td><td><span class="sm-mono">TS</span></td></tr>
+<tr><td><?php echo spot_t('LEBEN.B_FORMEL'); ?></td><td><?php echo spot_t('LEBEN.B_FORMEL_NAME'); ?></td><td><span class="sm-mono">(I1 + 1230768000) - I2</span></td><td><?php echo spot_t('LEBEN.B_FORMEL_EIN'); ?></td></tr>
+<tr><td><?php echo spot_t('LEBEN.B_SCHWELLE'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_NAME'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_EIN'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_ANSCHLUSS'); ?></td></tr>
+</table>
+<div class="sm-hinweis"><?php echo spot_t('LEBEN.BAUSTEINE_HINWEIS'); ?></div>
 <span class="sm-small"><?php echo spot_t('TEXT.DAS_PLUGIN_SENDET_DENSELBEN_BERICH'); ?></span>
 <br><br><b><?php echo spot_t('TEXT.PRAXIS_ERFAHRUNGEN_ZUM_BENACHRICHT'); ?></b> <?php echo spot_t('TEXT.ERSPART_LANGE_FEHLERSUCHE'); ?><br>
 <?php echo spot_t('TEXT.ER_SENDET_NUR_BEI_EINER_01_FLANKE_'); ?><br>
@@ -1327,11 +1574,110 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <span class="sm-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/...</span> <?php echo spot_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE_INKL'); ?> <b><?php echo spot_t('TEXT.ALLER_STUNDENWERTE'); ?></b> <?php echo spot_t('TEXT.FR_EIGENE_DIAGRAMME'); ?>
 <span class="sm-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?><?php echo spot_t('TEXT.SPOT_PHP_JSON_1'); ?></span>
 </div>
+
+<?php
+/* ===================================================================
+ * Das Abo im MQTT-Gateway - der Schritt, der bis 1.2.12 GANZ FEHLTE
+ * ===================================================================
+ *
+ * Wer MQTT einschaltete, bekam die Themenliste und sonst nichts. Unter
+ * Gateway V1 - der Vorgabe - kam damit am Miniserver kein einziger Wert
+ * an, ohne dass irgendwo stand, warum. Das ist die haeufigste
+ * Fehlerursache ueberhaupt, und sie war hier nicht einmal erwaehnt.
+ *
+ * Der Satz haengt an Mqtt.Gatewayversion und wird NICHT unbedingt
+ * hingeschrieben: unter V2 schaltet der LoxBerry-Kern die Eingabeknoepfe
+ * auf der Abonnement-Seite ausdruecklich ab. Wer dort den V1-Satz liest,
+ * sucht ein Eingabefeld, das es nicht mehr gibt.
+ *
+ * Ist die Fassung nicht lesbar, stehen BEIDE Saetze da. Einen von beiden
+ * zu behaupten waere fuer die Haelfte der Anlagen falsch - und eine stille
+ * Falschaussage in genau der Zeile, die als haeufigste Fehlerursache gilt.
+ * =================================================================== */
+$sp_gw = function_exists('spot_mqtt_gateway_info') ? spot_mqtt_gateway_info() : null;
+$sp_gwf = ($sp_gw === null) ? 0 : (int) $sp_gw['fassung'];
+?>
+<div class="sm-step"><b><?php echo spot_t('LOX.H_ABO'); ?></b><br>
+<?php echo spot_t('LOX.ABO_EINLEITUNG'); ?>
+<pre class="sm-pre"><?= sp_e($sp_cfg['mqtt_topic']) ?>/#</pre>
+<?php if ($sp_gwf >= 2) { ?>
+<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
+<?php } elseif ($sp_gwf === 1) { ?>
+<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
+<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
+<div class="sm-small"><?php echo spot_t('LOX.ABO_UNBEKANNT'); ?></div>
+<?php } ?>
+<div class="sm-small"><?= sprintf(spot_t('LOX.ABO_FASSUNG'),
+      $sp_gwf > 0 ? (string) $sp_gwf : spot_t('LOX.ABO_FASSUNG_UNBEKANNT')) ?></div>
+<?php if ($sp_gw !== null && !$sp_gw['autostart']) { ?>
+<div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div>
+<?php } ?>
+</div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-pane<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2><?php echo spot_t('TEXT.TEST'); ?></h2>
+
+<?php
+/* ===================================================================
+ * Selbstpruefung - beantwortet OHNE Loxone, ob die Einrichtung traegt
+ * ===================================================================
+ *
+ * Drei Ausgaenge je Zeile: Haken, Kreuz, STRICH. Der Strich heisst "nicht
+ * feststellbar" und ist ausdruecklich kein Haken - eine Zusammenfassung,
+ * die besser aussieht als ihr schlechtester Punkt, ist schlimmer als
+ * keine.
+ *
+ * Der Aufruf des eigenen Endpunkts kostet eine HTTP-Anfrage und laeuft
+ * deshalb nur auf Knopfdruck. Ohne Knopfdruck steht dort ein Strich, nicht
+ * ein Haken. */
+/* SIE LAEUFT NUR IM GEOEFFNETEN REITER.
+ *
+ * Alle Reiterflaechen werden vom Server gerendert, auch die, die der
+ * Anwender gerade nicht ansieht - nur das JavaScript blendet sie aus. Eine
+ * Selbstpruefung, die den Zustand rechnet, die Vorlage baut und die eigene
+ * Oberflaechendatei liest, liefe damit bei JEDEM Seitenaufbau mit, auch
+ * beim Klick auf Logdateien. Gemessen hat sie den Aufbau der uebrigen
+ * Reiter spuerbar verzoegert. */
+$sp_ep = ($sp_ist_post && isset($_POST['endpunkt_test']));
+$sp_pruefungen = ($sp_tab === 'tab-test' && function_exists('spot_selbsttest'))
+    ? spot_selbsttest($sp_ep) : array();
+$sp_haken = 0; $sp_kreuz = 0; $sp_strich = 0;
+foreach ($sp_pruefungen as $sp_z) {
+    if ($sp_z['ok'] === 1) { $sp_haken++; } elseif ($sp_z['ok'] === 0) { $sp_kreuz++; } else { $sp_strich++; }
+}
+?>
+<?php if (!$sp_pruefungen) { ?>
+<div class="sm-alert sm-info"><?php echo spot_t('PRUEF.NUR_IM_REITER'); ?></div>
+<?php } else { ?>
+<div class="sm-alert <?= $sp_kreuz > 0 ? 'sm-err' : ($sp_strich > 0 ? 'sm-warn' : 'sm-ok') ?>">
+<b><?= sprintf(sp_e(spot_t('PRUEF.ZUSAMMENFASSUNG')), $sp_haken, count($sp_pruefungen), $sp_kreuz, $sp_strich) ?></b>
+</div>
+<?php } ?>
+<table class="sm-tbl" style="width:100%;">
+<tr><th style="width:2em;"></th><th><?php echo spot_t('PRUEF.T_FRAGE'); ?></th><th><?php echo spot_t('PRUEF.T_BEFUND'); ?></th></tr>
+<?php foreach ($sp_pruefungen as $sp_z) { ?>
+<tr><td style="text-align:center;font-weight:700;color:<?= $sp_z['ok'] === 1 ? '#2e7d32' : ($sp_z['ok'] === 0 ? '#c62828' : '#8d6e63') ?>;">
+<?= $sp_z['ok'] === 1 ? '&#10003;' : ($sp_z['ok'] === 0 ? '&#10007;' : '&ndash;') ?></td>
+<td><?= sp_e(spot_t($sp_z['schluessel'])) ?></td>
+<td><?= sp_e($sp_z['text']) ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-small"><?php echo spot_t('PRUEF.STRICH_ERKLAERUNG'); ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <?php echo spot_fmt(); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="endpunkt_test" value="1"><?php echo spot_t('PRUEF.K_ENDPUNKT'); ?></button>
+  </form>
+</div>
+<div class="sm-small"><?php echo spot_t('PRUEF.H_ENDPUNKT'); ?></div>
 
 <h3 class="sm-h3"><?php echo spot_t('PLAN.H_FAHRPLAN'); ?></h3>
 <p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_TEXT'); ?></p>
@@ -1391,6 +1737,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <?php echo spot_fmt(); ?>
     <input data-role="none" type="hidden" name="tab" value="test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="plantest" value="1"><?php echo spot_t('PLAN.K_SELBSTTEST'); ?></button>
   </form>
@@ -1399,41 +1746,10 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <div class="sm-pre"><?php echo sp_e($sp_plantest); ?></div>
 <?php } ?>
 
-<h3 class="sm-h3"><?php echo spot_t('REGEL.H_SELBSTTEST'); ?></h3>
-<p class="sm-small"><?php echo spot_t('REGEL.SELBSTTEST_TEXT'); ?></p>
-<?php
-/* Die Vorlage und die Ausgabe muessen dieselben Feldnamen kennen. Steht in
- * der Vorlage ein Suchmuster, das die Zeile nicht liefert, bleibt der
- * virtuelle Eingang in Loxone stumm - ohne Fehlermeldung. Deshalb wird hier
- * die Zeile wirklich erzeugt und gegen spot_felder() gehalten. */
-$sp_pruef = array();
-if (function_exists('spot_felder') && function_exists('spot_zeile')) {
-    $sp_zeile = spot_zeile(spot_state(), $sp_cfg);
-    foreach (spot_felder() as $sp_fn => $sp_fd) {
-        if (strpos($sp_zeile, ';' . $sp_fn . '=') === false
-            && strpos($sp_zeile, "\n" . $sp_fn . '=') === false) {
-            $sp_pruef[] = $sp_fn;
-        }
-    }
-}
-$sp_xmlok = 1;
-if (function_exists('spot_vorlage')) {
-    $sp_v = spot_vorlage();
-    $sp_alt2 = libxml_use_internal_errors(true);
-    $sp_xmlok = simplexml_load_string($sp_v[1]) !== false ? 1 : 0;
-    libxml_clear_errors();
-    libxml_use_internal_errors($sp_alt2);
-}
-?>
-<div class="sm-alert <?= ($sp_pruef || !$sp_xmlok) ? 'sm-warn' : 'sm-info' ?>">
-<?php if ($sp_pruef) {
-    echo sprintf(spot_t('REGEL.SELBSTTEST_FEHL'), sp_e(implode(', ', $sp_pruef)));
-} elseif (!$sp_xmlok) {
-    echo spot_t('REGEL.SELBSTTEST_XML');
-} else {
-    echo sprintf(spot_t('REGEL.SELBSTTEST_OK'), count(spot_felder()));
-} ?>
-</div>
+<?php /* Der frueher hier stehende Kasten "Feldnamen gegen die Zeile" ist in
+         spot_selbsttest() aufgegangen (Zeilen PRUEF.FELDER und
+         PRUEF.VORLAGE, oben in der Tabelle). Zwei Stellen, die dasselbe
+         messen, laufen auseinander - und dann glaubt man der bequemeren. */ ?>
 
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
@@ -1449,12 +1765,14 @@ if (function_exists('spot_vorlage')) {
 <div class="sm-alert sm-warn"><?php echo spot_t('TEXT.TOKEN_OFFEN'); ?></div>
 <form method="post" action="index.php" style="display:inline">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?php echo spot_fmt(); ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo spot_t('TEXT.TOKEN_SETZEN'); ?></button>
 </form>
 <?php } else { ?>
 <div class="sm-alert sm-ok"><?php echo spot_t('TEXT.TOKEN_AKTIV'); ?></div>
 <form method="post" action="index.php" style="display:inline">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?php echo spot_fmt(); ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo spot_t('TEXT.TOKEN_ERNEUERN'); ?></button>
 <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="token_weg" value="1"><?php echo spot_t('TEXT.TOKEN_ENTFERNEN'); ?></button>
 </form>
@@ -1499,7 +1817,12 @@ if (function_exists('spot_vorlage')) {
 <?php foreach ($sp_mc as $sp_m) { ?>
 <tr><td><?= sp_e(substr($sp_m['monat'], 4, 2) . '/' . substr($sp_m['monat'], 0, 4)) ?></td>
 <td><?= (int) $sp_m['tage'] ?></td>
-<td><?= sp_n($sp_m['kwh'], 1) ?><?= $sp_m['quelle'] === 'monat' ? '' : '<span class="sm-small" title="aus dem Jahresverbrauch abgeleitet"> *</span>' ?></td>
+<?php /* Woher die Menge kommt, steht dabei - gemessen, gepflegt oder
+         abgeleitet. Eine Zahl ohne ihre Herkunft behauptet eine
+         Genauigkeit, die sie nicht hat. */ ?>
+<td><?= sp_n($sp_m['kwh'], 1) ?>
+<span class="sm-small" title="<?= sp_e(spot_t('LAST.Q_' . strtoupper($sp_m['quelle']))) ?>"><?=
+    $sp_m['quelle'] === 'lastgang' ? ' &#9679;' : ($sp_m['quelle'] === 'monat' ? '' : ' *') ?></span></td>
 <td><b><?= sp_n($sp_m['dynp'], 2) ?> ct</b></td><td><?= sp_n($sp_m['dyn'], 2) ?> ct</td>
 <td><?= sp_n($sp_m['fix'], 2) ?> ct</td>
 <td style="color:<?= $sp_m['diff'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><b><?= ($sp_m['diff'] >= 0 ? '+' : '') . sp_n($sp_m['diff'], 2) ?> ct</b></td>
@@ -1516,13 +1839,25 @@ if (function_exists('spot_vorlage')) {
 <?php } ?>
 <?php $sp_hist = function_exists('spot_history_read') ? spot_history_read(14) : array(); if ($sp_hist) { ?>
 <h2><?php echo spot_t('TEXT.TAGESWERTE_DER_LETZTEN_TAGE'); ?></h2>
-<table class="sm-tbl"><tr><th><?php echo spot_t('TEXT.TAG'); ?></th><th><?php echo spot_t('TEXT.SCHNITT'); ?></th><th><?php echo spot_t('TEXT.GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.MINIMUM'); ?></th><th><?php echo spot_t('TEXT.MAXIMUM'); ?></th><th>CO&#8322;</th></tr>
+<table class="sm-tbl"><tr><th><?php echo spot_t('TEXT.TAG'); ?></th><th><?php echo spot_t('TEXT.SCHNITT'); ?></th><th><?php echo spot_t('TEXT.GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.MINIMUM'); ?></th><th><?php echo spot_t('TEXT.MAXIMUM'); ?></th><th>CO&#8322;</th><th><?php echo spot_t('LAST.T_GEWICHTUNG'); ?></th></tr>
 <?php foreach (array_reverse($sp_hist) as $sp_r) { ?>
 <tr><td><?= sp_e(substr($sp_r[0], 6, 2) . '.' . substr($sp_r[0], 4, 2) . '.' . substr($sp_r[0], 0, 4)) ?></td>
 <td><?= sp_n($sp_r[1], 2) ?> ct</td><td><?= $sp_r[4] > 0 ? sp_n($sp_r[4], 2) . ' ct' : '&ndash;' ?></td>
 <td><?= sp_n($sp_r[2], 2) ?> ct</td><td><?= sp_n($sp_r[3], 2) ?> ct</td>
-<td><?= $sp_r[5] > 0 ? (int) $sp_r[5] . ' g' : '&ndash;' ?></td></tr>
+<td><?= $sp_r[5] > 0 ? (int) $sp_r[5] . ' g' : '&ndash;' ?></td>
+<td><?= !empty($sp_r[6])
+      ? '<b>' . sp_e(spot_t('LAST.T_GEMESSEN')) . '</b> (' . sp_n($sp_r[7], 1) . ' kWh)'
+      : sp_e(spot_t('LAST.T_PROFIL')) ?></td></tr>
 <?php } ?></table>
+<div class="sm-small"><?php echo spot_t('LAST.T_ERKLAERUNG'); ?></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <?php echo spot_fmt(); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="spot_csv" value="1"><?php echo spot_t('LAST.K_CSV'); ?></button>
+  </form>
+</div>
+<div class="sm-small"><?php echo spot_t('LAST.H_CSV'); ?></div>
 <?php } ?>
 </div>
 
@@ -1578,29 +1913,11 @@ if (function_exists('spot_vorlage')) {
 <form action="index.php" method="post" style="margin-top:10px;">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <?php echo spot_fmt(); ?>
     <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo spot_t('TEXT.LOG_LEEREN'); ?></button>
 </form>
 </div>
 
-
-<h2><?= spot_t('TEXT.H_SICHERUNG') ?></h2>
-<div class="sm-hinweis"><?= spot_t('TEXT.SICH_ERKLAERUNG') ?></div>
-<div class="sm-warnung"><?= spot_t('TEXT.SICH_WARNUNG') ?></div>
-<div class="sm-knopfreihe">
-  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
-       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
-       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
-       einen Download, der das Speichern verschluckt. -->
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="spot_sichern" value="1"><?= spot_t('TEXT.K_SICHERN') ?></button>
-  </form>
-  <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="file" name="spot_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="spot_zurueck" value="1"><?= spot_t('TEXT.K_ZURUECK') ?></button>
-  </form>
-</div>
 </div>
 <script>
 function spTtsMode() {

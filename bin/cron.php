@@ -68,6 +68,14 @@ if ($spot_lib === '') {
 require_once $spot_lib;
 
 $st = spot_state();
+
+/* Der Laufzaehler wird als ERSTES weitergedreht - vor allem, was scheitern
+ * kann. Er beantwortet die Frage "laeuft der Cron ueberhaupt noch?", und
+ * die soll auch dann noch beantwortbar sein, wenn der Abruf bei aWATTar
+ * gerade nicht durchgeht. Ein Zaehler, der nur bei Erfolg weiterzaehlt,
+ * misst den Erfolg, nicht den Lauf - dafuer gibt es OK. */
+spot_lauf_weiter();
+
 spot_announce_check();
 spot_marstek_control($st); // nur aktiv, wenn in den Einstellungen eingeschaltet
 
@@ -131,6 +139,16 @@ if ($sig !== $old || !is_file($beat) || time() - filemtime($beat) > 1800) {
     spot_mqtt_publish($st);
     @file_put_contents($sigf, $sig);
     @touch($beat);
+} else {
+    /* Nichts hat sich geaendert - der volle Satz bleibt aus. Das
+     * Lebenszeichen geht trotzdem hinaus, und zwar bei JEDEM Durchgang.
+     *
+     * Genau darin besteht seine Aufgabe: ein virtueller Eingang behaelt
+     * seinen letzten Wert, und bei MQTT mit Retain ueberlebt er sogar einen
+     * Neustart des Miniservers. Stirbt der Cron, steht in Loxone weiter der
+     * Preis vom Ausfallzeitpunkt - das ist keine fehlende Auskunft, sondern
+     * eine Falschaussage, und sie sieht aus wie eine richtige. */
+    spot_mqtt_lebenszeichen($st);
 }
 
 if ((int) date('G') === 23 && (int) date('i') >= 50) {

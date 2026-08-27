@@ -16,9 +16,21 @@
  *                       NEXT = naechste Stunde, LEVEL 1=guenstig 2=normal 3=teuer,
  *                       WINH/WININ/WINCT = guenstigstes zusammenhaengendes Fenster,
  *                       ANN = Meldefenster (erste 10 min einer aktivierten Stunde).
+ *
+ *                       Danach die Zeile LEBEN;TS=..;LAUF=.. - das
+ *                       Lebenszeichen. TS ist der Zeitpunkt, zu dem der
+ *                       Zustand zuletzt WIRKLICH gerechnet wurde, LAUF ein
+ *                       Zaehler, der bei 999 umlaeuft. Ohne die beiden kann
+ *                       der Miniserver einen toten Cron nicht von ruhigen
+ *                       Preisen unterscheiden - ein virtueller Eingang
+ *                       behaelt seinen letzten Wert, und in der App sieht
+ *                       das aus wie ein normaler Tag.
  *   ?debug=1         -> alle Stundenpreise heute und morgen
- *   ?refresh=1       -> Marktdaten sofort neu abrufen
  *   ?json=1          -> kompletter Zustand als JSON (inkl. aller Stundenwerte)
+ *
+ *   Die folgenden Aufrufe LOESEN ETWAS AUS und verlangen deshalb seit
+ *   1.2.13 IMMER ein Token (siehe unten):
+ *   ?refresh=1       -> Marktdaten sofort neu abrufen
  *   ?say=1           -> Test: Ansage sofort abspielen
  *   ?saytomorrow=1   -> Test: Ansage "Preise fuer morgen" abspielen
  *   ?ptest=1         -> Test-Pushnachricht ausloesen (setzt PTEST fuer 5 Minuten)
@@ -26,29 +38,62 @@
 
 require_once __DIR__ . '/spot_lib.php';
 
-/* ---------------- Token, falls eingerichtet ----------------
+/* ---------------- Token ----------------
  *
  * Dieser Ordner ist bewusst der UNANGEMELDETE Bereich: der Miniserver soll
  * ohne Zugangsdaten lesen koennen. Damit erreicht ihn aber auch jedes andere
- * Geraet im Netz - und der Endpunkt kann mehr als lesen: ?say=1 spielt eine
- * Ansage ueber die Lautsprecher ab, ?ptest=1 loest eine Pushnachricht aus,
- * ?refresh=1 stoesst einen Abruf bei aWATTar an.
+ * Geraet im Netz - und der Endpunkt kann mehr als lesen.
  *
- * Das Token ist FREIWILLIG. Wird im Reiter "Einbindung in Loxone" keines
- * gesetzt, verhaelt sich der Endpunkt wie bisher. Ein Pflichttoken wuerde
- * bei jedem bestehenden Aufbau die Werte im Miniserver abreissen lassen,
- * ohne dass jemand versteht, warum.
+ * SEIT 1.2.13 WIRD GETRENNT, und zwar entlang der Frage, ob ein Aufruf
+ * etwas AUSLOEST:
+ *
+ *   lesend    (ohne Parameter, ?debug=1, ?json=1)
+ *             Token nur noetig, wenn eines eingerichtet ist. Damit bleibt
+ *             jeder bestehende Aufbau unveraendert - ein Pflichttoken haette
+ *             ueberall die Werte im Miniserver abreissen lassen, ohne dass
+ *             jemand versteht, warum.
+ *
+ *   ausloesend (?say=1, ?saytomorrow=1, ?ptest=1, ?refresh=1)
+ *             Token IMMER noetig. ?say=1 spricht ueber die Lautsprecher der
+ *             Wohnung, ?ptest=1 legt eine Datei an, ?refresh=1 stoesst einen
+ *             Abruf bei einem fremden Dienst an. Bis 1.2.12 konnte das jedes
+ *             Geraet im Netz, ohne jede Huerde.
+ *
+ * Das kostet die Rueckwaertskompatibilitaet nichts: Loxone ruft die
+ * ausloesenden Adressen nicht ab, und die Knoepfe der Plugin-Oberflaeche
+ * fuehren das Token ohnehin mit.
  */
 $spot_soll = (string) spot_cfg_wert('token', '');
+
+/* is_string ZUERST, dann alles andere.
+ *
+ * ?token[]=x liefert ein Feld. Ein (string) darauf erzeugt unter PHP 8 die
+ * Warnung "Array to string conversion" - und die geht VOR
+ * http_response_code() hinaus. Gemessen an 8.4.24: der Statuscode blieb
+ * daraufhin auf 200, die Abweisung kam beim Aufrufer als Erfolg an.
+ * Unter 7.4 war es unauffaellig; mit Debian 13 waere es der Normalfall. */
+$spot_ist = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
+
+$spot_loest_aus = isset($_GET['say']) || isset($_GET['saytomorrow'])
+               || isset($_GET['ptest']) || isset($_GET['refresh']);
+
+function spot_abweisen($grund, $klartext) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'SPOT;OK=0;GRUND=' . $grund . "\n" . $klartext . "\n";
+    exit;
+}
+
+if ($spot_loest_aus && $spot_soll === '') {
+    // Fail closed: wo die Angabe fehlt, wird abgewiesen statt geraten.
+    // Und die Meldung sagt, WAS zu tun ist - nicht nur, dass es nicht geht.
+    spot_abweisen('TOKEN_NOETIG', spot_t('ENDPUNKT.TOKEN_NOETIG'));
+}
 if ($spot_soll !== '') {
-    $spot_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
     // hash_equals statt ==: ein zeichenweiser Vergleich verraet ueber die
     // Antwortzeit, wie viele Zeichen schon stimmen.
     if (!hash_equals($spot_soll, $spot_ist)) {
-        http_response_code(403);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo "SPOT;OK=0;GRUND=TOKEN\n";
-        exit;
+        spot_abweisen('TOKEN', spot_t('ENDPUNKT.TOKEN_FALSCH'));
     }
 }
 
@@ -69,7 +114,11 @@ if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
     $st = spot_state();
     $text = isset($_GET['saytomorrow']) ? spot_tomorrow_text($st) : spot_announce_text($st);
     if ($text === '') {
-        $text = 'Hallo! Dies ist eine Testansage des Spotpreis-Plugins. Es liegen noch keine Preisdaten vor.';
+        // Bis 1.2.12 stand dieser Satz fest auf Deutsch im Quelltext - in
+        // einem Plugin, dessen Ansagen seit 1.1.2 aus den Sprachdateien
+        // kommen. Wer die Oberflaeche auf Englisch fuehrt, bekam eine
+        // deutsche Testansage.
+        $text = spot_t('ANSAGE.TEST_LEER');
     }
     $ok = spot_say($text);
     echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";

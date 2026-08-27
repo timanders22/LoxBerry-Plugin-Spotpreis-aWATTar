@@ -59,22 +59,46 @@ und Endpunkte sind verschieden.
 - **Optionale Kopplung mit dem Marstek-Speicher-Plugin** (Standard aus): lädt den
   Speicher in den X günstigsten Stunden bzw. bei negativem Preis
 - **MQTT** über das LoxBerry MQTT Gateway, **JSON** inklusive aller Stundenwerte
-- Preisdiagramm (heute + morgen) in der Oberfläche, Tageswert-Historie
-- Reiter: Einstellungen, Einbindung in Loxone (Schritt-für-Schritt inkl.
-  kompletter Baustein-Liste zum 1:1-Nachbauen), Test, Logdateien
+- **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
+  Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte
+  Preis in Loxone, und in der App sieht alles normal aus
+- Preisdiagramm (heute + morgen) in der Oberfläche, Tageswert-Historie,
+  **Verlauf als CSV** zum Nachrechnen
+- **Einstellungen sichern und zurückspielen** über zwei Knöpfe — für den Umzug
+  auf einen zweiten LoxBerry
+- Optional: **eigener Lastgang** statt des eingebauten Haushaltsprofils, damit
+  der Tarifvergleich eine Messung wird statt einer Modellrechnung
+- Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
+  kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
+  Logdateien
 - Konfiguration und Log überleben Updates und Neuinstallation
 
 ## Endpunkte
 
+**Lesende Aufrufe** — ein Token ist nur nötig, wenn eines eingerichtet ist:
+
 | Aufruf | Zweck |
 |---|---|
-| `/plugins/spotpreis/spot.php` | Loxone-Zeile `SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..` |
+| `/plugins/spotpreis/spot.php` | Loxone-Zeile `SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..`, dazu `LEBEN;TS=..;LAUF=..` |
 | `/plugins/spotpreis/spot.php?debug=1` | alle Stundenpreise heute + morgen |
-| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten sofort neu abrufen |
 | `/plugins/spotpreis/spot.php?json=1` | kompletter Zustand als JSON |
+
+**Auslösende Aufrufe** — seit 1.2.13 **immer** mit Token
+(`&token=…`, im Reiter *Einbindung in Loxone* zu setzen):
+
+| Aufruf | Zweck |
+|---|---|
+| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten sofort neu abrufen |
 | `/plugins/spotpreis/spot.php?say=1` | Test-Ansage (aktueller Preis) |
 | `/plugins/spotpreis/spot.php?saytomorrow=1` | Test-Ansage (Preise für morgen) |
 | `/plugins/spotpreis/spot.php?ptest=1` | Test-Pushnachricht auslösen |
+
+Der Unterschied hat einen Grund: `?say=1` spricht über die Lautsprecher der
+Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` stößt einen Abruf bei
+einem fremden Dienst an. Bis 1.2.12 konnte das jedes Gerät im Netz, ohne jede
+Hürde. Das Lesen bleibt tokenfrei, damit kein bestehender Aufbau abreißt —
+Loxone ruft die auslösenden Adressen ohnehin nicht ab, und die Knöpfe auf der
+Plugin-Seite führen das Token automatisch mit.
 
 ## Preisbestandteile (Voreinstellung: deutsche Großstadt, 2026)
 
@@ -102,6 +126,191 @@ Speicherheizung 1,71 · Elektromobilität 4,28 · Modul 2 pauschal 2,59 ·
 Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe
 Schwachlast 0,61 ct/kWh.
 
+
+## Fassung 1.2.13 — Durchsicht Zeile für Zeile
+
+Eine vollständige Durchsicht mit einem Prüfstand, der die Seite **wirklich
+ausliefert** statt sie nur einzulesen: `php -S` mit einer SDK-Attrappe, deren
+`lbheader()` echt ausgibt, unter PHP 7.4 **und** 8.4. Das war nötig, weil am
+PHP-CLI `header()` wirkungslos und `headers_sent()` immer falsch ist — die drei
+Hauswerkzeuge für die Konfigurationssicherung meldeten für 1.2.11 alle „ok",
+während der Knopf *Einstellungen sichern* auf jedem echten LoxBerry eine Seite
+statt einer Datei lieferte.
+
+### Vier Fehler, die still waren
+
+**Das Feld Stromsteuer hieß auf Englisch `sexpensive`.** Ein automatischer
+Übersetzungslauf hatte das Wort „teuer" **innerhalb** von „steuer" durch einen
+Sprachschlüssel ersetzt: `name="s<?= spot_t('TEXT.TEUER') ?>"`. Auf Deutsch
+ergab das zufällig wieder `steuer`, auf Englisch `sexpensive`. Das Feld kam
+damit nie an, und **jedes Speichern schrieb den Vorgabewert 2,05 ct** statt des
+angezeigten Werts — bei einem angezeigten Wert von 9,99 also 7,94 ct/kWh netto
+daneben, ohne Meldung und ohne Protokolleintrag. Ein Feldname ist eine
+Schnittstelle, kein Anzeigetext.
+
+**Nach dem Zurückspielen zeigte die Seite den alten Stand.** Die Konfiguration
+wurde gelesen, bevor der Rückspielzweig lief. Die Meldung sagte „49 Werte
+übernommen", jedes Feld auf der Seite zeigte die Werte von vorher — und ein
+Klick auf *Speichern* nahm die Sicherung wieder zurück. Der Block steht jetzt
+**vor** dem Laden.
+
+**Eine abgelehnte Sicherungsdatei erzeugte gar keine Meldung.** Die
+Beanstandungen wurden gesammelt, aber nur innerhalb des Speicherzweigs
+ausgegeben; alles, was der Sicherungszweig hineinschrieb, fiel heraus. Die
+Ablehnung selbst war vorbildlich — es wurde nichts geändert —, nur erfuhr es
+niemand. Ausgegeben wird jetzt an **einer** Stelle für alle Zweige.
+
+**Der Sicherungsblock stand außerhalb jeder Reiterfläche** und war deshalb
+unter jedem Reiter sichtbar, auch unter Logdateien. Er steht jetzt im Reiter
+*Einstellungen*, zu den Einstellungen, die er sichert.
+
+### MQTT-Gateway V1 und V2 werden unterschieden
+
+Bis 1.2.12 hat das Plugin `Mqtt.Gatewayversion` **nicht gelesen** — und den
+Abo-Satz überhaupt nicht gesagt. Wer MQTT einschaltete, bekam die Themenliste
+und sonst nichts; unter Gateway V1, der Vorgabe, kam damit am Miniserver kein
+einziger Wert an, ohne dass irgendwo stand, warum. Das ist die häufigste
+Fehlerursache überhaupt, und sie fehlte hier vollständig.
+
+Der Reiter *Einbindung in Loxone* hat jetzt einen eigenen Schritt 6 mit dem
+Thema zum Abschreiben (`<präfix>/#`) und dem Satz, der zur **erkannten
+Fassung** passt:
+
+| Erkannt | Was dasteht |
+|---|---|
+| V1 | „Ohne diesen Eintrag kommt am Miniserver nichts an." |
+| V2 | „V2 erkennt die Themengruppe von selbst — einzutragen ist nichts." |
+| nicht lesbar | **beide** Sätze, mit dem Hinweis, wo die Fassung steht |
+
+Einen von beiden zu behaupten wäre für die Hälfte der Anlagen falsch. Gemessen
+an allen drei Lagen. *(Dass V2 die Themen von selbst erkennt, ist nicht selbst
+gemessen — es stammt aus der Oberfläche des fremden MGiSmart-Plugins und passt
+zu den Knöpfen, die der LoxBerry-Kern unter V2 abschaltet.)*
+
+### Lebenszeichen: `TS` und `LAUF`
+
+Ein virtueller Eingang behält seinen letzten Wert. Stirbt der Minutenlauf,
+steht in Loxone weiter der Preis vom Ausfallzeitpunkt — das ist keine fehlende
+Auskunft, sondern eine Falschaussage, und sie sieht aus wie eine richtige. Die
+Schaltregeln laufen dann nach einem eingefrorenen Fahrplan weiter.
+
+Neu in der Zeile und über MQTT (`/status/ts`, `/status/zaehler`, `/status/ok`):
+
+* **`TS`** — Zeitpunkt des letzten Laufs in Unix-Sekunden. Der Miniserver
+  rechnet selbst: `Alter = (Loxone-Zeit + 1230768000) − TS`.
+* **`LAUF`** — ein Zähler, der bei 999 umläuft. Er beantwortet, was der
+  Zeitstempel nicht kann: ein Raspberry ohne Echtzeituhr springt beim ersten
+  Zeitabgleich, und ein Alter kann danach negativ sein, obwohl alles läuft.
+
+`TS` geht bei **jedem** Durchgang hinaus, auch wenn sich sonst nichts geändert
+hat — daran hängt der ganze Zweck. Die Baustein-Liste hat dafür einen neuen
+Abschnitt *4g) Ausfallerkennung* mit drei Bausteinen und einer Gegenprobe.
+
+### Der Endpunkt
+
+`?token[]=x` ergab unter PHP 8.4 **HTTP 200 statt 403**: der `(string)`-Wandel
+eines Feldes erzeugt die Warnung „Array to string conversion", und die geht
+**vor** `http_response_code()` hinaus. Die Abweisung kam beim Aufrufer als
+Erfolg an. Behoben mit `is_string()` — erst prüfen, dann alles andere.
+Dazu die Trennung lesend/auslösend, siehe oben unter *Endpunkte*.
+
+### Ein Wachposten für die Oberfläche
+
+Alle zehn Formulare tragen jetzt ein Merkmal gegen fremde Absender. Der
+Wachposten steht **einmal** am Kopf der Datei und leert `$_POST`, wenn das
+Merkmal fehlt — damit läuft kein Zweig mehr an, ohne dass einer davon davon
+wissen muss. Ein „`&& $post`" je Zweig wirkt nur, wenn wirklich jeder daran
+hängt, und einen vergisst man.
+
+Das Merkmal liegt in **einer** Quelle, einer Datei im Datenordner; die
+PHP-Sitzung ist nur ein Zwischenspeicher mit demselben Wert. Beim Bauen hat
+sich gezeigt, warum: `session_start()` gelang auf dem Prüfstand bei einem
+Aufruf und beim nächsten nicht — die Seite zeigte dann ein Merkmal aus der
+Sitzung, während der Wachposten gegen das aus der Datei verglich. Zwei Quellen
+für ein Geheimnis laufen auseinander.
+
+### Reiter Test: eine echte Selbstprüfung
+
+Dreizehn Zeilen mit **drei** Ausgängen — Haken, Kreuz und **Strich**. Der
+Strich heißt „nicht feststellbar" und ist ausdrücklich kein Haken; eine
+Zusammenfassung, die besser aussieht als ihr schlechtester Punkt, ist
+schlimmer als keine. Geprüft wird unter anderem, ob die Konfiguration heil ist,
+ob der Minutenlauf noch arbeitet, ob der **eigene Cron-Eintrag** überhaupt
+installiert ist, ob die Loxone-Zeile alle angekündigten Felder trägt und ob
+Reiterleiste und Flächen zusammenpassen.
+
+Der Aufruf des **eigenen Endpunkts** ist die einzige Zeile, die die getrennten
+Verzeichnisbäume findet — das sieht keine Leseprüfung. Er kostet eine
+HTTP-Anfrage und läuft deshalb nur auf Knopfdruck; ohne Knopfdruck steht dort
+ein Strich. Die ganze Selbstprüfung läuft nur im geöffneten Reiter: alle
+Flächen werden serverseitig gerendert, sonst liefe sie bei jedem Klick mit.
+
+### Zwei Tage im Jahr hat ein Tag nicht 24 Stunden
+
+Beide Fälle waren still falsch. Am **Ende der Sommerzeit** (25.10.2026) liefert
+aWATTar 25 Stundenpreise, zwei davon auf Stunde 2 — bis 1.2.12 gewann der
+zweite und der erste verschwand lautlos (gemessen: 25 Werte hinein, 24 heraus).
+Jetzt gilt der erste, der zweite wird vermerkt.
+
+Schwerer wog der **Beginn der Sommerzeit**: Stunde 2 fehlt ganz, und in `PH02`
+stand daraufhin `0.000`. Null Cent sieht für jeden Optimierer wie die
+günstigste Stunde des Tages aus — eine Zahl, die richtig aussieht und in Loxone
+eine Schaltung auslöst. Eine Stunde, die es auf der Uhr nicht gibt, darf nie
+gewählt werden; sie bekommt jetzt den **Tageshöchstpreis**. Dasselbe gilt für
+`PM00…PM23`, solange die Preise für morgen noch nicht veröffentlicht sind.
+
+### Viertelstunden: gemessen, kein Handlungsbedarf
+
+Am 27.08.2026 an der öffentlichen Schnittstelle nachgemessen:
+`api.awattar.de/v1/marketdata` liefert weiterhin **24 Datensätze mit
+60-Minuten-Intervallen** in Eur/MWh. Käme feiner aufgelöstes Material an, hätte
+der bisherige Code von je vier Viertelstunden drei lautlos verworfen, weil er
+nach der Stundenzahl schlüsselt — ein Tag hätte danach völlig normal ausgesehen
+und drei Viertel falscher Preise getragen. Die Schrittweite wird jetzt
+**gemessen**, alles Feinere zum Stundenmittel zusammengefasst, und der Reiter
+Test zeigt die erkannte Auflösung an.
+
+### Neu: eigener Lastgang (ab Werk aus)
+
+Der Tarifvergleich gewichtete den Tagesschnitt bisher mit einem eingebauten
+Haushalts-Lastprofil — einer Modellrechnung für einen Durchschnittshaushalt.
+Mit Wärmepumpe, Wallbox oder PV liegt die daneben, je nach Verbrauchszeit in
+beide Richtungen.
+
+Wer stündliche Verbrauchswerte liefern kann (Zähler-Plugin, eigenes Skript),
+bekommt statt dessen eine **Messung**: jede Stunde mit ihrem wirklichen
+Verbrauch gegen den Preis derselben Stunde. Gleiche Bauform wie die
+PV-Prognose — Adresse, Pfad, Einheit. Verlangt werden mindestens 20 der 24
+Stunden; darunter gilt weiter das Profil, denn ein Tagesschnitt aus drei
+Stunden sähe aus wie eine Messung. Die Tabelle und die CSV sagen bei **jedem**
+Tag, welches von beiden es war.
+
+### Neu: Verlauf als CSV
+
+Der Tarifvergleich behauptet Beträge in Euro. Wer sie nachrechnen will,
+braucht die Zahlen, aus denen sie entstanden sind. Ein Knopf im Reiter Test
+liefert `history.csv` mit Kopfzeile, Semikolon als Trenner und Komma als
+Dezimalzeichen.
+
+### Die Sicherungsdatei
+
+Sie trägt weiterhin den **Aktionstoken** — ohne ihn stünden nach dem
+Zurückspielen alle Felder richtig, und der Miniserver käme trotzdem nicht mehr
+an das Plugin. Neu ist ein lesbarer Kopf mit Datum und Fassung (`_hinweis`,
+`_stand`, `_fassung`); die Leseseite übergeht Schlüssel mit führendem
+Unterstrich, statt sie als fremd abzuweisen.
+
+> **Die Datei ist damit geheimnistragend.** Wie ein Passwort behandeln: nicht
+> in ein Forum hängen und nicht an einen Fehlerbericht heften. Das
+> Formularmerkmal des Wachpostens ist etwas anderes und steht ausdrücklich
+> **nicht** darin.
+
+### Gemessen, nicht behauptet
+
+44 Prüfungen an der laufenden Seite, unter PHP 7.4 und 8.4 je 44 bestanden.
+Dazu eine Eichung, die jede Korrektur einzeln zurückbaut und nachsieht, ob die
+zugehörige Prüfung **rot** wird — eine Prüfung, die auch ohne die Korrektur
+grün bleibt, prüft nichts.
 
 ## Fassung 1.2.0 — Fahrplaner
 
