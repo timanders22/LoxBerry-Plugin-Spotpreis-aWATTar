@@ -243,6 +243,9 @@ if ($sp_ist_post && isset($_POST['save'])) {
             'pv_sperre' => max(0, min(500, (float) str_replace(',', '.', (string) $sp_g('r_pv_sperre', 0)))),
             'soc_min' => max(0, min(100, (int) $sp_g('r_soc_min', 0))),
             'soc_max' => max(0, min(100, (int) $sp_g('r_soc_max', 0))),
+            // Taktschutz (planer.php 1.1.0), beide in Minuten, 0 = aus
+            'min_lauf' => max(0, min(720, (int) $sp_g('r_min_lauf', 0))),
+            'min_pause' => max(0, min(720, (int) $sp_g('r_min_pause', 0))),
         );
         /* Ein Fenster, das laenger ist als die Frist erlaubt, ist ein
          * Widerspruch - und einer, den man beim Eintragen leicht macht
@@ -266,6 +269,13 @@ if ($sp_ist_post && isset($_POST['save'])) {
     $sp_new['budget_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0))));
     $sp_new['pv_bonus'] = max(0, min(100, (float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0))));
     $sp_new['pv_schwelle'] = max(1, min(100000, (int) (isset($_POST['pv_schwelle']) ? $_POST['pv_schwelle'] : 500)));
+    /* Zweites, zeitlich begrenztes Budget (Paragraf 14a) und die Hysterese.
+     * Dieselben Schranken wie in spot_config() - stuenden hier andere
+     * Zahlen, gaebe es zwei Wahrheiten. */
+    $sp_new['budget2_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget2_kw']) ? $_POST['budget2_kw'] : 0))));
+    $sp_new['budget2_von'] = max(0, min(23, (int) (isset($_POST['budget2_von']) ? $_POST['budget2_von'] : 0)));
+    $sp_new['budget2_bis'] = max(0, min(23, (int) (isset($_POST['budget2_bis']) ? $_POST['budget2_bis'] : 0)));
+    $sp_new['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
     $sp_q = (string) (isset($_POST['pv_quelle']) ? $_POST['pv_quelle'] : '');
     $sp_new['pv_quelle'] = in_array($sp_q, array('', 'forecast_solar', 'objekt', 'liste'), true) ? $sp_q : '';
     $sp_e2 = (string) (isset($_POST['pv_einheit']) ? $_POST['pv_einheit'] : 'wh');
@@ -673,6 +683,11 @@ if ($sp_frame) {
    benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
    bzw. der Referenzimplementierung uebernommen. */
 .sm-an { color: #1a7f1a; font-weight: 700; }
+/* .sm-aus fehlte, seit die Regeluebersicht sie benutzt - wortgleich aus
+   VORLAGE_hausstandard.css.html nachgetragen. Eine Klasse, die nur im
+   HTML steht und in keinem Stilblock, faerbt nichts: die Zahl unter
+   "fehlt" saehe aus wie jede andere. */
+.sm-aus { color: #b00000; font-weight: 700; }
 .sm-feld { margin: 14px 0; }
 .sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -1005,6 +1020,27 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
 </div>
 <div class="sm-row">
   <div>
+    <label><?php echo spot_t('PLAN.L_BUDGET2_KW'); ?></label>
+    <input data-role="none" type="text" name="budget2_kw" value="<?= sp_e($sp_cfg['budget2_kw']) ?>" placeholder="0">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_BUDGET2_KW'); ?></div>
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_BUDGET2_VON'); ?></label>
+    <input data-role="none" type="number" name="budget2_von" value="<?= (int) $sp_cfg['budget2_von'] ?>" min="0" max="23">
+  </div>
+  <div>
+    <label><?php echo spot_t('PLAN.L_BUDGET2_BIS'); ?></label>
+    <input data-role="none" type="number" name="budget2_bis" value="<?= (int) $sp_cfg['budget2_bis'] ?>" min="0" max="23">
+    <div class="sm-small"><?php echo spot_t('PLAN.H_BUDGET2_ZEIT'); ?></div>
+  </div>
+</div>
+<label style="display:inline-flex;align-items:center;gap:8px;margin-top:8px;font-weight:600;">
+  <input data-role="none" type="checkbox" name="hysterese" <?= !empty($sp_cfg['hysterese']) ? 'checked' : '' ?>>
+  <?php echo spot_t('PLAN.L_HYSTERESE'); ?>
+</label>
+<div class="sm-small"><?php echo spot_t('PLAN.H_HYSTERESE'); ?></div>
+<div class="sm-row">
+  <div>
     <label><?php echo spot_t('PLAN.L_PV_QUELLE'); ?></label>
     <select data-role="none" name="pv_quelle">
 <?php foreach (array('', 'forecast_solar', 'objekt', 'liste') as $sp_q2) { ?>
@@ -1223,6 +1259,19 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
       <input data-role="none" type="number" name="r_soc_max[<?= $sp_i ?>]" value="<?= (int) $sp_r['soc_max'] ?>" min="0" max="100">
       <div class="sm-small"><?php echo spot_t('REGEL.H_SOC'); ?></div>
     </div>
+  </div>
+  <div class="sm-row">
+    <div>
+      <label><?php echo spot_t('REGEL.L_MIN_LAUF'); ?></label>
+      <input data-role="none" type="number" name="r_min_lauf[<?= $sp_i ?>]" value="<?= (int) $sp_r['min_lauf'] ?>" min="0" max="720">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_MIN_LAUF'); ?></div>
+    </div>
+    <div>
+      <label><?php echo spot_t('REGEL.L_MIN_PAUSE'); ?></label>
+      <input data-role="none" type="number" name="r_min_pause[<?= $sp_i ?>]" value="<?= (int) $sp_r['min_pause'] ?>" min="0" max="720">
+      <div class="sm-small"><?php echo spot_t('REGEL.H_MIN_PAUSE'); ?></div>
+    </div>
+    <div></div>
   </div>
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="r_neg[<?= $sp_i ?>]" value="1" <?= !empty($sp_r['neg']) ? 'checked' : '' ?>>
@@ -1728,6 +1777,41 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <?php if ($sp_budget > 0) { ?>
 <p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_BUDGET'); ?></p>
 <?php } } ?>
+
+<h3 class="sm-h3"><?php echo spot_t('PLAN.H_UEBERSICHT'); ?></h3>
+<p class="sm-small"><?php echo spot_t('PLAN.UEBERSICHT_TEXT'); ?></p>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('PLAN.U_REGEL'); ?></th><th><?php echo spot_t('PLAN.U_GRUND'); ?></th>
+    <th><?php echo spot_t('PLAN.U_NOETIG'); ?></th><th><?php echo spot_t('PLAN.U_GEPLANT'); ?></th>
+    <th><?php echo spot_t('PLAN.U_FEHLT'); ?></th><th><?php echo spot_t('PLAN.U_CT'); ?></th>
+    <th><?php echo spot_t('PLAN.U_SOFORT'); ?></th><th><?php echo spot_t('PLAN.U_SPART'); ?></th></tr>
+<?php foreach ($sp_fp['plan'] as $sp_pz) {
+    $sp_rg = isset($sp_pz['grund']) ? (string) $sp_pz['grund'] : 'aus';
+?>
+<tr><td><?php echo sp_e($sp_pz['name']); ?></td>
+    <td><?php echo sp_e(spot_t('PLANGRUND.' . strtoupper($sp_rg))); ?><?php
+      if (!empty($sp_pz['mangel'])) {
+          foreach (explode(',', (string) $sp_pz['mangel']) as $sp_mg) {
+              echo '<br><span class="sm-aus">'
+                 . sp_e(spot_t('PLANMANGEL.' . strtoupper(trim($sp_mg)))) . '</span>';
+          }
+      } ?></td>
+    <td><?php echo (int) $sp_pz['noetig']; ?></td>
+    <td><?php echo (int) $sp_pz['anzahl']; ?></td>
+    <td><?php echo ((int) $sp_pz['fehlt'] > 0)
+        ? '<span class="sm-aus">' . (int) $sp_pz['fehlt'] . '</span>' : '0'; ?></td>
+    <td><?php echo $sp_pz['anzahl'] > 0 ? sp_n($sp_pz['ct'], 2) : '&ndash;'; ?></td>
+    <td><?php echo $sp_pz['anzahl'] > 0 ? sp_n($sp_pz['ct_sofort'], 2) : '&ndash;'; ?></td>
+    <td><?php if ($sp_pz['anzahl'] > 0) {
+          echo '<b>' . sp_n($sp_pz['spart_ct'], 2) . '</b> ct/kWh';
+          if ((float) $sp_pz['kwh'] > 0) {
+              echo '<br>' . sp_n($sp_pz['spart_eur'], 2) . ' &euro; ('
+                 . sp_n($sp_pz['kwh'], 1) . ' kWh)';
+          }
+        } else { echo '&ndash;'; } ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-small"><?php echo spot_t('PLAN.U_HILFE'); ?></div>
 
 <h3 class="sm-h3"><?php echo spot_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo spot_t('PLAN.SELBSTTEST_TEXT'); ?></p>

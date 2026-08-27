@@ -127,6 +127,42 @@ Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe
 Schwachlast 0,61 ct/kWh.
 
 
+## Fassung 1.2.14 — der Fahrplaner, und was seine Prüfzahlen verschwiegen
+
+Der gemeinsame Fahrplaner `planer.php` hat neue Fähigkeiten bekommen
+(Taktschutz, Hysterese, zweites Netzentgelt-Budget, Rangfolge als eigene
+Funktion). Sein Selbsttest stand danach bei 115 Fällen, der Mutationslauf
+meldete 18 von 18 erkannt. Beides beruhigt — und beides sagte weniger, als
+es aussah:
+
+* **Alle 18 Mutationsanker standen schon in der veröffentlichten 1.2.13.**
+  Den Code, der seither dazugekommen ist, rührte keine einzige Mutation an.
+  Eine handverlesene Liste kennt nur, woran jemand gedacht hat.
+* **Zwei von achtzehn Rückgabefeldern prüfte kein einziger Fall**: `rest`
+  und `startmin`. `rest` geht als `R<n>REST` nach Loxone — eine falsche
+  Zahl steht dort als „läuft noch X Stunden" in der Visualisierung, und sie
+  sieht dabei völlig plausibel aus.
+* **45 von 176 Verzweigungen** ließen sich auf `true` oder `false` zwingen,
+  ohne dass ein Fall rot wurde. Die meisten davon zu Recht (gleichwertig
+  oder Schutz gegen Eingaben, die kein Fall baut) — nicht alle.
+
+Geschlossen mit **18 neuen Prüffällen** (jetzt 133) und **8 neuen
+Mutationen** (jetzt 26, alle erkannt). Neu geprüft werden unter anderem die
+Restlaufzeit, die Startminute bei Viertelstundenscheiben, die Einheit `w`
+(kam in der ganzen Datei nicht vor), der Pfadauflöser für fremdes JSON, die
+Gründe `wartet` und `budget` und der Taktschutz samt der Reihenfolge, auf
+die sein eigener Kommentar sich beruft.
+
+**Jeder neue Fall ist einzeln geeicht**: die Stelle, die er prüfen soll,
+wurde zurückgebaut, und er wurde rot. Ein Fall, der das nicht tut, hebt nur
+die Fallzahl. Und weil `planer.php` in diesem und im Octopus-Plugin
+byteweise gleich liegt, ist beides in beiden Linien dasselbe.
+
+Dazu entfernt: der Helfer `spot_mqtt_gateway_autostart`, der seit dem
+Zusammenlegen in 1.2.13 unbenutzt dastand. Alle drei Stellen, die den
+Gateway-Zustand brauchen, brauchen Autostart **und** Fassung — ein Helfer
+für nur die Hälfte spart nirgends etwas.
+
 ## Fassung 1.2.13 — Durchsicht Zeile für Zeile
 
 Eine vollständige Durchsicht mit einem Prüfstand, der die Seite **wirklich
@@ -356,10 +392,15 @@ Kopien derselben Rechnung wären schlimmer als ein zweites Kürzel.
 
 Sie ist reine Rechnung — kein Netz, keine Dateien, keine Uhr außer dem
 übergebenen Zeitpunkt. Deshalb lässt sie sich vollständig durchprüfen:
-**53 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.2 alle grün.
-Darunter die Verdrängung durch das Budget, die Frist über Mitternacht, die
+**133 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.4 alle grün
+(53 waren es bei 1.2.0, 101 bei Planerfassung 1.1.0). Darunter die
+Verdrängung durch das Budget, die Frist über Mitternacht, die
 Einheitenumrechnung Wh/W/kW und der Fall „PV-Gutschrift lässt die
 Sonnenstunde gegen die billigste Stunde gewinnen".
+
+Dazu ein Mutationslauf mit **26 absichtlichen Verfälschungen**, alle
+erkannt. Die Zahl der Fälle allein sagt nichts darüber, ob sie die
+Rechnung anfassen — erst der Mutationslauf tut das.
 
 **Was das nicht beweist:** dass die Prognosequelle so antwortet, wie sie
 soll. Das entscheidet der Dienst am anderen Ende. Der Reiter Einstellungen

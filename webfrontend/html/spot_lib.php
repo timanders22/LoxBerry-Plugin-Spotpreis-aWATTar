@@ -67,7 +67,17 @@ function spot_regel_vorgabe() {
     return array_merge(array(
         'aktiv' => 0,
         'name' => '',
-        'art' => 'fenster',   // fenster | stunden | schwelle | mittel
+        /* fenster | stunden | schwelle | mittel
+         *
+         * Die Art 'scheiben' aus planer.php 1.1.0 fehlt hier mit Absicht:
+         * sie nimmt die N guenstigsten EINZELNEN Zeitscheiben ohne
+         * Stundenraster. Dieses Plugin rechnet in Stunden - eine Scheibe
+         * IST eine Stunde -, damit liefert sie Scheibe fuer Scheibe
+         * dasselbe wie 'stunden'. Nachgemessen mit n = 1, 2 und 3: dieselbe
+         * Trefferliste. Zwei Namen fuer dieselbe Sache waeren schlimmer als
+         * einer. Bekommt aWATTar eines Tages Viertelstundenpreise, gehoert
+         * sie hierher - dann unterscheiden sie sich. */
+        'art' => 'fenster',
         'n' => 3,             // Anzahl Stunden (fenster/stunden)
         'von' => 0,           // Zeitfenster von (Stunde, einschliesslich)
         'bis' => 0,           // Zeitfenster bis (Stunde, ausschliesslich); von==bis = ganzer Tag
@@ -197,6 +207,11 @@ function spot_vorgaben()
     'last_zeitfeld' => '',
     'last_wertfeld' => '',
     'last_einheit' => 'kwh',     // kwh | wh | w | kw
+    /* Hysterese (planer.php 1.1.0): ein begonnener Block laeuft bis zu
+     * seinem Ende, auch wenn die neue Preisreihe inzwischen eine billigere
+     * Stunde kennt. Ab Werk AN - ohne sie kann ein Geraet mitten im
+     * Betrieb abschalten, und das will niemand absichtlich. */
+    'hysterese' => 1,
 ) + plan_global_vorgabe();
 }
 
@@ -247,12 +262,24 @@ function spot_config() {
         $r['pv_sperre'] = max(0.0, min(500.0, (float) $r['pv_sperre']));
         $r['soc_min'] = max(0, min(100, (int) $r['soc_min']));
         $r['soc_max'] = max(0, min(100, (int) $r['soc_max']));
+        /* Taktschutz (planer.php 1.1.0). Beide in Minuten, 0 = aus. Bei
+         * Stundenpreisen ist eine Mindestlaufzeit unter 60 Minuten
+         * wirkungslos - das steht in der Hilfe, nicht in einer Schranke:
+         * abweisen waere bevormundend, und 0 heisst ohnehin aus. */
+        $r['min_lauf'] = max(0, min(720, (int) $r['min_lauf']));
+        $r['min_pause'] = max(0, min(720, (int) $r['min_pause']));
         $cfg['regeln'][$i] = $r;
     }
     // Fahrplaner, global
     $cfg['budget_kw'] = max(0.0, min(200.0, (float) $cfg['budget_kw']));
     $cfg['pv_bonus'] = max(0.0, min(100.0, (float) $cfg['pv_bonus']));
     $cfg['pv_schwelle'] = max(1, min(100000, (int) $cfg['pv_schwelle']));
+    /* Zweites, zeitlich begrenztes Budget (Paragraf 14a EnWG) und die
+     * Hysterese - beide aus planer.php 1.1.0. */
+    $cfg['budget2_kw'] = max(0.0, min(200.0, (float) $cfg['budget2_kw']));
+    $cfg['budget2_von'] = max(0, min(23, (int) $cfg['budget2_von']));
+    $cfg['budget2_bis'] = max(0, min(23, (int) $cfg['budget2_bis']));
+    $cfg['hysterese'] = empty($cfg['hysterese']) ? 0 : 1;
     if (!in_array($cfg['pv_quelle'], array('', 'forecast_solar', 'objekt', 'liste'), true)) {
         $cfg['pv_quelle'] = '';
     }
@@ -969,6 +996,79 @@ function spot_holen($url) {
  * Dinge dazu, die eine einzelne Regel nicht wissen kann: die Frist, das
  * gemeinsame Leistungsbudget und die PV-Prognose.
  */
+
+/* ==================================================================
+ * Hysterese: was laeuft, laeuft zu Ende
+ *
+ * Der Planer bekommt bei jedem Lauf eine frische Preisreihe. Ohne
+ * Gedaechtnis kann er deshalb bei jedem Abruf zu einem anderen Ergebnis
+ * kommen - und die Wallbox schaltet mitten im Ladevorgang ab, weil in
+ * drei Stunden eine Stunde billiger geworden ist.
+ *
+ * Gemerkt wird nur EINE Zahl je Regel: bis wann der begonnene Block
+ * laeuft. Sie wird gesetzt, wenn ein Block ANFAENGT, und nicht mehr
+ * angefasst, bis er vorbei ist. Damit kann sie sich nicht selbst
+ * verlaengern - das waere eine Regel, die nie wieder ausgeht.
+ *
+ * Die Ablage liegt in /tmp und uebersteht einen Neustart nicht. Das ist
+ * richtig so: nach einem Neustart laeuft ohnehin nichts mehr, und ein
+ * Gedaechtnis an einen Block, den niemand mehr faehrt, waere falsch.
+ *
+ * Wortgleich mit dem Baustein im Spotpreis-Octopus-Plugin, nur mit dem
+ * Kuerzel dieser Linie - dieselbe Ueberlegung soll nicht zweimal
+ * verschieden aussehen.
+ * ================================================================== */
+
+/** array(Regelindex => bis_ts). Abgelaufene Eintraege fallen weg. */
+function spot_laufend_lesen() {
+    $cfg = spot_config();
+    if (empty($cfg['hysterese'])) { return array(); }
+    $f = spot_tmpdir() . '/laufend.json';
+    if (!is_file($f)) { return array(); }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d)) { return array(); }
+    $jetzt = time();
+    $out = array();
+    foreach ($d as $i => $bis) {
+        if (is_array($bis)) { continue; }
+        $bis = (int) $bis;
+        // Harte Obergrenze: kein Block laeuft laenger als 24 Stunden.
+        if ($bis > $jetzt && $bis <= $jetzt + 86400) { $out[(int) $i] = $bis; }
+    }
+    return $out;
+}
+
+/**
+ * Nach der Rechnung fortschreiben.
+ *
+ * Drei Faelle je Regel:
+ *   laeuft und war noch nicht vermerkt  -> Ende eintragen
+ *   laeuft und war vermerkt             -> unveraendert stehen lassen
+ *   laeuft nicht                        -> Eintrag entfernen
+ */
+function spot_laufend_fortschreiben($regeln, $jetzt) {
+    $cfg = spot_config();
+    $f = spot_tmpdir() . '/laufend.json';
+    if (empty($cfg['hysterese'])) {
+        /* is_file() VOR unlink(). Das @ genuegt nicht, wenn ein eigener
+         * Fehlerbehandler gesetzt ist - der wird unabhaengig von
+         * error_reporting gerufen, und "No such file or directory" steht
+         * dann als Befund im Protokoll, obwohl nichts fehlt. */
+        if (is_file($f)) { @unlink($f); }
+        return;
+    }
+    $alt = spot_laufend_lesen();
+    $neu = array();
+    foreach ((array) $regeln as $r) {
+        if (!is_array($r) || empty($r['aktiv'])) { continue; }
+        $i = (int) $r['nr'] - 1;
+        if (isset($alt[$i])) { $neu[$i] = $alt[$i]; continue; }
+        $rest = isset($r['rest']) ? (int) $r['rest'] : 0;
+        if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 60; }
+    }
+    @file_put_contents($f, json_encode($neu));
+}
+
 function spot_regeln($all, $st) {
     $cfg = spot_config();
     $umwelt = spot_umwelt();
@@ -977,11 +1077,19 @@ function spot_regeln($all, $st) {
         'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
         'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
         'neg'      => !empty($st['neg']) ? 1 : 0,
-        'mittel'   => (float) $st['heute']['avg'],
+        /* Das Tagesmittel nur uebergeben, wenn es eines GIBT. 0.0 waere ein
+         * Wert und kein Nichtwissen - und bei negativen Preisen ist der
+         * Unterschied entscheidend (planer.php 1.1.0). */
+        'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
+                      ? (float) $st['heute']['avg'] : null,
+        'laufend'  => spot_laufend_lesen(),
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
         'pv_schwelle' => $cfg['pv_schwelle'],
+        'budget2_kw'  => $cfg['budget2_kw'],
+        'budget2_von' => $cfg['budget2_von'],
+        'budget2_bis' => $cfg['budget2_bis'],
     ));
 
     $out = array();
@@ -1033,11 +1141,19 @@ function spot_fahrplan($st = null) {
         'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
         'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
         'neg'      => !empty($st['neg']) ? 1 : 0,
-        'mittel'   => (float) $st['heute']['avg'],
+        /* Das Tagesmittel nur uebergeben, wenn es eines GIBT. 0.0 waere ein
+         * Wert und kein Nichtwissen - und bei negativen Preisen ist der
+         * Unterschied entscheidend (planer.php 1.1.0). */
+        'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
+                      ? (float) $st['heute']['avg'] : null,
+        'laufend'  => spot_laufend_lesen(),
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
         'pv_schwelle' => $cfg['pv_schwelle'],
+        'budget2_kw'  => $cfg['budget2_kw'],
+        'budget2_von' => $cfg['budget2_von'],
+        'budget2_bis' => $cfg['budget2_bis'],
     ));
     foreach ($plan as $i => $p) {
         $plan[$i]['name'] = (isset($cfg['regeln'][$i]['name']) && $cfg['regeln'][$i]['name'] !== '')
@@ -1199,6 +1315,17 @@ function spot_state($force = false) {
         if (!empty($r['aktiv'])) { $st['planlast'] += (float) $r['leistung']; }
     }
     $st['planlast'] = round($st['planlast'], 2);
+    /* Summe dessen, was das Warten bringt - je Regel gerechnet, hier
+     * zusammengezaehlt. Die eine Zahl, an der sich ablesen laesst, ob der
+     * ganze Fahrplaner sich lohnt. */
+    $st['spart_eur'] = 0.0;
+    foreach ($st['regeln'] as $r) {
+        $st['spart_eur'] += isset($r['spart_eur']) ? (float) $r['spart_eur'] : 0.0;
+    }
+    $st['spart_eur'] = round($st['spart_eur'], 2);
+    /* Die Hysterese fortschreiben - ERST nach der Rechnung, damit der
+     * naechste Lauf sie vorfindet. */
+    spot_laufend_fortschreiben($st['regeln'], (int) $st['hstart']);
     spot_write_json_atomic($cache, $st);
     spot_log_if_changed('zustand', 'cur=' . $st['cur'] . ' ct rank=' . $st['rank'] . ' level=' . $st['level'] . ' morgen_ok=' . $st['tomorrow_ok']);
     return $st;
@@ -1869,16 +1996,29 @@ function spot_mqtt_gateway_info()
     );
 }
 
-/**
- * Steht der Gateway-Autostart? Wortlaut und Schluessel wie im Hausstandard.
- * Liest denselben Block wie spot_mqtt_gateway_info(), gibt also keinen
- * zweiten Dateizugriff.
+/* HIER STAND DER HELFER "spot_mqtt_gateway_autostart" - mit 1.2.14
+ * entfernt. Der Name steht hier bewusst OHNE Klammern: ein Suchmuster, das
+ * die Aufrufform zaehlt, schlaegt sonst auf diesen Erklaertext an und
+ * meldet einen Aufruf, den es nicht gibt.
+ *
+ * Der Hausstandard fuehrt den Helfer, und im Vorbild MGiSmart wird er auch
+ * benutzt: dessen beide Aufrufstellen brauchen nur den Autostart. In diesem
+ * Plugin liegt es anders. Gemessen an allen drei Stellen, die den
+ * Gateway-Zustand ueberhaupt brauchen:
+ *
+ *   MQTT-Reiter          autostart UND fassung
+ *   Reiter Loxone, Schritt 6   fassung UND autostart
+ *   Selbstpruefung PRUEF.MQTT  autostart UND fassung
+ *
+ * Ein Helfer, der nur den Autostart liefert, haette an keiner der drei
+ * etwas gespart - er haette einen zweiten Aufruf erzwungen oder die halbe
+ * Auskunft geliefert. Er stand seit dem Zusammenlegen in 1.2.13 unbenutzt
+ * da; gefunden hat ihn tote_helfer.py.
+ *
+ * Kein Werkzeug haengt am Namen (nachgesehen), und der Aufruf war nie
+ * veroeffentlicht - es geht also nichts kaputt. Wer ihn wieder braucht,
+ * findet ihn in MGiSmart 1.1.2, mg_lib.php.
  */
-function spot_mqtt_gateway_autostart()
-{
-    $m = spot_mqtt_gateway_info();
-    return $m === null ? null : $m['autostart'];
-}
 
 function spot_mqtt_wert_saeubern($v)
 {
@@ -1941,9 +2081,15 @@ function spot_mqtt_publish($st = null) {
         $msgs[$z . 'verdraengt'] = isset($r['verdraengt']) ? (int) $r['verdraengt'] : 0;
         $msgs[$z . 'sperre'] = spot_sperre_zahl(isset($r['gesperrt']) ? $r['gesperrt'] : '');
         $msgs[$z . 'rang'] = isset($r['rang']) ? (int) $r['rang'] : 50;
+        // planer.php 1.1.0: was fehlt, und was das Warten bringt.
+        $msgs[$z . 'fehlt'] = isset($r['fehlt']) ? (int) $r['fehlt'] : 0;
+        $msgs[$z . 'spart'] = isset($r['spart_ct']) ? (float) $r['spart_ct'] : 0.0;
+        $msgs[$z . 'spart_eur'] = isset($r['spart_eur']) ? (float) $r['spart_eur'] : 0.0;
     }
     // Fahrplaner, global
     $msgs['plan/budget'] = (float) $cfg['budget_kw'];
+    $msgs['plan/budget2'] = (float) $cfg['budget2_kw'];
+    $msgs['plan/spart'] = isset($st['spart_eur']) ? (float) $st['spart_eur'] : 0.0;
     $msgs['plan/last'] = isset($st['planlast']) ? (float) $st['planlast'] : 0.0;
     if (isset($st['pv_summe']) && $st['pv_summe'] !== null) {
         $msgs['plan/pv_prognose'] = (float) $st['pv_summe'];
