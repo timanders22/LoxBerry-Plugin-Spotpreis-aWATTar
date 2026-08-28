@@ -528,7 +528,6 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
-function sp_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 function sp_n($v, $d = 2) { return number_format((float) $v, $d, ',', '.'); }
 
 /** Balkendiagramm der Stundenpreise (heute + morgen). */
