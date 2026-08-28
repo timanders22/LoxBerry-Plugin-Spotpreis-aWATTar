@@ -99,7 +99,7 @@ function spot_paths() {
             'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/spot.json',
             'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
             'log' => $lbhomedir . '/log/plugins/' . $plugindir . '/spot.log',
-            'data' => $lbhomedir . '/data/plugins/' . $plugindir,
+            'datadir' => $lbhomedir . '/data/plugins/' . $plugindir,
             'tmp' => '/tmp/spotpreis',
             'lbhome' => $lbhomedir,
         );
@@ -108,7 +108,7 @@ function spot_paths() {
         'config' => dirname(dirname(__DIR__)) . '/config/spot.json',
         'backup' => dirname(dirname(__DIR__)) . '/config/spot.backup.json',
         'log' => sys_get_temp_dir() . '/spotpreis/spot.log',
-        'data' => sys_get_temp_dir() . '/spotpreis/data',
+        'datadir' => sys_get_temp_dir() . '/spotpreis/data',
         'tmp' => sys_get_temp_dir() . '/spotpreis',
         'lbhome' => '',
     );
@@ -322,10 +322,10 @@ function spot_tmpdir() {
 
 function spot_datadir() {
     $p = spot_paths();
-    if (!is_dir($p['data'])) {
-        @mkdir($p['data'], 0775, true);
+    if (!is_dir($p['datadir'])) {
+        @mkdir($p['datadir'], 0775, true);
     }
-    return $p['data'];
+    return $p['datadir'];
 }
 
 /**
