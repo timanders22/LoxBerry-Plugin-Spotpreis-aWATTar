@@ -25,15 +25,36 @@ echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und Prei
 # ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
 # findet nichts vor und faengt sauber bei null an.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+GERETTET=1
 if [ -d "$LANG_SICHER" ]; then
-    for LANG_F in history.csv; do
+    # Dieselbe Menge wie in preupgrade.sh: Historie, Laufzaehler und die
+    # Merker. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
+    # findet nichts vor und faengt sauber bei null an.
+    MERKER=$(cd "$LANG_SICHER" 2>/dev/null && ls marke_* 2>/dev/null)
+    for LANG_F in history.csv laufzaehler $MERKER; do
         if [ -f "$LANG_SICHER/$LANG_F" ] \
            && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
             mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
-            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" \
-                2>/dev/null && echo "<OK> $LANG_F ueber das Update gerettet."
+            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" 2>/dev/null
+            # Die WIRKUNG pruefen, nicht den Rueckgabewert - genau so,
+            # wie es preupgrade.sh drei Zeilen vor seinem exit vormacht.
+            if [ -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
+                echo "<OK> $LANG_F ueber das Update gerettet."
+            else
+                echo "<WARNING> $LANG_F konnte nicht zurueckgeholt werden."
+                echo "<WARNING> Die Sicherung bleibt liegen: $LANG_SICHER"
+                GERETTET=0
+            fi
         fi
     done
-    rm -rf "$LANG_SICHER" 2>/dev/null
+    # Erst wegraeumen, wenn wirklich alles angekommen ist. Bis 1.2.18
+    # stand das rm -rf ohne Bedingung hier. Schlug das cp fehl - Platte
+    # voll, Rechte, kaputter Zielordner -, verschluckte 2>/dev/null die
+    # Ursache, das && verschluckte die Erfolgsmeldung, und danach war
+    # die einzige Kopie der Preishistorie weg. Sie ist die eine Datei,
+    # die preupgrade.sh als nicht nachladbar bezeichnet.
+    if [ "$GERETTET" = "1" ]; then
+        rm -rf "$LANG_SICHER" 2>/dev/null
+    fi
 fi
 exit 0

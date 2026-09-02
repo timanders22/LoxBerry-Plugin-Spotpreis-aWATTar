@@ -51,10 +51,26 @@ else
 fi
 
 mkdir -p "$SICHERUNG" 2>/dev/null
-# Den benutzten Ort hinterlegen, damit postupgrade.sh ihn nicht erneut
-# erraten muss - das waere die eine Stelle, an der beide auseinanderlaufen.
-mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
-echo "$SICHERUNG" > "$BASE/config/plugins/$PFOLDER/.upgrade_pfad" 2>/dev/null
+
+# HIER STAND EIN MERKER .upgrade_pfad IM KONFIGURATIONSORDNER, den
+# postupgrade.sh als ersten von drei Wegen lesen sollte - mit der
+# Begruendung, das sei "die eine Stelle, an der beide auseinanderlaufen".
+#
+# Er kann dort nie ankommen: purge_installation entfernt genau dieses
+# Verzeichnis, bevor postupgrade laeuft (plugininstall.pl, Aufruf im
+# Upgrade-Zweig; der rm -rf trifft config/plugins/<ordner>/ ohne Pruefung
+# auf $option eq "all"). Nachgestellt: nach preupgrade da, nach dem
+# Abraeumen weg, nach dem Neuanlegen durch den Installer weg.
+#
+# Der Zweig in postupgrade.sh war damit tot und das rm -f darauf ebenfalls.
+# Gefaehrlich war es nicht - der Rueckfall auf das sechste Argument traegt -,
+# aber die Zusicherung im Kommentar sagte das Gegenteil dessen, was der Code
+# tut. Beide Skripte rechnen den Pfad ohnehin aus DEMSELBEN Argument aus, und
+# das ist die eine Stelle, an der sie nicht auseinanderlaufen koennen.
+#
+# Ausgebaut am 02.09.2026, zusammen mit Ultraschall, WOLF-ISM-NG und
+# WaermepumpeCloud. Die Schwesterlinie Smartmeter classic hatte denselben
+# Merker schon in 2.3.14 aus demselben Grund entfernt.
 
 echo "<INFO> Sicherungsordner: $SICHERUNG"
 if cp -p "$BASE/config/plugins/$PFOLDER/spot.json" "$SICHERUNG/spot.json" 2>/dev/null; then
@@ -74,9 +90,20 @@ fi
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
-for LANG_F in history.csv; do
+# Nicht nur die Historie: auch die MERKER. Sie verhindern, dass der
+# Monatsbericht und die Ansage fuer morgen ein zweites Mal kommen, und
+# genau dafuer liegen sie hier statt in /tmp. Ohne diese Zeilen war die
+# Zusage "ueberlebt ein Plugin-Update" nicht eingeloest: ein Update am
+# Monatsersten nach 8 Uhr loeschte den Merker, und der Bericht kam ein
+# zweites Mal - genau das Fehlerbild, das der Ablageort vermeiden soll.
+# Der Preis-Zwischenspeicher (markt_*.json) bleibt absichtlich
+# draussen: er laesst sich nachladen.
+for LANG_F in history.csv laufzaehler; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
+done
+for LANG_F in "$BASE/data/plugins/$PFOLDER"/marke_*; do
+    [ -f "$LANG_F" ] && cp -p "$LANG_F" "$LANG_SICHER/" 2>/dev/null
 done
 # Die Wirkung pruefen, nicht den Rueckgabewert: liegt hinterher etwas da?
 if [ -n "$(ls -A "$LANG_SICHER" 2>/dev/null)" ]; then

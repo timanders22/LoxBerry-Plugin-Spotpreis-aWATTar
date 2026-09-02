@@ -85,8 +85,12 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-/** Fassung dieser Datei. Steht in beiden Plugins im Reiter Test. */
-define('PLAN_FASSUNG', '1.1.0');
+/** Fassung dieser Datei. Steht in beiden Plugins im Reiter Test.
+ *
+ * 1.1.1: Aufrundung gegen Gleitkommarauschen in plan_slots_noetig(), und
+ *        der Lueckenschluss in plan_takt() haelt sich jetzt an die
+ *        Kandidatenliste - beides mit eigenen Prueffaellen unten. */
+define('PLAN_FASSUNG', '1.1.2');
 
 /* ==================================================================
  * Vorgaben
@@ -222,6 +226,20 @@ function plan_frist_ende($jetzt, $frist)
  *
  * Aufgerundet wird immer: eine halbe Zeitscheibe gibt es nicht, und zu kurz
  * laden ist schlechter als eine Scheibe zu viel.
+ *
+ * AUFGERUNDET WIRD ABER GEGEN EIN EPSILON, NICHT BLANK. Ein glattes
+ * kWh/kW-Paar ergibt in Gleitkomma nicht immer eine glatte Stundenzahl:
+ * 6,9 / 2,3 ist rechnerisch genau 3, gemessen aber 3,00000000000000044409.
+ * ceil() machte daraus vier Scheiben statt drei - ein Drittel zu viel
+ * gebuchte Energie und eine Stunde Leistung, die den anderen Regeln im
+ * Budget fehlt. Gemessen unter 7.4 wie unter 8.4; 4,2/1,4 verhaelt sich
+ * genauso, 7,4/3,7 und 11,0/2,2 sind unauffaellig. Ob es zuschlaegt,
+ * entscheidet allein die Darstellung des Paares - deshalb ist es keine
+ * Frage von "gaengigen" Werten.
+ *
+ * Das Epsilon ist relativ: bei grossen Scheibenzahlen waere ein absolutes
+ * wirkungslos, bei kleinen zu grob. Aufgerundet wird nach wie vor - nur
+ * eben nicht wegen der siebzehnten Nachkommastelle.
  */
 function plan_slots_noetig($r, $slotlen)
 {
@@ -230,7 +248,12 @@ function plan_slots_noetig($r, $slotlen)
     $leistung = isset($r['leistung']) ? (float) $r['leistung'] : 0.0;
     if ($energie > 0 && $leistung > 0) {
         $stunden = $energie / $leistung;
-        return max(1, (int) ceil($stunden * $pro));
+        $scheiben = $stunden * $pro;
+        $glatt = round($scheiben);
+        if (abs($scheiben - $glatt) <= 1e-9 * max(1.0, abs($scheiben))) {
+            $scheiben = $glatt;
+        }
+        return max(1, (int) ceil($scheiben));
     }
     // isset auf 'n': die Regelvorgabe des Planers kennt das Feld nicht, es
     // kommt aus der Plugin-Vorgabe. Eine Regel ohne 'n' loeste unter PHP 8
@@ -411,7 +434,14 @@ function plan_waehlen($r, $kand, $slotlen, $anzahl, $mittel)
         foreach ($bloecke as $h => $v) {
             // Angebrochene Stunden nicht bewerten - sie waeren kuenstlich
             // guenstig oder teuer, je nachdem welche Viertel fehlen.
-            if ($v[1] === $pro) { $mittelwerte[$h] = $v[0] / $pro; }
+            /* GERUNDET, sonst greift der Zweitschluessel unten nie: zwei
+             * rechnerisch gleiche Stundenmittel sind in Gleitkomma fast
+             * nie identisch. Gemessen mit Viertelstunden 0,1/0,2/0,1/0,2
+             * gegen 0,15/0,15/0,15/0,15 - beide Mittel 0,15, verglichen
+             * 0.15000000000000002 gegen 0.14999999999999999, und der
+             * Planer nahm die SPAETERE Stunde. Dieselbe Vorkehrung wie
+             * das Epsilon in plan_slots_noetig(). */
+            if ($v[1] === $pro) { $mittelwerte[$h] = round($v[0] / $pro, 6); }
         }
         /* Stabile Reihenfolge bei gleichem Stundenmittel: asort() ist zwar
          * seit PHP 8.0 stabil, unter 7.4 aber nicht. Ohne den Zweitschluessel
@@ -510,10 +540,27 @@ function plan_bloecke($treffer, $slotlen)
  * Zuerst zumachen, dann verlaengern: umgekehrt wuerde ein zu kurzer Block
  * verworfen, den das Zumachen gerettet haette.
  *
- * Verlaengert wird nur mit Scheiben, die ohnehin Kandidaten sind - damit
- * bleiben Budget, Frist und Zeitfenster gewahrt.
+ * BEIDE Schritte arbeiten nur mit Scheiben, die ohnehin Kandidaten sind -
+ * damit bleiben Budget, Frist und Zeitfenster gewahrt.
  *
- * $kand darf leer sein; dann wird nur zugemacht und geworfen.
+ * Bis 1.1.3 galt das nur fuer Schritt 2. Schritt 1 machte jede Luecke zu,
+ * gleich ob die Scheiben darin zulaessig waren. Gemessen an zwei Regeln zu
+ * je 2,0 kW mit budget_kw 2,0 und min_pause 30: in der Belegung standen um
+ * 00:15 dann 4 kW - das Leistungsbudget war gerissen, und mit derselben
+ * Anordnung auch das zweite Budget des Paragrafen 14a EnWG. Ebenso lief
+ * eine Regel mit Fenster 20-10 Uhr und min_pause 720 zehn Stunden lang
+ * ausserhalb ihres Fensters und buchte das Sechsfache ihrer Energiemenge.
+ * Der Kopf dieser Funktion versprach die Wahrung schon damals; nur der
+ * Code hielt sie an einer von zwei Stellen.
+ *
+ * Zugemacht wird ALLES ODER NICHTS. Eine Luecke halb zu schliessen liesse
+ * eine kuerzere Luecke stehen, die immer noch unter der Mindestpause
+ * liegt - der Taktschutz haette dann Leistung gebucht, ohne sein Ziel zu
+ * erreichen. Laesst sich eine Luecke nicht zulaessig ueberbruecken, bleibt
+ * sie offen: eine gerissene Budgetgrenze ist teurer als ein Takt zu viel.
+ *
+ * $kand darf leer sein; dann wird weder zugemacht noch verlaengert,
+ * sondern nur geworfen.
  */
 function plan_takt($treffer, $kand, $slotlen, $min_lauf, $min_pause)
 {
@@ -531,8 +578,15 @@ function plan_takt($treffer, $kand, $slotlen, $min_lauf, $min_pause)
         for ($i = 1; $i < count($bloecke); $i++) {
             $luecke = (int) round(($bloecke[$i][0] - $bloecke[$i - 1][1] - $slotlen) / 60);
             if ($luecke > 0 && $luecke < $min_pause) {
+                // Erst sammeln und pruefen, dann setzen: alles oder nichts.
+                $fuellung = array();
+                $zulaessig = true;
                 for ($ts = $bloecke[$i - 1][1] + $slotlen; $ts < $bloecke[$i][0]; $ts += $slotlen) {
-                    $gesetzt[$ts] = 1;
+                    if (!isset($kand[$ts])) { $zulaessig = false; break; }
+                    $fuellung[] = $ts;
+                }
+                if ($zulaessig) {
+                    foreach ($fuellung as $ts) { $gesetzt[$ts] = 1; }
                 }
             }
         }
@@ -946,10 +1000,21 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
          * Blocks - und nur dann sagt 'laeuft' mehr als der Name der
          * Regelart. Die Frage laesst sich hinterher nicht mehr stellen. */
         $lief_ohnehin = in_array($jetzt, $treffer, true);
+        /* NUR Scheiben, die ohnehin Kandidaten sind - wie in plan_takt().
+         * Bis 1.1.1 stand hier $preise, also JEDE Scheibe mit einem Preis.
+         * Gemessen an zwei Regeln zu je 3,0 kW mit budget_kw 3,0 und einem
+         * laufenden Block: in der Belegung standen 6 kW - das
+         * Leistungsbudget war gerissen, und mit derselben Anordnung auch
+         * das zweite Budget des Paragrafen 14a EnWG. Ebenso lief eine
+         * Regel mit Fenster 02-03 Uhr drei Stunden vor ihrem Fenster.
+         * Das ist dieselbe Klasse wie der Lueckenschluss in plan_takt(),
+         * die dort in 1.1.3 behoben wurde und hier stehenblieb.
+         * Eine gerissene Budgetgrenze ist teurer als eine verlorene
+         * Hysterese: der Hausanschluss ist eine harte Grenze. */
         if ($bis > $jetzt) {
             $vorhanden = array_flip($treffer);
             for ($ts = $jetzt; $ts < $bis; $ts += $slotlen) {
-                if (isset($preise[$ts])) { $vorhanden[$ts] = 1; }
+                if (isset($mit[$ts])) { $vorhanden[$ts] = 1; }
             }
             $treffer = array_keys($vorhanden);
             sort($treffer);
@@ -1956,10 +2021,20 @@ function plan_selbsttest()
         plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 0),
         array($t0, $t0 + 7200));
     $pruefe('Eine Luecke unter der Mindestpause wird zugemacht',
-        plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 120),
+        plan_takt(array($t0, $t0 + 7200),
+            array($t0 => 1.0, $t0 + 3600 => 1.0, $t0 + 7200 => 1.0), 3600, 0, 120),
         array($t0, $t0 + 3600, $t0 + 7200));
+    /* Die Gegenprobe dazu, und sie ist die wichtigere: ist die Scheibe in
+     * der Luecke KEIN Kandidat, bleibt die Luecke offen. Sonst bucht der
+     * Taktschutz Leistung ausserhalb von Budget, Frist und Zeitfenster -
+     * der Befund, der 1.1.4 ausgeloest hat. */
+    $pruefe('Eine Luecke aus Nicht-Kandidaten bleibt offen',
+        plan_takt(array($t0, $t0 + 7200),
+            array($t0 => 1.0, $t0 + 7200 => 1.0), 3600, 0, 120),
+        array($t0, $t0 + 7200));
     $pruefe('Eine Luecke ueber der Mindestpause bleibt offen',
-        plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 30),
+        plan_takt(array($t0, $t0 + 7200),
+            array($t0 => 1.0, $t0 + 3600 => 1.0, $t0 + 7200 => 1.0), 3600, 0, 30),
         array($t0, $t0 + 7200));
     $pruefe('Ein zu kurzer Block wird aus den Kandidaten verlaengert',
         plan_takt(array($t0), array($t0 => 1.0, $t0 + 3600 => 1.0), 3600, 120, 0),
@@ -1971,8 +2046,19 @@ function plan_selbsttest()
      * beruft: erst zumachen, dann verlaengern. Umgekehrt waere der Block
      * verworfen, den das Zumachen gerettet hat. */
     $pruefe('Erst zumachen, dann verlaengern - der Block ueberlebt',
-        plan_takt(array($t0, $t0 + 7200), array(), 3600, 180, 120),
+        plan_takt(array($t0, $t0 + 7200),
+            array($t0 => 1.0, $t0 + 3600 => 1.0, $t0 + 7200 => 1.0), 3600, 180, 120),
         array($t0, $t0 + 3600, $t0 + 7200));
+    /* Und die Aufrundung gegen das Gleitkommarauschen (Befund 1.1.4).
+     * 6,9 kWh bei 2,3 kW sind genau drei Stunden - vorher wurden vier
+     * Scheiben gebucht. Die beiden anderen Paare sind die Gegenprobe:
+     * sie waren nie betroffen und duerfen sich nicht veraendern. */
+    $pruefe('Ein glattes kWh/kW-Paar ergibt keine Scheibe zu viel',
+        plan_slots_noetig(array('energie' => 6.9, 'leistung' => 2.3), 3600), 3);
+    $pruefe('Dasselbe im Viertelstundenraster',
+        plan_slots_noetig(array('energie' => 6.9, 'leistung' => 2.3), 900), 12);
+    $pruefe('Ein krummes Paar wird weiterhin aufgerundet',
+        plan_slots_noetig(array('energie' => 7.0, 'leistung' => 2.3), 3600), 4);
 
     array_unshift($z, sprintf('Planer %s: %d Faelle geprueft, %d Fehlschlaege.',
         PLAN_FASSUNG, $anzahl, $fehl), '');

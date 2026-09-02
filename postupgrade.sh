@@ -19,11 +19,12 @@ ARGV6=$6
 
 PFOLDER="${ARGV3:-spotpreis}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-MERKER="$BASE/config/plugins/$PFOLDER/.upgrade_pfad"
-
-if [ -r "$MERKER" ]; then
-    SICHERUNG=$(cat "$MERKER")
-elif [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
+# Der Sicherungsort wird aus DEMSELBEN Argument gerechnet wie in
+# preupgrade.sh - siehe die ausfuehrliche Begruendung dort. Ein Merker
+# .upgrade_pfad im Konfigurationsordner stand hier bis 02.09.2026 an erster
+# Stelle; purge_installation entfernt dieses Verzeichnis, bevor dieses Skript
+# laeuft, der Zweig war also tot.
+if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/spotpreis_upgrade"
 else
     SICHERUNG="${ARGV1:-spotpreis}_upgrade"
@@ -49,7 +50,9 @@ if [ -f "$BK" ]; then
     fi
 fi
 
-rm -f "$MERKER" 2>/dev/null
+# Hier stand "rm -f $MERKER". Mit dem Merker ist auch das entfallen - die
+# Variable gab es danach nicht mehr, und "rm -f ''" ist kein Aufraeumen,
+# sondern eine Zeile, die aussieht wie eines.
 # Der Arbeitsordner des Installers wird von LoxBerry selbst aufgeraeumt.
 # Nur der Rueckfallweg gehoert uns.
 case "$SICHERUNG" in

@@ -78,6 +78,18 @@ $spot_loest_aus = isset($_GET['say']) || isset($_GET['saytomorrow'])
                || isset($_GET['ptest']) || isset($_GET['refresh']);
 
 function spot_abweisen($grund, $klartext) {
+    /* JEDEN Weg protokollieren, auch die Abweisung. Dieser Endpunkt
+     * liegt im unangemeldeten Bereich; ein fremdes Geraet kann sich
+     * nicht beschweren. Ohne diese Zeile laesst sich "der Miniserver
+     * ruft nicht an" nicht von "er ruft an und wird abgewiesen"
+     * unterscheiden - und wer im Netz Marken durchprobiert, hinterlaesst
+     * keine Spur. Die Marke selbst steht nie im Protokoll: ein
+     * Protokoll, das Geheimnisse mitschreibt, verlagert das Problem
+     * nur in eine Datei, die laenger lebt. */
+    if (function_exists('spot_log')) {
+        $spot_von = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '?';
+        spot_log('Endpunkt abgewiesen: GRUND=' . $grund . ', Anrufer ' . $spot_von);
+    }
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     echo 'SPOT;OK=0;GRUND=' . $grund . "\n" . $klartext . "\n";

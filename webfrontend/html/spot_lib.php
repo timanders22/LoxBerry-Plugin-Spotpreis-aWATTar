@@ -163,7 +163,8 @@ function spot_vorgaben()
     // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
     // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
     // dahin, Durchschnittspreis. Daraus "jetzt laden" zu machen war Arbeit
-    // im Miniserver. Siehe spot_regel_werte().
+    // im Miniserver. Die Schaltregeln nehmen ihm das ab; gerechnet
+    // werden sie im Fahrplaner (planer.php).
     'regeln' => array(),
     // Stundenprofil: aus | absolut | relativ | beides
     //   absolut  PH00..PH23 heute, PM00..PM23 morgen -> Spot Price
@@ -343,7 +344,12 @@ function spot_datadir() {
  * wuerde nach einem Neustart am Monatsersten einen zweiten Bericht
  * ausloesen.
  *
- * data/plugins/<ordner> ueberlebt Neustart UND Plugin-Update.
+ * data/plugins/<ordner> ueberlebt den Neustart. Ein Plugin-Update
+ * ueberlebt er NICHT von selbst: der Installer loescht den Ordner in
+ * jedem Upgrade-Zweig (gemessen an plugininstall.pl, siehe die
+ * Fundstellen in preupgrade.sh). Getragen wird der Merker deshalb von
+ * preupgrade.sh, das ihn NEBEN den Ordner legt, und von
+ * postinstall.sh, das ihn zurueckholt.
  */
 function spot_merker($name) {
     return spot_datadir() . '/marke_' . preg_replace('/[^A-Za-z0-9_]/', '', (string) $name);
@@ -746,108 +752,14 @@ function spot_window($all, $len) {
  * die alte Fensterrechnung sah immer alle verbleibenden Stunden an.
  * ================================================================== */
 
-/** Liegt die Stunde $h im Zeitfenster? von == bis bedeutet: ganzer Tag. */
-function spot_in_zeitfenster($h, $von, $bis) {
-    $h = (int) $h; $von = (int) $von; $bis = (int) $bis;
-    if ($von === $bis) { return true; }
-    if ($von < $bis) { return $h >= $von && $h < $bis; }
-    return $h >= $von || $h < $bis;   // ueber Mitternacht, z. B. 22 bis 6
-}
-
-/** Die Stunden, die fuer eine Regel ueberhaupt in Frage kommen. ts => ct. */
-function spot_regel_kandidaten($r, $all, $hstart) {
-    $ende = $hstart + max(1, (int) $r['horizont']) * 3600;
-    $out = array();
-    foreach ($all as $ts => $ct) {
-        if ($ts < $hstart || $ts >= $ende) { continue; }
-        if (!spot_in_zeitfenster((int) date('G', $ts), $r['von'], $r['bis'])) { continue; }
-        $out[$ts] = $ct;
-    }
-    ksort($out);
-    return $out;
-}
-
-/**
- * Eine Regel auswerten.
- * Rueckgabe: aktiv (0/1), in (Stunden bis zum naechsten Treffer, -1 = keiner),
- * rest (verbleibende Trefferstunden ab jetzt), ct (Schnitt der Treffer),
- * start (Startstunde des naechsten Treffers, -1 = keiner), grund.
- */
-function spot_regel_werte($r, $all, $st) {
-    $leer = array('aktiv' => 0, 'in' => -1, 'rest' => 0, 'ct' => 0.0, 'start' => -1, 'grund' => 'aus');
-    if (empty($r['aktiv'])) {
-        return $leer;
-    }
-    $hstart = (int) $st['hstart'];
-    $kand = spot_regel_kandidaten($r, $all, $hstart);
-    $treffer = array();
-
-    if ($r['art'] === 'fenster') {
-        // Guenstigstes zusammenhaengendes Fenster. Zusammenhaengend heisst:
-        // luekenlos in der Zeit - ueber eine fehlende Stunde hinweg wird nicht
-        // geklebt, sonst stuende die Wallbox mittendrin still.
-        $ks = array_keys($kand);
-        $len = min(max(1, (int) $r['n']), count($ks));
-        $best = null;
-        for ($i = 0; $len > 0 && $i + $len <= count($ks); $i++) {
-            if ($ks[$i + $len - 1] - $ks[$i] !== ($len - 1) * 3600) { continue; }
-            $s = 0;
-            for ($j = 0; $j < $len; $j++) { $s += $kand[$ks[$i + $j]]; }
-            if ($best === null || $s / $len < $best[1]) { $best = array($i, $s / $len); }
-        }
-        if ($best !== null) {
-            for ($j = 0; $j < $len; $j++) { $treffer[] = $ks[$best[0] + $j]; }
-        }
-    } elseif ($r['art'] === 'stunden') {
-        // Die N guenstigsten Einzelstunden - sie duerfen ueber den Tag
-        // verstreut liegen.
-        $sortiert = $kand;
-        asort($sortiert);
-        $treffer = array_slice(array_keys($sortiert), 0, max(1, (int) $r['n']));
-        sort($treffer);
-    } else {
-        // schwelle: fester Wert. mittel: Abstand zum Tagesmittel.
-        if ($r['art'] === 'schwelle') {
-            $grenze = (float) $r['schwelle'];
-        } else {
-            $mittel = (float) $st['heute']['avg'];
-            if ($mittel <= 0 && $kand) { $mittel = array_sum($kand) / count($kand); }
-            $grenze = round($mittel * (1 - max(0, min(90, (int) $r['prozent'])) / 100), 3);
-        }
-        foreach ($kand as $ts => $ct) {
-            if ($ct <= $grenze) { $treffer[] = $ts; }
-        }
-    }
-
-    $erg = $leer;
-    if ($treffer) {
-        $erg['ct'] = round(array_sum(array_intersect_key($kand, array_flip($treffer))) / count($treffer), 3);
-        $erg['aktiv'] = in_array($hstart, $treffer, true) ? 1 : 0;
-        foreach ($treffer as $ts) {
-            if ($ts >= $hstart) {
-                $erg['start'] = (int) date('G', $ts);
-                $erg['in'] = (int) round(($ts - $hstart) / 3600);
-                break;
-            }
-        }
-        if ($erg['aktiv']) {
-            // Wie lange laeuft es noch am Stueck? Eine Luecke beendet die Zaehlung.
-            $rest = 0;
-            for ($ts = $hstart; in_array($ts, $treffer, true); $ts += 3600) { $rest++; }
-            $erg['rest'] = $rest;
-        }
-        $erg['grund'] = $erg['aktiv'] ? $r['art'] : 'wartet';
-    }
-
-    // Negativer Boersenpreis sticht - wer dann nicht laedt, verschenkt Geld.
-    if (!empty($r['neg']) && !empty($st['neg'])) {
-        $erg['aktiv'] = 1;
-        $erg['in'] = 0;
-        $erg['rest'] = max(1, (int) $erg['rest']);
-        $erg['grund'] = 'negativ';
-    }
-    return $erg;
-}
+/* Die Einzelregel-Rechnung von vor 1.1.2 stand bis 1.2.18 hier:
+ * spot_in_zeitfenster(), spot_regel_kandidaten() und spot_regel_werte().
+ * Der Kommentar darueber sagte, der Reiter Test zeige damit die alte und
+ * die neue Rechnung nebeneinander - gemessen wurde keine der drei je
+ * aufgerufen, weder im Code noch in den Sprachdateien. Ein Kommentar, der
+ * eine Benutzung behauptet, ist kein Beleg fuer sie. Gerechnet wird seit
+ * 1.1.2 ausschliesslich in planer.php, weil nur dort Rangfolge und
+ * Leistungsbudget ueber alle Regeln zusammen entschieden werden. */
 
 /* ==================================================================
  * Fremde Auskuenfte fuer den Fahrplaner
@@ -991,9 +903,9 @@ function spot_holen($url) {
 /**
  * Alle Regeln auswerten - seit 1.2.0 ueber den gemeinsamen Fahrplaner.
  *
- * Bis 1.1.2 rechnete jede Regel fuer sich (spot_regel_werte, steht
- * unveraendert darueber und wird noch vom Reiter Test benutzt, um die alte
- * und die neue Rechnung nebeneinander zu zeigen). Der Planer bringt drei
+ * Bis 1.1.2 rechnete jede Regel fuer sich. Diese Rechnung ist in 1.2.19
+ * entfallen: sie stand seit 1.1.2 unbenutzt da, und der Kommentar, sie
+ * werde vom Reiter Test angezeigt, traf nicht zu. Der Planer bringt drei
  * Dinge dazu, die eine einzelne Regel nicht wissen kann: die Frist, das
  * gemeinsame Leistungsbudget und die PV-Prognose.
  */
@@ -1064,8 +976,13 @@ function spot_laufend_fortschreiben($regeln, $jetzt) {
         if (!is_array($r) || empty($r['aktiv'])) { continue; }
         $i = (int) $r['nr'] - 1;
         if (isset($alt[$i])) { $neu[$i] = $alt[$i]; continue; }
+        /* 'rest' kommt hier in STUNDEN an: der Planer gibt Minuten aus,
+         * spot_regeln() rechnet sie oben in Stunden um, und diese Liste
+         * ist das Ergebnis dieser Umrechnung. Bis 1.2.18 stand hier * 60;
+         * ein Dreistundenblock lief damit 180 Sekunden, und die Hysterese
+         * war ab der vierten Minute jeder Stunde wirkungslos. */
         $rest = isset($r['rest']) ? (int) $r['rest'] : 0;
-        if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 60; }
+        if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 3600; }
     }
     @file_put_contents($f, json_encode($neu));
 }
@@ -1252,10 +1169,16 @@ function spot_state($force = false) {
     $st['dyn_monat'] = $cur_m ? $cur_m['dynp'] : 0;
     $st['diff_monat'] = $cur_m ? $cur_m['diff'] : 0;
     $st['euro_monat'] = $cur_m ? $cur_m['euro'] : 0;
-    $sh = spot_shift_saving(7);
-    $st['shift_ct'] = $sh['ct'];
-    $st['shift_euro'] = $sh['euro'];
-    $st['shift_jahr'] = $sh['euro_jahr'];
+    /* EIGENE Variable: $sh traegt ab Zeile 1179 die Tagesstatistik und
+     * wird 27 Zeilen weiter unten noch gebraucht (Ersatzwert, Luecken,
+     * doppelte Stunden). Bis 1.2.18 hiess die Verschiebungsrechnung
+     * ebenfalls $sh - danach hatte 'maxp' keinen Wert mehr, der
+     * Ersatzwert war immer 0.000, und genau die 0, vor der der
+     * Kommentar unten warnt, ging an den Miniserver. */
+    $shift = spot_shift_saving(7);
+    $st['shift_ct'] = $shift['ct'];
+    $st['shift_euro'] = $shift['euro'];
+    $st['shift_jahr'] = $shift['euro_jahr'];
     // Stundenprofil als flache Listen - so kommt es ohne JSON in den
     // Miniserver (PH00..PH23 heute, PM00..PM23 morgen).
     $st['profil_heute'] = array();
@@ -1293,9 +1216,18 @@ function spot_state($force = false) {
     // Rollend ab der laufenden Stunde - fuer den Modus "Relativ" des Spot
     // Price Optimizer (Eingaenge +0 bis +23).
     $st['profil_relativ'] = array();
+    /* Derselbe Ersatzwert wie oben, aus demselben Grund: die rollende
+     * Sicht reicht 24 Stunden voraus, die Preise fuer morgen kommen
+     * aber erst gegen 14 Uhr. Jeden Vormittag steht deshalb fuer einen
+     * Teil der Eingaenge kein Preis bereit. Eine 0 sieht dort genauso
+     * aus wie die guenstigste Stunde des Tages. Genommen wird der
+     * hoehere der beiden Tageshoechstpreise - so wird die Stunde nie
+     * gewaehlt. Ohne jeden Preis bleibt es bei 0, und dann steht auch
+     * HOK auf 0. */
+    $pr_ersatz = max($ph_ersatz, $pm_ersatz);
     for ($h = 0; $h < 24; $h++) {
         $st['profil_relativ'][$h] = isset($all[$hstart + $h * 3600])
-            ? round((float) $all[$hstart + $h * 3600], 3) : 0.0;
+            ? round((float) $all[$hstart + $h * 3600], 3) : $pr_ersatz;
     }
     /* Fremde Auskuenfte vor den Regeln - der Planer braucht sie.
      * Ein Fehlschlag hier macht den Zustand nicht ungueltig: ohne Prognose
@@ -2726,7 +2658,13 @@ function spot_history_add($st = null) {
     if (count($lines) > 400) {
         $lines = array_slice($lines, -400);
     }
-    @file_put_contents($f, implode("\n", $lines) . "\n");
+    /* Unteilbar wie jeder andere Schreibvorgang dieses Plugins.
+     * Die Datei wird taeglich VOLLSTAENDIG neu geschrieben, und
+     * file_put_contents kuerzt sie dazu zuerst auf null - genau das
+     * Muster, das Zeile 1682 als abgeschafft beschreibt. Betroffen
+     * war ausgerechnet die eine Datei, die preupgrade.sh als nicht
+     * nachladbar bezeichnet: die Preishistorie. */
+    spot_write_atomic($f, implode("\n", $lines) . "\n");
     spot_log('Tageswerte gesichert: Schnitt ' . $st['heute']['avg'] . ' ct (gewichtet ' . $avgw
         . ' ct, ' . ($gemessen ? 'eigener Lastgang, ' . count($treffer) . ' Stunden'
                                : 'Haushaltsprofil')

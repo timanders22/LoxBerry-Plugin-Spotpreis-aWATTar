@@ -8,6 +8,174 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Fassung 1.2.19 — was der Miniserver bekam, wenn eine Stunde fehlte
+
+Diese Fassung entstand aus einer vollständigen Durchsicht. Die schwersten
+vier Befunde haben eines gemeinsam: sie liefern eine Zahl, die richtig
+aussieht, und sie tun es genau dann, wenn niemand hinsieht.
+
+* **Der Ersatzwert für fehlende Stunden war seit 1.2.12 immer 0,000.** Eine
+  Zeile in `spot_state()` überschrieb `$sh` — bis dahin die Tagesstatistik —
+  mit dem Ergebnis der Verschiebungsrechnung. Siebenundzwanzig Zeilen später
+  wurde `$sh['maxp']` gelesen; das Feld gibt es dort nicht. Damit war der
+  Tageshöchstpreis, der eine fehlende Stunde unwählbar machen soll, immer
+  0,000 — und 0 ct sieht für den Spot Price Optimizer wie die günstigste
+  Stunde des Tages aus. Der Kommentar zwei Zeilen darüber beschreibt genau
+  diese Gefahr. Gemessen an einem Tag, dem zwei Stunden fehlen: `PH03` und
+  `PH04` standen auf 0,000 statt auf 49,141. Betroffen waren außerdem alle
+  24 Werte für morgen, solange die Preise noch nicht veröffentlicht sind —
+  vor etwa 14 Uhr der Normalfall.
+* **Aus demselben Grund meldete die Selbstprüfung nie eine fehlende oder
+  doppelte Stunde.** `luecken_heute` war immer leer, `doppelt_heute` immer 0.
+  Die Zeile, die den 25.10. und den 29.03. ansagen soll, konnte nicht
+  anschlagen.
+* **Das rollende Stundenprofil hatte den Ersatzwert nie.** `PR00`…`PR23`
+  (Modus *Relativ*) fiel für jede Stunde ohne Preis auf 0,000 zurück.
+  Gemessen um 12 Uhr mit Preisen nur für heute: **zwölf von 24 Eingängen
+  standen auf 0,000**. Jetzt gilt dort derselbe Höchstpreis wie bei `PH`/`PM`.
+* **Die Hysterese hielt drei Minuten statt drei Stunden.** Der Planer gibt
+  `rest` in Minuten aus, `spot_regeln()` rechnet es in Stunden um, und
+  `spot_laufend_fortschreiben()` multiplizierte diese Stunden noch einmal mit
+  60. Ein Dreistundenblock lief damit 180 Sekunden; ab der vierten Minute
+  jeder Stunde war der Schutz weg, den die Funktion geben soll.
+
+### Der Fahrplaner — beide Linien betroffen
+
+`webfrontend/html/planer.php` ist in diesem Plugin und in *Spotpreis Octopus*
+byteweise dieselbe Datei — **im Regelfall.** Zum Zeitpunkt dieser
+Veröffentlichung ist sie es *nicht*: die beiden Korrekturen stehen hier
+(`PLAN_FASSUNG 1.1.2`), in *Spotpreis Octopus* steht die veröffentlichte
+1.1.4 noch auf `PLAN_FASSUNG 1.1.1`. Gemessen am 02.09.2026: 21 Zeilen nur
+hier, 3 nur dort — und diese drei sind die alten Fassungen genau der
+geänderten Stellen. **Octopus braucht dieselbe Datei in einer Folgefassung;
+bis dahin kann dort die Hysterese das Leistungsbudget weiterhin reißen.**
+
+* **Die Hysterese riss das Leistungsbudget und das Zeitfenster.** Sie füllte
+  ihre Trefferliste aus *allen* Preisen auf statt aus den Kandidaten — der
+  einzigen Liste, die Budget, Fenster, Frist und Horizont schon geprüft hat.
+  Gemessen mit zwei Regeln zu je 3,0 kW bei `budget_kw` 3,0 und einem
+  laufenden Block: in der Belegung standen **6 kW**. Eine Regel mit Fenster
+  02–03 Uhr lief drei Stunden vor ihrem Fenster. Das ist dieselbe Klasse wie
+  der Lückenschluss in `plan_takt()`, die dort in 1.1.3 behoben wurde und
+  hier stehenblieb. Der Kontrollfall ohne Hysterese hielt das Budget.
+* **Der Zweitschlüssel bei gleichem Stundenmittel griff nie.** Verglichen
+  wurde die ungerundete Summe mit `!==`; zwei rechnerisch gleiche Mittel sind
+  in Gleitkomma fast nie identisch. Gemessen mit Viertelstunden
+  0,1/0,2/0,1/0,2 gegen 0,15/0,15/0,15/0,15 — beide Mittel 0,15, verglichen
+  0.15000000000000002 gegen 0.14999999999999999 — nahm der Planer die
+  **spätere** Stunde. Über die Reihenfolge entschied damit die siebzehnte
+  Nachkommastelle statt der frühere Zeitpunkt. `PLAN_FASSUNG` steht auf 1.1.2.
+
+### Oberfläche
+
+* **Zwei Meldungen zeigten ihre Auszeichnung wörtlich.** Im Fahrplaner stand
+  die Formatierungsmarke als Text auf dem Bildschirm, und die Meldung über
+  eine abgelehnte Sicherungsdatei ebenso. Beim Fahrplaner ist die Auszeichnung
+  gewollt und die eingesetzten Werte sind Zahlen — dort entfällt das
+  Maskieren. Der Fehlerkasten bleibt durchgehend maskiert, weil dort auch
+  Fremdes landet; aus seinem Text ist die Auszeichnung genommen.
+* **Eine Prüfung konnte nie auslösen.** Der Widerspruch aus Frist und langer
+  Laufzeit wurde an einem Feld gemessen, das auf 1 bis 12 begrenzt ist, und
+  gegen 24 verglichen. Erreichbar ist der Fall über die Energiemenge: 500 kWh
+  bei 1 kW sind 500 Stunden. Genau das wird jetzt gerechnet.
+* **Drei Vorgabewerte gab es doppelt und verschieden.** Wer das Feld
+  *Netzentgelte* leerte und speicherte, bekam 9,00 ct/kWh statt der
+  dokumentierten 6,47; bei der Konzessionsabgabe 1,32 statt 2,39, beim
+  Grundpreis 0,00 statt 5,27. Die Vorgaben kommen jetzt aus `spot_vorgaben()`,
+  also aus derselben Quelle wie die Beschreibung.
+
+### Protokoll, Daten und Update
+
+* **Der Endpunkt protokollierte seine Abweisungen nicht.** `spot.php` liegt
+  im unangemeldeten Bereich. Ohne diese Zeile ließ sich der Fall, dass der
+  Miniserver nicht anruft, nicht von dem unterscheiden, dass er anruft und
+  abgewiesen wird; und wer im Netz Marken durchprobiert, hinterließ keine
+  Spur. Jetzt schreibt jede Abweisung eine Zeile mit Grund und Anrufer — die
+  Marke selbst nie.
+* **`history.csv` wurde als einzige geschützte Datei nicht unteilbar
+  geschrieben.** Sie wird täglich vollständig neu geschrieben, und
+  `file_put_contents` kürzt sie dazu zuerst auf null. Betroffen war
+  ausgerechnet die eine Datei, die sich nicht nachladen lässt.
+* **Die Merker überlebten ein Update nicht** — entgegen dem, was drei eigene
+  Texte behaupteten. Der Installer löscht `data/plugins/<ordner>/` in jedem
+  Upgrade-Zweig; gesichert wurde bisher nur `history.csv`. Ein Update am
+  Monatsersten nach 8 Uhr hätte den Monatsbericht ein zweites Mal ausgelöst.
+  `preupgrade.sh` und `postinstall.sh` tragen jetzt auch die Merker und den
+  Laufzähler über das Update; der Preis-Zwischenspeicher bleibt bewusst
+  draußen, weil er sich nachladen lässt.
+* **Die Rettung löschte ihre eigene Sicherung auch dann, wenn das
+  Zurückholen fehlgeschlagen war.** Das Aufräumen stand ohne Bedingung hinter
+  der Schleife, und die Fehlerausgabe war unterdrückt. Geprüft wird jetzt die
+  Wirkung — liegt die Datei hinterher da? —, und sonst bleibt die Sicherung
+  stehen und sagt es.
+
+### Aufgeräumt
+
+* Die Einzelregel-Rechnung von vor 1.1.2 (`spot_regel_werte()` samt zwei
+  Helfern, 103 Zeilen) ist entfernt. Sie stand seit 1.1.2 unbenutzt da,
+  während ein Kommentar behauptete, der Reiter *Test* zeige damit die alte
+  und die neue Rechnung nebeneinander.
+* Vierzehn sichtbare HTML-Entitäten je Sprachdatei sind durch die Zeichen
+  selbst ersetzt. Bedeutungstragende und unsichtbare bleiben.
+* Drei Textstellen widersprachen dem Code: die Fallzahl des Planer-Selbsttests
+  (133 statt 137), die Zusage, Konfiguration und Protokoll überlebten ein
+  Update (das Protokoll liegt auf der Ramdisk und wird nicht gesichert) und
+  ein Satz, der den MQTT-Reiter für abgeschafft erklärte.
+
+### Gemessen
+
+44 Prüfungen an der ausgelieferten Seite, unter PHP 7.4.33 und 8.4.24, je
+44 bestanden. `plan_selbsttest()` 137 Fälle, 0 Fehlschläge in beiden
+Fassungen. Jede Korrektur wurde vorher am Fehlerbild und hinterher an ihrer
+Wirkung gemessen, die Rettung über das Update an einem vollständigen
+Durchlauf aus `preupgrade.sh`, Löschen des Datenordners und `postinstall.sh`.
+
+**Nicht gemessen** und deshalb nicht behauptet: `retain` am laufenden
+MQTT-Gateway, das Mithören fremder Themen am Broker, Gateway V2 (der Anwender
+fährt V1; was die Oberfläche über V2 sagt, stammt aus einem fremden Plugin)
+und der eigene Lastgang an einer echten Quelle. Ein aWATTar-Tarif liegt nicht
+vor; die Preis-Schnittstelle ist offen und wurde abgerufen.
+
+## Fassung 1.2.18 — zwei Rechenfehler im Fahrplaner
+
+`webfrontend/html/planer.php` ist in diesem Plugin und in
+*Spotpreis Octopus* **byteweise dieselbe Datei**. Gefunden wurden die beiden
+Fehler bei der Durchsicht von Octopus 1.1.4.
+
+> **Berichtigung, gemessen am 02.09.2026 vor dieser Veröffentlichung.** Hier
+> stand: „behoben sind sie in beiden Linien, und die Prüfsumme stimmt danach
+> wieder überein". Das trifft nicht zu. Die veröffentlichte Octopus 1.1.4
+> trägt `PLAN_FASSUNG 1.1.1` und **keine** der beiden Korrekturen; die
+> Prüfsummen weichen ab (`116102c6…` gegen `252cc917…`, 101.323 gegen
+> 100.046 Byte). Octopus braucht dieselbe Datei in einer Folgefassung.
+> Ein Satz über eine Prüfsumme, den niemand nachgerechnet hat, ist die
+> Fehlerklasse, gegen die dieses Plugin an vier anderen Stellen gebaut wurde.
+
+* **Eine Zeitscheibe zu viel bei glatten kWh/kW-Paaren.** 6,9 kWh bei 2,3 kW
+  sind rechnerisch genau drei Stunden, in Gleitkomma aber
+  3,00000000000000044409 — `ceil()` machte vier daraus. Ergebnis: ein Drittel
+  zu viel gebuchte Energie und eine Stunde Leistung, die den anderen Regeln
+  im Budget fehlt. 4,2 / 1,4 verhält sich genauso; 7,4 / 3,7 und 11,0 / 2,2
+  waren nie betroffen. Ob es zuschlägt, entscheidet allein die
+  Gleitkommadarstellung des Paares.
+* **Der Taktschutz riss das Leistungsbudget.** Beim Schließen einer Lücke
+  unterhalb der Mindestpause setzte `plan_takt()` Zeitscheiben, die gar keine
+  Kandidaten waren — der Kopfkommentar derselben Funktion versprach das
+  Gegenteil. Gemessen mit zwei Regeln zu je 2,0 kW bei `budget_kw` 2,0 und
+  `min_pause` 30: in der Belegung standen 4 kW. Mit derselben Anordnung war
+  auch das zweite Budget nach § 14a EnWG gerissen, und eine Regel mit
+  Fenster 20–10 Uhr lief zehn Stunden außerhalb ihres Fensters. Zugemacht
+  wird jetzt alles oder nichts, und nur aus Kandidaten: eine gerissene
+  Budgetgrenze ist teurer als ein Takt zu viel.
+
+Beide Korrekturen haben eigene Prüffälle im eingebauten Selbsttest
+(`plan_selbsttest()`, jetzt 137 Fälle) und sind in beide Richtungen geeicht —
+grün mit der Korrektur, rot ohne, unter PHP 7.4.33 wie unter 8.4.24. Die 26
+Mutationen von `mutation_planer.py` werden weiterhin alle erkannt.
+`PLAN_FASSUNG` steht damit auf 1.1.1; der Reiter *Test* zeigt sie an.
+
+Sonst ist an diesem Plugin nichts geändert.
+
 ## Verhältnis zum aWATTar-Plugin von Christian Fenzl
 
 Für LoxBerry gibt es seit Längerem das Plugin
@@ -71,7 +239,9 @@ und Endpunkte sind verschieden.
 - Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
   kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
   Logdateien
-- Konfiguration und Log überleben Updates und Neuinstallation
+- Konfiguration, Preishistorie und Merker überleben Updates und
+  Neuinstallation. Das **Protokoll** nicht: `log/plugins` liegt auf dem
+  LoxBerry auf der Ramdisk und ist nach jedem Neustart ohnehin leer
 
 ## Endpunkte
 
@@ -392,8 +562,9 @@ Kopien derselben Rechnung wären schlimmer als ein zweites Kürzel.
 
 Sie ist reine Rechnung — kein Netz, keine Dateien, keine Uhr außer dem
 übergebenen Zeitpunkt. Deshalb lässt sie sich vollständig durchprüfen:
-**133 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.4 alle grün
-(53 waren es bei 1.2.0, 101 bei Planerfassung 1.1.0). Darunter die
+**137 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.4 alle grün
+(53 waren es bei 1.2.0, 101 bei Planerfassung 1.1.0, 133 bei 1.2.14).
+Darunter die
 Verdrängung durch das Budget, die Frist über Mitternacht, die
 Einheitenumrechnung Wh/W/kW und der Fall „PV-Gutschrift lässt die
 Sonnenstunde gegen die billigste Stunde gewinnen".
@@ -463,8 +634,9 @@ Beide Sprachdateien haben jetzt **619 Schlüssel und sind deckungsgleich**;
 jeder wird benutzt, keiner fehlt, die Zahl der `%s`-Platzhalter stimmt in
 beiden Sprachen überein.
 
-Nur `REITER.MQTT` sowie `ALLGEMEIN.JA`, `.NEIN` und `.SPEICHERN` waren
-tatsächlich tot — der MQTT-Reiter existiert nicht mehr. Sie sind entfernt.
+Nur `ALLGEMEIN.JA`, `.NEIN` und `.SPEICHERN` waren tatsächlich tot und sind
+entfernt. `REITER.MQTT` wurde damals mit entfernt, weil der Reiter in 1.1.1
+kurzzeitig fehlte — er ist seither zurück, und der Schlüssel mit ihm.
 
 ### Weiteres
 

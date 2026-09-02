@@ -194,18 +194,26 @@ if ($sp_ist_post && isset($_POST['mqtt_save'])) {
 }
 
 if ($sp_ist_post && isset($_POST['save'])) {
+    /* EINE Quelle fuer die Vorgaben. Bis 1.2.18 stand der Ersatzwert nur
+     * im Aufruf, und drei davon wichen von spot_vorgaben() ab: netz 9,00
+     * statt 6,47, konzession 1,32 statt 2,39, grundpreis 0,00 statt 5,27.
+     * Wer ein Feld LEERT und speichert, bekommt den Ersatzwert - er ist
+     * also erreichbar, nicht bloss Zierde. Der zweite Parameter bleibt
+     * als Rueckfall fuer Schluessel, die spot_vorgaben() nicht kennt. */
     function sp_f($k, $def) {
         $v = str_replace(',', '.', (string) (isset($_POST[$k]) ? $_POST[$k] : ''));
-        return is_numeric($v) ? (float) $v : $def;
+        if (is_numeric($v)) { return (float) $v; }
+        $vorg = function_exists('spot_vorgaben') ? spot_vorgaben() : array();
+        return isset($vorg[$k]) ? (float) $vorg[$k] : (float) $def;
     }
     $sp_new = array();
     $sp_new['market'] = (isset($_POST['market']) && $_POST['market'] === 'at') ? 'at' : 'de';
-    $sp_new['netz'] = max(0, min(50, sp_f('netz', 9.0)));
+    $sp_new['netz'] = max(0, min(50, sp_f('netz', 6.47)));
     $sp_new['steuer'] = max(0, min(20, sp_f('steuer', 2.05)));
-    $sp_new['konzession'] = max(0, min(20, sp_f('konzession', 1.32)));
+    $sp_new['konzession'] = max(0, min(20, sp_f('konzession', 2.39)));
     $sp_new['umlagen'] = max(0, min(20, sp_f('umlagen', 2.945)));
     $sp_new['aufschlag'] = max(-10, min(30, sp_f('aufschlag', 0.0)));
-    $sp_new['grundpreis'] = max(0, min(100, sp_f('grundpreis', 0.0)));
+    $sp_new['grundpreis'] = max(0, min(100, sp_f('grundpreis', 5.27)));
     $sp_new['vat'] = max(0, min(30, sp_f('vat', 19.0)));
     $sp_new['cheap'] = max(0, min(200, sp_f('cheap', 20.0)));
     $sp_new['expensive'] = max(0, min(400, sp_f('expensive', 35.0)));
@@ -253,8 +261,15 @@ if ($sp_ist_post && isset($_POST['save'])) {
          * gemeldet statt still zurechtgebogen; der Planer nimmt dann,
          * was er kriegen kann, und das faellt sonst niemandem auf. */
         $sp_rr = $sp_new['regeln'][$sp_i];
-        if ($sp_rr['aktiv'] && $sp_rr['frist'] >= 0 && $sp_rr['energie'] <= 0
-            && $sp_rr['n'] > 24) {
+        /* Die LAUFZEIT pruefen, nicht 'n'. Bis 1.2.18 stand hier
+         * energie <= 0 && n > 24 - 'n' wird aber zwanzig Zeilen weiter
+         * oben auf 1..12 geklemmt, und das Formularfeld laesst auch nur
+         * 1 bis 12 zu. Die Bedingung konnte also nie wahr werden, und
+         * REGEL.FEHLER_FRIST ist nie erschienen. Erreichbar ist der Fall
+         * ueber die Energiemenge: 500 kWh bei 1 kW sind 500 Stunden. */
+        $sp_lauf = ($sp_rr['energie'] > 0 && $sp_rr['leistung'] > 0)
+            ? $sp_rr['energie'] / $sp_rr['leistung'] : $sp_rr['n'];
+        if ($sp_rr['aktiv'] && $sp_rr['frist'] >= 0 && $sp_lauf > 24) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_FRIST'), $sp_i + 1);
         }
         if ($sp_rr['aktiv'] && $sp_rr['energie'] > 0 && $sp_rr['leistung'] <= 0) {
@@ -806,7 +821,7 @@ foreach ($sp_reiter_ids as $sp_i) {
 <div class="sm-row">
     <div>
         <label><?php echo spot_t('TEXT.NETZENTGELTE'); ?></label>
-        <input data-role="none" type="text" name="netz" value="<?= sp_e($sp_cfg['netz']) ?>" placeholder="9.0">
+        <input data-role="none" type="text" name="netz" value="<?= sp_e($sp_cfg['netz']) ?>" placeholder="6.47">
         <div class="sm-small"><?php echo spot_t('TEXT.INKL_MESSSTELLENBETRIEB_STARK_REGI'); ?></div>
     </div>
     <div>
@@ -825,7 +840,7 @@ foreach ($sp_reiter_ids as $sp_i) {
     </div>
     <div>
         <label><?php echo spot_t('TEXT.KONZESSIONSABGABE'); ?></label>
-        <input data-role="none" type="text" name="konzession" value="<?= sp_e($sp_cfg['konzession']) ?>" placeholder="1.32">
+        <input data-role="none" type="text" name="konzession" value="<?= sp_e($sp_cfg['konzession']) ?>" placeholder="2.39">
         <div class="sm-small"><?php echo spot_t('TEXT.NACH_GEMEINDEGRE_BIS_25_000_EW'); ?> <b>1,32</b> <?php echo spot_t('TEXT.BIS_100_000'); ?> <b>1,59</b> <?php echo spot_t('TEXT.BIS_500_000'); ?> <b>1,99</b> <?php echo spot_t('TEXT.BER_500_000'); ?> <b>2,39</b>.</div>
     </div>
 </div>
@@ -847,7 +862,7 @@ foreach ($sp_reiter_ids as $sp_i) {
     </div>
     <div>
         <label><?php echo spot_t('TEXT.GRUNDPREIS_EUR_MONAT'); ?></label>
-        <input data-role="none" type="text" name="grundpreis" value="<?= sp_e($sp_cfg['grundpreis']) ?>" placeholder="0">
+        <input data-role="none" type="text" name="grundpreis" value="<?= sp_e($sp_cfg['grundpreis']) ?>" placeholder="5.27">
         <div class="sm-small"><?php echo spot_t('TEXT.NETZ_GRUNDPREIS_MESSSTELLENBETRIEB'); ?></div>
     </div>
 </div>
@@ -1153,7 +1168,11 @@ if ($sp_cfg['last_quelle'] !== '' && trim((string) $sp_cfg['last_url']) !== '') 
 $sp_umw = spot_umwelt();
 if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <div class="sm-alert <?= (!empty($sp_umw['pv_meldung']) || !empty($sp_umw['soc_meldung'])) ? 'sm-err' : 'sm-info' ?>">
-  <?= sprintf(sp_e(spot_t('PLAN.STAND')),
+  <?php /* OHNE sp_e(): der Wert traegt <b>-Auszeichnung, und beide
+         eingesetzten Werte sind Zahlen aus sp_n() oder ein fester
+         Gedankenstrich - da kommt nichts vom Anwender her. Bis 1.2.18
+         stand hier sp_e(), und der Anwender las woertlich <b>3,5 kWh</b>. */ ?>
+  <?= sprintf(spot_t('PLAN.STAND'),
       $sp_umw['pv_summe'] === null ? '&ndash;' : sp_n($sp_umw['pv_summe'], 1),
       $sp_umw['soc'] === null ? '&ndash;' : sp_n($sp_umw['soc'], 0)) ?>
 <?php if (!empty($sp_umw['pv_meldung'])) { ?>
