@@ -8,6 +8,401 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Funktionen
+
+- **Endpreis statt Börsenpreis**: Netzentgelte, Stromsteuer, Konzessionsabgabe,
+  Umlagen, Anbieter-Aufschlag und Umsatzsteuer sind einzeln einstellbar
+  (Richtwerte 2026 vorbelegt, DE und AT)
+- Aktuelle Stunde, nächste Stunde, Börsenanteil, **Rang** der laufenden Stunde
+  in den nächsten 24 h, **Preisniveau** (günstig/normal/teuer über frei
+  wählbare Schwellen), Flag für negative Börsenpreise
+- Günstigste/teuerste Stunde und Tagesdurchschnitt für **heute und morgen**
+- **Günstigstes zusammenhängendes X-Stunden-Fenster** (Länge einstellbar) —
+  ideal für Waschmaschine, Spülmaschine, E-Auto, Warmwasser
+- **Stündliche Ansage (TTS)**, je Stunde per Checkbox aktivierbar; optional nur
+  unterhalb der Günstig-Schwelle, zusätzlich immer bei negativem Preis, und eine
+  Tagesvorschau-Ansage, sobald die Preise für morgen veröffentlicht sind
+- **Push-Auslöser** für Loxone (`ANN`) samt Test-Push-Funktion
+- **CO₂-Intensität** des Strommixes als zweite Kennzahl (Fraunhofer ISE
+  Energy-Charts, kostenlos und ohne Konto): aktueller Wert, sauberste Stunde der
+  nächsten 24 h, Flag „Ökostrom-Zeit" — für CO₂-optimiertes Schalten
+- **Zweiter Preissatz nach § 14a EnWG** für steuerbare Wärmepumpe oder Wallbox
+  mit eigenem Zählpunkt (reduziertes Netzentgelt + Schwachlast-Konzessionsabgabe)
+- **Tarifvergleich fest ↔ dynamisch**: Monatstabelle mit lastprofil-gewichtetem
+  Durchschnitt gegen den eigenen Festpreis, in ct/kWh und Euro — plus
+  Monatsbericht als Ansage/Protokoll am Monatsersten. Der Netzbezug lässt sich
+  **je Monat** eintragen (wichtig mit PV: im Winter viel Zukauf bei hohen
+  Börsenpreisen, im Sommer wenig); der Jahresverbrauch ergibt sich dann
+  automatisch aus der Summe
+- **Ersparnis durch verschobenen Verbrauch**: Was hätte es gebracht, täglich
+  X kWh in die günstigste Stunde zu verschieben (Woche und Jahreshochrechnung)
+- **Optionale Kopplung mit dem Marstek-Speicher-Plugin** (Standard aus): lädt den
+  Speicher in den X günstigsten Stunden bzw. bei negativem Preis
+- **MQTT** über das LoxBerry MQTT Gateway, **JSON** inklusive aller Stundenwerte
+- **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
+  Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte
+  Preis in Loxone, und in der App sieht alles normal aus
+- Preisdiagramm (heute + morgen) in der Oberfläche, Tageswert-Historie,
+  **Verlauf als CSV** zum Nachrechnen
+- **Einstellungen sichern und zurückspielen** über zwei Knöpfe — für den Umzug
+  auf einen zweiten LoxBerry
+- Optional: **eigener Lastgang** statt des eingebauten Haushaltsprofils, damit
+  der Tarifvergleich eine Messung wird statt einer Modellrechnung
+- Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
+  kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
+  Logdateien
+- Konfiguration, Preishistorie und Merker überleben Updates und
+  Neuinstallation. Das **Protokoll** nicht: `log/plugins` liegt auf dem
+  LoxBerry auf der Ramdisk und ist nach jedem Neustart ohnehin leer
+
+## Endpunkte
+
+**Lesende Aufrufe** — ein Token ist nur nötig, wenn eines eingerichtet ist:
+
+| Aufruf | Zweck |
+|---|---|
+| `/plugins/spotpreis/spot.php` | Loxone-Zeile `SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..;CURX=..`, dazu `LEBEN;TS=..;LAUF=..;RECHNE=..` |
+| `/plugins/spotpreis/spot.php?debug=1` | alle Stundenpreise heute + morgen |
+| `/plugins/spotpreis/spot.php?json=1` | kompletter Zustand als JSON |
+| `/plugins/spotpreis/spot.php?selftest=1` | die Selbstprüfung als Zeile: `PRUEF;PANZ=13;PFEHL=0;PUNKLAR=5;KONFIG=1;PREISE=1;…`, dahinter der Klartext je Punkt (seit 1.2.20) |
+
+Drei Felder der Zeile sind neu oder haben ihre Bedeutung geschärft:
+
+| Feld | Bedeutung |
+|---|---|
+| `TS` | Zeitpunkt des letzten **Cron-Laufs**. Bis 1.2.19 stand hier der Zeitpunkt der letzten Zustandsrechnung — und die stößt der Abruf des Miniservers selbst an. Die Ausfallerkennung (Formel Zeit minus `TS`, Ein bei 900) konnte damit nie anschlagen. |
+| `RECHNE` | Zeitpunkt der letzten Zustandsrechnung. Beantwortet die andere Frage: wie alt sind die Zahlen dieser Zeile? |
+| `CURX` | 1, solange für die laufende Stunde ein **Ersatzwert** steht (der Tageshöchstpreis, damit die Stunde nie gewählt wird). Fehlt die Stunde in den Marktdaten, ist `CUR` also nicht der Preis dieser Stunde. |
+
+**Auslösende Aufrufe** — seit 1.2.13 **immer** mit Token
+(`&token=…`, im Reiter *Einbindung in Loxone* zu setzen):
+
+| Aufruf | Zweck |
+|---|---|
+| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten sofort neu abrufen |
+| `/plugins/spotpreis/spot.php?say=1` | Test-Ansage (aktueller Preis) |
+| `/plugins/spotpreis/spot.php?saytomorrow=1` | Test-Ansage (Preise für morgen) |
+| `/plugins/spotpreis/spot.php?ptest=1` | Test-Pushnachricht auslösen |
+
+Der Unterschied hat einen Grund: `?say=1` spricht über die Lautsprecher der
+Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` stößt einen Abruf bei
+einem fremden Dienst an. Bis 1.2.12 konnte das jedes Gerät im Netz, ohne jede
+Hürde. Das Lesen bleibt tokenfrei, damit kein bestehender Aufbau abreißt —
+Loxone ruft die auslösenden Adressen ohnehin nicht ab, und die Knöpfe auf der
+Plugin-Seite führen das Token automatisch mit.
+
+## Preisbestandteile (Voreinstellung: deutsche Großstadt, 2026)
+
+| Bestandteil | ct/kWh netto |
+|---|---|
+| Netzentgelt (Arbeitspreis, Grundpreis separat) | 6,47 |
+| Stromsteuer | 2,05 |
+| Konzessionsabgabe (Gemeinde über 500.000 EW) | 2,39 |
+| Umlagen (KWKG 0,446 + Offshore 0,941 + § 19 StromNEV 1,558) | 2,945 |
+| Anbieter-Aufschlag | 0,00 |
+| **Summe** | **13,855** |
+| Umsatzsteuer | 19 % (AT: 20 %) |
+| Grundpreis (Netz + Messstellenbetrieb, nur informativ) | 5,27 €/Monat |
+
+Beispiel: 8,00 ct Börsenpreis → **26,01 ct/kWh** Endpreis.
+
+Alle Werte sind frei änderbar — bitte mit der eigenen Stromrechnung abgleichen.
+Netzentgelte sind stark regional (typisch 5–12 ct/kWh); das Preisblatt des
+eigenen Netzbetreibers nennt den Arbeitspreis im „Grundpreis-/Arbeitspreissystem".
+Konzessionsabgabe nach Gemeindegröße: bis 25.000 EW 1,32 · bis 100.000 EW 1,59 ·
+bis 500.000 EW 1,99 · über 500.000 EW 2,39 ct/kWh.
+
+**§ 14a EnWG** (zweiter Preissatz, optional): steuerbare Wärmepumpe 3,43 ·
+Speicherheizung 1,71 · Elektromobilität 4,28 · Modul 2 pauschal 2,59 ·
+Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe
+Schwachlast 0,61 ct/kWh.
+
+
+## Verhältnis zum aWATTar-Plugin von Christian Fenzl
+
+Für LoxBerry gibt es seit Längerem das Plugin
+[aWATTar von Christian Fenzl](https://github.com/christianTF/LoxBerry-Plugin-aWATTar)
+(Fassung 0.1.6, Ordner `awattar`). Dieses Plugin hier ist **kein Ableger davon**:
+Es ist eigenständig entstanden und spricht lediglich dieselbe öffentliche
+aWATTar-Schnittstelle an — so wie zwei Programme dieselbe Wetter-API benutzen
+können, ohne miteinander verwandt zu sein.
+
+Nachgeprüft statt behauptet: Die beiden Quelltexte haben **keine einzige
+gemeinsame Funktion** (22 gegenüber 65) und **keine einzige übereinstimmende
+Codezeile** über 40 Zeichen (354 gegenüber 1193 geprüften Zeilen). Auch die
+Versionsgeschichten haben keinen gemeinsamen Vorfahren.
+
+Das ist hier keine Förmlichkeit: Das ältere Plugin steht **ohne Lizenzangabe**
+im Netz. Ohne Lizenz gibt es keine Erlaubnis, Code daraus zu übernehmen — und
+genau deshalb ist wichtig, dass keiner übernommen wurde. Beide Plugins können
+nebeneinander installiert sein; Kennung, Ordner (`spotpreis` gegen `awattar`)
+und Endpunkte sind verschieden.
+
+## Datenschutz
+
+Es sind **keine persönlichen Daten** im Plugin enthalten. Alle Einstellungen
+liegen lokal in `config/plugins/spotpreis/spot.json`; die Datei trägt den
+Aktionstoken und steht deshalb auf 0600.
+
+Ausgehende Verbindungen — vollständig, am Quelltext nachgezählt:
+
+| Ziel | wann | Kennung |
+|---|---|---|
+| `api.awattar.de` bzw. `.at` | immer, für die Preise | keine |
+| `api.energy-charts.info` | **ab Werk eingeschaltet**, für die CO₂-Intensität | keine |
+| die eingetragene PV-Prognose | nur wenn eine Quelle eingerichtet ist | wie eingetragen |
+| der eingetragene eigene Lastgang | nur wenn eine Quelle eingerichtet ist | wie eingetragen |
+| Hausspeicher (Marstek) | nur wenn eingeschaltet, im eigenen Netz | — |
+| Music Server / Audioserver | nur für Ansagen, im eigenen Netz | — |
+| `127.0.0.1` | MQTT über das UDP-Relais des Gateways | — |
+
+Bis 1.2.19 stand hier, es gebe Verbindungen „ausschließlich zur
+öffentlichen aWATTar-Preis-API". Das war falsch: die CO₂-Abfrage ist ab
+Werk eingeschaltet. Sie lässt sich in den Einstellungen abschalten.
+
+**Die erzeugte Loxone-Vorlage trägt den Aktionstoken**, sonst wäre sie
+nutzlos. Sie geht vom LoxBerry in die Loxone Config — nicht ins Netz.
+
+## Änderungen
+
+Absteigend nach Fassung. **Zu 1.2.15 und 1.2.16 gibt es kein Kapitel** —
+die beiden Nummern kommen im ganzen Plugin nirgends vor, und was sie
+enthielten, lässt sich hier nicht nachtragen, ohne es zu erfinden. Die
+Lücke steht deshalb da, statt wie ein Versehen auszusehen.
+
+## Fassung 1.2.20 — was hinter der grünen Prüfkette stand
+
+1.2.19 war grün: 44 von 44 Prüfungen des Prüfstands unter PHP 7.4 **und**
+8.4, 137 Fälle des Planer-Selbsttests ohne Fehlschlag, 26 von 26 Mutationen
+erkannt, das Freigabetor ohne Befund. Diese Fassung ist das Ergebnis der
+Frage, was **trotzdem** nicht stimmt.
+
+Jede Korrektur unten ist in **beide Richtungen** geeicht: gemessen, dass der
+Fehler auftritt, und gemessen, dass die zugehörige Prüfung rot wird, wenn
+man die Korrektur zurückbaut. Eine Prüfung, die grün bleibt, wenn man ihren
+Code entfernt, misst nichts.
+
+### Der Miniserver bekam eine 0 für die laufende Stunde
+
+Fehlte in den Marktdaten genau die laufende Stunde, standen `CUR`, `CURB`
+und `NEXT` auf 0 — und `HOK` blieb dabei auf 1, denn der Tag war ja da.
+Gemessen an einem vollständigen Tag, aus dem genau diese eine Stunde
+entfernt wurde:
+
+| | Kontrollfall (alle 24 h) | Prüffall (laufende Stunde fehlt) |
+|---|---|---|
+| `HOK` | 1 | 1 |
+| `CUR` | 46,761 | **0,000** |
+| `RANK` | 13 | **1** |
+| `LEVEL` | 3 | **1** |
+| `WPCUR` | 49,141 | **20,200** |
+
+`LEVEL=1` und `RANK=1` heißt für den Spot Price Optimizer: günstigste Stunde
+des Tages. Das Stundenprofil war gegen genau diesen Fall längst geschützt —
+`PH19` stand im selben Lauf korrekt auf 49,141, mit einer ausführlichen
+Begründung im Quelltext, warum eine fehlende Stunde den **Tageshöchstpreis**
+bekommt. Nur `CUR` hielt sich nicht daran.
+
+Jetzt gilt derselbe Ersatzwert. Und die Zeile **sagt es an**: das neue Feld
+`CURX` steht auf 1, solange ein Ersatzwert im Spiel ist. Eine stille
+Ersetzung wäre nur die nächste Fassung desselben Fehlers.
+
+### Am 25. Oktober fehlte die letzte Stunde des Tages
+
+Das Abruffenster war fest 24 Stunden lang. Nachgerechnet, ohne Netz:
+
+| Tag | | Stunden | im Fenster | nicht abgerufen |
+|---|---|---|---|---|
+| 15.06.2026 | gewöhnlich | 24 | 24 | — |
+| 25.10.2026 | Ende der Sommerzeit | **25** | 24 | **23:00** |
+| 29.03.2026 | Beginn der Sommerzeit | 23 | 23 | — |
+
+Zusammen mit dem Befund darüber ergab das einmal im Jahr eine Stunde mit
+`CUR=0`, `RANK=1`, `LEVEL=1` bei `HOK=1`. Das Fenster endet jetzt am Anfang
+des nächsten Tages, gerechnet über die Datumsfunktion und nicht mit
+`+86400` — an genau diesen beiden Tagen ist ein Tag nicht 86 400 Sekunden
+lang.
+
+### Die Ausfallerkennung konnte nicht anschlagen
+
+Der Reiter Loxone schreibt sie vor: virtueller Eingang `\i;TS=\i\v`, Formel
+„Zeit minus TS", Schwellwert Ein 900. Damit sie greift, muss `TS` **alt
+bleiben**, wenn der Cron tot ist. Gemessen — Zustand künstlich zwei Stunden
+gealtert, danach die Zeile abgerufen, ohne den Cron zu starten:
+
+| | 1.2.19 | 1.2.20 |
+|---|---|---|
+| Cron nie gelaufen | schlägt **nicht** an | schlägt an |
+| Cron gerade gelaufen | schlägt nicht an | schlägt nicht an |
+| Cron zwei Stunden tot | schlägt **nicht** an | schlägt an |
+
+`TS` kam aus dem Zeitpunkt, zu dem der **Zustand** zuletzt gerechnet wurde —
+und rechnen lässt ihn auch der Abruf des Miniservers selbst. `TS` maß also
+den Abruf, nicht den Cron. Jetzt kommt es aus dem Zeitstempel des
+Laufzählers, den ausschließlich `bin/cron.php` schreibt, und zwar als erstes
+im Lauf. Der Rechenzeitpunkt geht nicht verloren: er steht als neues Feld
+`RECHNE` in derselben Zeile. Zwei Fragen, zwei Zahlen.
+
+Dieselbe Blindheit hatte die Selbstprüfung `PRUEF.LEBEN`; auch sie sieht
+jetzt auf den Laufzähler.
+
+### Die erzeugte Loxone-Vorlage trug kein Token
+
+Steht in den Einstellungen eine Marke, verlangt `spot.php` sie bei **jedem**
+Abruf — auch beim reinen Lesen. Die erzeugte Vorlage rief die Adresse aber
+ohne Marke auf. Der Miniserver bekam darauf 403 und die Zeile
+`SPOT;OK=0;GRUND=TOKEN`; von den Eingängen fand keiner mehr seinen Wert. Die
+Anlage sah dabei eingerichtet aus. Die Vorlage trägt die Marke jetzt mit.
+
+Im selben Zug tragen alle Suchtexte das Trennzeichen: `\i;NAME=\i\v` statt
+`\iNAME=\i\v`. Gemessen an der echten Antwortzeile mit 141 Feldnamen treffen
+ohne Semikolon acht Felder mehrfach (`AVG`, `CUR`, `MAXH`, `MAXP`, `MINH`,
+`MINP`, `NEXT`, `OK` — `MINH` sogar dreifach), mit Semikolon keines. **Ehrlich
+dazu:** heute liefert die erste Fundstelle bei allen acht trotzdem den
+richtigen Wert, weil das kürzere Feld in der Zeile zufällig vorne steht. Das
+ist also keine laufende Falschmessung, sondern eine, die die nächste
+Umsortierung der Zeile auslösen würde — lautlos, denn die Zahl sähe weiter
+plausibel aus.
+
+### Anzeige und Miniserver rechneten mit verschiedenen Einheiten
+
+`planer.php` legt im Kopf fest: Preise in **ct/kWh**. `spot_state()` hält
+sich daran, `spot_fahrplan()` — die Quelle der Anzeige — reichte den
+Endpreis in EUR/kWh weiter, also hundertmal zu klein, während das Tagesmittel
+im selben Aufruf in ct stand. Gemessen an einer Regel „unter 20,0 ct" bei
+einem Endpreis von rund 26 ct, die also **nicht** laufen darf:
+
+| | 1.2.19 | 1.2.20 |
+|---|---|---|
+| Loxone-Zeile | `R1=0` | `R1=0` |
+| Anzeige | `aktiv=1, grund=schwelle` | `aktiv=0` |
+| Preisspalte | 0,36 ct | 26,01 ct |
+
+### Der Fahrplaner: fünf Befunde, zwei davon fassungsabhängig
+
+`planer.php` steht auf **1.1.3** und ist in der Octopus-Linie byteweise
+dieselbe Datei. Der Selbsttest zählt jetzt 170 Fälle statt 137, die
+Mutationsdeckung 34 von 34.
+
+* **Runden.** Die eingebaute Rundung von PHP entscheidet an der Hälfte je
+  nach Fassung verschieden. Die Schaltschwelle der Regelart „mittel" ergab
+  für ein Tagesmittel von 5,05 ct minus 15 % unter **7.4.33 den Wert 4,293**
+  und unter **8.4.24 den Wert 4,292** — dieselbe Regel schaltet unter der
+  einen Fassung und unter der anderen nicht. LoxBerry fährt heute 7.4, mit
+  Debian 13 kommt 8.x: der Wechsel hätte die Schwelle von selbst verstellt.
+  `plan_runde()` bildet die 7.4-Antwort nach, die Zahl 15 aber fest verdrahtet
+  statt aus der ini-Einstellung. Geeicht über 72 042 Werte: gegen 7.4 kein
+  Unterschied, gegen 8.4 genau 629.
+* **Fristen an den Umstellungstagen.** Die Zeitfunktion mit Einzelargumenten
+  löst die doppelte Stunde am 25.10. fassungsabhängig auf — 7.4 nimmt
+  02:00 CET, 8.4 nimmt 02:00 CEST. Eine Stunde Unterschied bei der Frist,
+  allein durch den Interpreter. Jetzt über `strtotime` auf eine
+  Datumszeichenkette; fünf Fälle gemessen, beide Fassungen einig.
+* **Der Taktschutz riss Lücken auf.** Das Verlängern zu kurzer Blöcke
+  entstand nach der Prüfung der Mindestpause — und niemand sah danach noch
+  hin. Ein Streifzug über 3815 Fälle gegen die beiden Zusagen des
+  Funktionskopfes fand **171 Ergebnisse**, die die Mindestpause nicht
+  einhielten; keines verletzte die Mindestlaufzeit. Jetzt wird zweimal
+  zugemacht. Die Reihenfolge zu tauschen wäre falsch gewesen: das verwirft
+  genau den Block, den das Zumachen rettet — dafür gibt es seit 1.1.0 einen
+  Prüffall, und der ging beim Versuch prompt rot.
+* **Gleichstand beim Fenster.** Zwei rechnerisch gleich teure Fenster sind
+  in Gleitkomma fast nie identisch; der Planer nahm das **spätere**. Die
+  Regelarten `stunden` und `scheiben` fangen das seit 1.1.0 ab, `fenster`
+  nicht.
+* **Kennzahlen nach dem Negativpreis.** Der Zweig trägt die laufende
+  Scheibe nach und ändert damit `slots`, `anzahl` und `ct` — die davon
+  abhängigen Zahlen wurden aber vorher gerechnet. Eine Regel zu 4 kW, die
+  allein wegen des Negativpreises lief, meldete `kwh=0` und `fehlt=2` statt
+  `kwh=4,0` und `fehlt=1`.
+
+Dazu zwei Prüffälle **für eine alte Korrektur**: dass die Hysterese sich an
+die Kandidatenliste hält, stand seit 1.1.1 im Quelltext begründet, war aber
+von keinem Fall gedeckt — der Rückbau blieb grün. Jetzt geht er rot.
+
+### Selbstprüfung, Oberfläche, Sicherung
+
+* **Der Endpunkt kennt die Selbstprüfung.** `?selftest=1` gibt sie als Zeile
+  im Hausformat aus (`PRUEF;PANZ=…;PFEHL=…;KONFIG=1;…`), dahinter den
+  Klartext je Punkt. Bis 1.2.19 gab es sie nur im Reiter Test — also nur,
+  wenn ein Mensch hinsah.
+* **`PRUEF.STUNDEN` urteilte über die leere Menge.** Ohne Preise für heute
+  ist auch die Lückenliste leer, und die Prüfung meldete einen Haken mit
+  „0 Stundenwerte" daneben.
+* **`PRUEF.FORMULARE` zählte statt nachzusehen.** Sie verglich die Zahl der
+  Merkmale mit der Zahl der Formulare — und zählte dabei auch das Vorkommen
+  in einem **Kommentar** mit (13 statt 12). Selbst mit richtiger Zahl sagt
+  eine Summe nichts über die Verteilung. Jetzt wird je Formular nachgesehen.
+  Geeicht: nimmt man dem ersten Formular sein Merkmal, blieb die alte Regel
+  grün.
+* **Eine beschädigte Konfiguration wurde still zur leeren.** Die
+  Selbstheilung kannte „fehlt" und „leer", nicht aber „da, aber kaputt".
+  Gemessen: 1.2.19 fiel auf die Werkseinstellung samt leerem Token zurück —
+  und das nächste Speichern kopierte diese Werkseinstellung über die
+  Sicherung. Jetzt wird die Datei beiseitegelegt (`.kaputt.<Zeitstempel>`)
+  und aus der Sicherung zurückgeholt, beides mit Eintrag im Protokoll.
+* **Rechte vor Inhalt.** In der Konfiguration steht der Aktionstoken. Sie
+  wird jetzt leer angelegt, auf 0600 gesetzt und dann gefüllt; die Zweitschrift
+  bekommt dieselben Rechte. *Am Gerät nicht nachgemessen — auf dem
+  Arbeitsrechner gibt es keine POSIX-Rechte.*
+* **Geklemmte Werte werden gesagt.** Wer 500 kW einträgt, bekam 100
+  gespeichert und kein Wort darüber. Gekappt wird weiterhin — abweisen
+  hieße, dass ein Zahlendreher das Speichern aller übrigen Felder
+  verhindert —, aber es steht jetzt als Hinweis da.
+* **Eine abgeschaltete Regel blockierte das Speichern.** Die Prüfung der
+  Speichergrenzen fragte als einzige ihrer drei Nachbarn nicht nach `aktiv`.
+* **„Nichts gespeichert" wurde gesetzt und nie gelesen.** Die Variable kam
+  genau einmal in der Datei vor: in ihrer Zuweisung.
+* **Der Reiterwechsel lud die Seite neu** und nahm dabei jede nicht
+  gespeicherte Eingabe mit. Jetzt wird der Klick abgefangen — außer beim
+  Reiter Test, dessen Inhalt nur gerendert wird, wenn er angefragt ist.
+* **Knopffarben als Einzelanweisung.** Acht Knöpfe trugen ihre Farbe als
+  `style`, für die Hausstandardprüfung unsichtbar; zwei davon (Speichern)
+  blieben dadurch grün, obwohl sie etwas verändern, und „Log leeren" war
+  rot — eine vierte Farbe, die es im Haus nicht gibt.
+* **Sechzehn Sprachwerte trugen Auszeichnung.** Das schließende `>` ihres
+  HTML-Tags stand in der Zeichenkette. Wer übersetzt und es wegließe,
+  bekäme ein offenes Tag. Geeicht daran, dass alle sechs Reiter vor und nach
+  der Umstellung zeichengleich sind.
+* **Deutsche Sätze im JavaScript** und im Protokolleintrag „Protokoll
+  geleert" — in einem Plugin, dessen Oberfläche seit 1.1.2 zweisprachig ist.
+* **Drei breite Tabellen ohne Rollbereich.** `.sm-breit` fehlte in der
+  Oberfläche ganz.
+* **Die stündliche Ansage hatte ein Fenster von einer Minute.** Genau die
+  Bedingung, die beim Monatsbericht in 1.1.1 als Fehler erkannt wurde. Der
+  Merker verhindert längst, dass sie zweimal kommt; das Fenster ist jetzt
+  fünf Minuten breit.
+* **Der Cron verschluckte seine Fehlerausgabe.** `>/dev/null 2>&1`
+  verschluckt auch „Bibliothek nicht gefunden". Die Fehlerausgabe geht jetzt
+  ins Protokoll, nur die normale Ausgabe wird unterdrückt.
+* **Die MQTT-Signatur kannte die Schaltregeln nicht.** Schaltete eine Regel
+  um, ohne dass sich Preis, Rang oder Niveau änderten, blieb die
+  Veröffentlichung aus — Loxone erfuhr davon erst beim Ruhefunk nach bis zu
+  1800 Sekunden.
+* **Fester Zwischenspeichername.** `/tmp/spotpreis` und `spot_cron.lock`
+  standen fest, während der Ordnername daneben ermittelt wird. Zwei
+  Installationen teilten sich damit Zustand und Sperrdatei.
+* **Zwei Wahrheiten bei den Schranken.** `spot_config()` kappt jetzt auch
+  die Preisbestandteile — mit **denselben** Grenzen wie die Oberfläche.
+
+### Was gemessen wurde
+
+* Prüfstand `Pruefung-Spotpreis-aWATTar-1.2.20`: 44 von 44 unter PHP 7.4.33
+  und 8.4.24.
+* Planer-Selbsttest: 170 Fälle, 0 Fehlschläge unter beiden Fassungen.
+* Rückbau jeder Planerkorrektur einzeln: jede zugehörige Prüfung wird rot.
+* Mutationsdeckung `planer.php`: 34 von 34 erkannt.
+* Alle sechs Reiter gerendert, unter beiden PHP-Fassungen, ohne Warnung.
+
+### Was **nicht** gemessen wurde
+
+Am Gerät nichts. Kein aWATTar-Tarif vorhanden — nur die offene
+Preis-Schnittstelle ist abrufbar. Das MQTT-Gateway läuft in **Version 1**;
+was die Oberfläche über V2 sagt, stammt aus einem fremden Plugin und ist
+Sekundärquelle. Retain am laufenden Gateway, Mithören fremder Themen am
+Broker, das eigene Lastprofil an einer echten Quelle und die Dateirechte
+unter POSIX sind unbelegt.
+
 ## Fassung 1.2.19 — was der Miniserver bekam, wenn eine Stunde fehlte
 
 Diese Fassung entstand aus einer vollständigen Durchsicht. Die schwersten
@@ -176,126 +571,32 @@ Mutationen von `mutation_planer.py` werden weiterhin alle erkannt.
 
 Sonst ist an diesem Plugin nichts geändert.
 
-## Verhältnis zum aWATTar-Plugin von Christian Fenzl
+## Fassung 1.2.17 — der Stat-Zwischenspeicher
+Die Protokollkappung (512 000 Byte) steht in `spot_log()` in
+`webfrontend/html/spot_lib.php`. *(Hier stand bis 1.2.19 eine Zeilennummer.
+Eine Zeilennummer in einem Text, der die Datei überlebt, zeigt nach der
+nächsten Änderung woanders hin — der Funktionsname nicht.)* PHP merkt sich
+aber die Antworten von
+`stat()`: innerhalb **eines** Prozesses sieht `filesize()` die erste Größe
+und danach nie wieder eine neue — `file_put_contents(…, FILE_APPEND)` macht
+den Eintrag nicht ungültig. Die Kappung fällt dann still aus.
 
-Für LoxBerry gibt es seit Längerem das Plugin
-[aWATTar von Christian Fenzl](https://github.com/christianTF/LoxBerry-Plugin-aWATTar)
-(Fassung 0.1.6, Ordner `awattar`). Dieses Plugin hier ist **kein Ableger davon**:
-Es ist eigenständig entstanden und spricht lediglich dieselbe öffentliche
-aWATTar-Schnittstelle an — so wie zwei Programme dieselbe Wetter-API benutzen
-können, ohne miteinander verwandt zu sein.
+Gemessen am 29.08.2026, 20 000 Zeilen im selben Prozess:
 
-Nachgeprüft statt behauptet: Die beiden Quelltexte haben **keine einzige
-gemeinsame Funktion** (22 gegenüber 65) und **keine einzige übereinstimmende
-Codezeile** über 40 Zeichen (354 gegenüber 1193 geprüften Zeilen). Auch die
-Versionsgeschichten haben keinen gemeinsamen Vorfahren.
+| | ohne `clearstatcache` | mit |
+|---|---|---|
+| PHP 7.4.33 | 1 220 000 Byte, **nicht gekappt** | 220 332 Byte, gekappt |
+| PHP 8.4.24 | 220 332 Byte, gekappt | 220 332 Byte, gekappt |
 
-Das ist hier keine Förmlichkeit: Das ältere Plugin steht **ohne Lizenzangabe**
-im Netz. Ohne Lizenz gibt es keine Erlaubnis, Code daraus zu übernehmen — und
-genau deshalb ist wichtig, dass keiner übernommen wurde. Beide Plugins können
-nebeneinander installiert sein; Kennung, Ordner (`spotpreis` gegen `awattar`)
-und Endpunkte sind verschieden.
+Die beiden PHP-Fassungen verhalten sich also verschieden — und LoxBerry 3.x
+fährt 7.4. Wer nur unter 8.4 misst, sieht den Fehler nie. Folgen hatte das
+hier nicht: die Aufrufer sind kurzlebig, und ein **frischer** Prozess kappt
+richtig. Eine Funktion darf aber nicht davon abhängen, wer sie wie oft ruft.
 
-## Funktionen
-
-- **Endpreis statt Börsenpreis**: Netzentgelte, Stromsteuer, Konzessionsabgabe,
-  Umlagen, Anbieter-Aufschlag und Umsatzsteuer sind einzeln einstellbar
-  (Richtwerte 2026 vorbelegt, DE und AT)
-- Aktuelle Stunde, nächste Stunde, Börsenanteil, **Rang** der laufenden Stunde
-  in den nächsten 24 h, **Preisniveau** (günstig/normal/teuer über frei
-  wählbare Schwellen), Flag für negative Börsenpreise
-- Günstigste/teuerste Stunde und Tagesdurchschnitt für **heute und morgen**
-- **Günstigstes zusammenhängendes X-Stunden-Fenster** (Länge einstellbar) —
-  ideal für Waschmaschine, Spülmaschine, E-Auto, Warmwasser
-- **Stündliche Ansage (TTS)**, je Stunde per Checkbox aktivierbar; optional nur
-  unterhalb der Günstig-Schwelle, zusätzlich immer bei negativem Preis, und eine
-  Tagesvorschau-Ansage, sobald die Preise für morgen veröffentlicht sind
-- **Push-Auslöser** für Loxone (`ANN`) samt Test-Push-Funktion
-- **CO₂-Intensität** des Strommixes als zweite Kennzahl (Fraunhofer ISE
-  Energy-Charts, kostenlos und ohne Konto): aktueller Wert, sauberste Stunde der
-  nächsten 24 h, Flag „Ökostrom-Zeit" — für CO₂-optimiertes Schalten
-- **Zweiter Preissatz nach § 14a EnWG** für steuerbare Wärmepumpe oder Wallbox
-  mit eigenem Zählpunkt (reduziertes Netzentgelt + Schwachlast-Konzessionsabgabe)
-- **Tarifvergleich fest ↔ dynamisch**: Monatstabelle mit lastprofil-gewichtetem
-  Durchschnitt gegen den eigenen Festpreis, in ct/kWh und Euro — plus
-  Monatsbericht als Ansage/Protokoll am Monatsersten. Der Netzbezug lässt sich
-  **je Monat** eintragen (wichtig mit PV: im Winter viel Zukauf bei hohen
-  Börsenpreisen, im Sommer wenig); der Jahresverbrauch ergibt sich dann
-  automatisch aus der Summe
-- **Ersparnis durch verschobenen Verbrauch**: Was hätte es gebracht, täglich
-  X kWh in die günstigste Stunde zu verschieben (Woche und Jahreshochrechnung)
-- **Optionale Kopplung mit dem Marstek-Speicher-Plugin** (Standard aus): lädt den
-  Speicher in den X günstigsten Stunden bzw. bei negativem Preis
-- **MQTT** über das LoxBerry MQTT Gateway, **JSON** inklusive aller Stundenwerte
-- **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
-  Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte
-  Preis in Loxone, und in der App sieht alles normal aus
-- Preisdiagramm (heute + morgen) in der Oberfläche, Tageswert-Historie,
-  **Verlauf als CSV** zum Nachrechnen
-- **Einstellungen sichern und zurückspielen** über zwei Knöpfe — für den Umzug
-  auf einen zweiten LoxBerry
-- Optional: **eigener Lastgang** statt des eingebauten Haushaltsprofils, damit
-  der Tarifvergleich eine Messung wird statt einer Modellrechnung
-- Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
-  kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
-  Logdateien
-- Konfiguration, Preishistorie und Merker überleben Updates und
-  Neuinstallation. Das **Protokoll** nicht: `log/plugins` liegt auf dem
-  LoxBerry auf der Ramdisk und ist nach jedem Neustart ohnehin leer
-
-## Endpunkte
-
-**Lesende Aufrufe** — ein Token ist nur nötig, wenn eines eingerichtet ist:
-
-| Aufruf | Zweck |
-|---|---|
-| `/plugins/spotpreis/spot.php` | Loxone-Zeile `SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..`, dazu `LEBEN;TS=..;LAUF=..` |
-| `/plugins/spotpreis/spot.php?debug=1` | alle Stundenpreise heute + morgen |
-| `/plugins/spotpreis/spot.php?json=1` | kompletter Zustand als JSON |
-
-**Auslösende Aufrufe** — seit 1.2.13 **immer** mit Token
-(`&token=…`, im Reiter *Einbindung in Loxone* zu setzen):
-
-| Aufruf | Zweck |
-|---|---|
-| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten sofort neu abrufen |
-| `/plugins/spotpreis/spot.php?say=1` | Test-Ansage (aktueller Preis) |
-| `/plugins/spotpreis/spot.php?saytomorrow=1` | Test-Ansage (Preise für morgen) |
-| `/plugins/spotpreis/spot.php?ptest=1` | Test-Pushnachricht auslösen |
-
-Der Unterschied hat einen Grund: `?say=1` spricht über die Lautsprecher der
-Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` stößt einen Abruf bei
-einem fremden Dienst an. Bis 1.2.12 konnte das jedes Gerät im Netz, ohne jede
-Hürde. Das Lesen bleibt tokenfrei, damit kein bestehender Aufbau abreißt —
-Loxone ruft die auslösenden Adressen ohnehin nicht ab, und die Knöpfe auf der
-Plugin-Seite führen das Token automatisch mit.
-
-## Preisbestandteile (Voreinstellung: deutsche Großstadt, 2026)
-
-| Bestandteil | ct/kWh netto |
-|---|---|
-| Netzentgelt (Arbeitspreis, Grundpreis separat) | 6,47 |
-| Stromsteuer | 2,05 |
-| Konzessionsabgabe (Gemeinde über 500.000 EW) | 2,39 |
-| Umlagen (KWKG 0,446 + Offshore 0,941 + § 19 StromNEV 1,558) | 2,945 |
-| Anbieter-Aufschlag | 0,00 |
-| **Summe** | **13,855** |
-| Umsatzsteuer | 19 % (AT: 20 %) |
-| Grundpreis (Netz + Messstellenbetrieb, nur informativ) | 5,27 €/Monat |
-
-Beispiel: 8,00 ct Börsenpreis → **26,01 ct/kWh** Endpreis.
-
-Alle Werte sind frei änderbar — bitte mit der eigenen Stromrechnung abgleichen.
-Netzentgelte sind stark regional (typisch 5–12 ct/kWh); das Preisblatt des
-eigenen Netzbetreibers nennt den Arbeitspreis im „Grundpreis-/Arbeitspreissystem".
-Konzessionsabgabe nach Gemeindegröße: bis 25.000 EW 1,32 · bis 100.000 EW 1,59 ·
-bis 500.000 EW 1,99 · über 500.000 EW 2,39 ct/kWh.
-
-**§ 14a EnWG** (zweiter Preissatz, optional): steuerbare Wärmepumpe 3,43 ·
-Speicherheizung 1,71 · Elektromobilität 4,28 · Modul 2 pauschal 2,59 ·
-Modul 3 HT 7,14 / NT 2,59 ct/kWh (Beispielwerte 2026), Konzessionsabgabe
-Schwachlast 0,61 ct/kWh.
-
+Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
+beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
+Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
+länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
 
 ## Fassung 1.2.14 — der Fahrplaner, und was seine Prüfzahlen verschwiegen
 
@@ -422,7 +723,8 @@ Dazu die Trennung lesend/auslösend, siehe oben unter *Endpunkte*.
 
 ### Ein Wachposten für die Oberfläche
 
-Alle zehn Formulare tragen jetzt ein Merkmal gegen fremde Absender. Der
+Alle **zehn** Formulare dieser Fassung trugen ein Merkmal gegen fremde
+Absender *(heute sind es zwölf)*. Der
 Wachposten steht **einmal** am Kopf der Datei und leert `$_POST`, wenn das
 Merkmal fehlt — damit läuft kein Zweig mehr an, ohne dass einer davon davon
 wissen muss. Ein „`&& $post`" je Zweig wirkt nur, wenn wirklich jeder daran
@@ -594,66 +896,6 @@ innerhalb eines quotierten INI-Wertes — HTML-Attribute gehören dort einfach
 gequotet. Betroffen waren `TOKEN_AKTIV` und `TOKEN_ERKLAERUNG` in beiden
 Sprachdateien.
 
-## Fassung 1.1.1 — aufgeräumt
-
-### Der Cron-Lauf lag im unangemeldeten Web-Verzeichnis
-
-`cron.php` stand unter `webfrontend/html/`. LoxBerry veröffentlicht diesen
-Ordner als `/plugins/<ordner>/` **ohne Anmeldung** — jeder im Netz konnte
-
-    http://<loxberry>/plugins/spotpreis/cron.php
-
-aufrufen und damit den Minutenlauf auslösen: Sprachansage, Pushnachricht,
-MQTT-Veröffentlichung und, wenn eingeschaltet, `spot_marstek_control()` —
-ein HTTP-Aufruf an den Hausspeicher mit Ladeleistung und Laufzeit.
-
-Ein Cron-Skript wird von der Kommandozeile gestartet, nicht vom Browser. Es
-liegt jetzt unter `bin/`, wo es über HTTP gar nicht erreichbar ist; `cron.01min`
-zeigt auf `REPLACELBPBINDIR` statt `REPLACELBPHTMLDIR`. Die Bibliothek
-`spot_lib.php` bleibt unter `webfrontend/html/`: sie wird auch vom
-Miniserver-Endpunkt und von der Oberfläche gebraucht, definiert aber nur
-Funktionen — ein Aufruf über HTTP liefert nichts.
-
-### Reste eines automatischen Übersetzungslaufs
-
-- **Drei Kommentare** gingen durch `spot_t()`. In einem war sogar ein Wort
-  zerschnitten: `spot_t('TEXT.EINHEIT') . 'liches'` für „Einheitliches" — auf
-  Englisch wäre daraus „Unitliches" geworden. Kommentare sind für den
-  Entwickler, nicht für den Anwender; sie stehen wieder als Klartext da.
-- **Fünf Schlüssel waren angelegt, aber nirgends angeschlossen**
-  (`GNSTIG`, `SAUBER`, `BRSENPREIS_NEGATIV`, `FESTER_TARIF_IST_GNSTIGER_UM`,
-  `DEN_GEPFLEGTEN_MONATSMENGEN`). Sie gehören zu Texten, die in PHP-Ternären
-  stehen — die der automatische Lauf nicht erwischt hat. Sie sind jetzt
-  angeschlossen, nicht gelöscht.
-- **Rund 50 weitere sichtbare Texte** hatten noch gar keinen Schlüssel:
-  Monatsnamen, Spaltenköpfe der Baustein-Tabellen, die Sätze des
-  Kostenvergleichs, die Achsenbeschriftung des Diagramms und die Meldungen
-  nach einem Abruf.
-
-Beide Sprachdateien haben jetzt **619 Schlüssel und sind deckungsgleich**;
-jeder wird benutzt, keiner fehlt, die Zahl der `%s`-Platzhalter stimmt in
-beiden Sprachen überein.
-
-Nur `ALLGEMEIN.JA`, `.NEIN` und `.SPEICHERN` waren tatsächlich tot und sind
-entfernt. `REITER.MQTT` wurde damals mit entfernt, weil der Reiter in 1.1.1
-kurzzeitig fehlte — er ist seither zurück, und der Schlüssel mit ihm.
-
-### Weiteres
-
-- **`uninstall/uninstall` fehlte.** Beim Deinstallieren blieben
-  `config/plugins/<ordner>.backup.json` (die Sicherung der Tarifeinstellungen,
-  bewusst *neben* dem Konfigordner) und `/tmp/spotpreis` liegen. Im MQTT-Broker
-  bleibt nichts stehen — das Plugin sendet mit `publish`, nicht mit `retain`.
-- **Die Reiter waren `<div>`, keine Verweise**, und den Reiterwunsch nahm die
-  Seite nur per POST an. Alle Flächen stehen bis zum Lauf des JavaScripts auf
-  `display:none` — ohne JavaScript war die Seite leer, und auf einen Reiter
-  verlinken ging nicht. Jetzt echte Links mit `?tab=…`, und der Server setzt
-  `sm-active` an Reiter und Fläche.
-
-Bewusst **nicht** übersetzt: die 41 Loxone-Feldnamen (`Prio`, `MinSoc`, `ANN`),
-die Protokolleinträge und die Voreinstellung `Wärmepumpe` — letztere ist ein
-gespeicherter, vom Anwender änderbarer Wert, kein Oberflächentext.
-
 ## Fassung 1.1.2 — nachgemessen und korrigiert
 
 Sechs Punkte aus einer Durchsicht. Vier trafen zu, einer teilweise, einer
@@ -804,35 +1046,67 @@ Pflichttoken bei jedem bestehenden Aufbau die Werte im Miniserver abreißen
 ließe; die Knöpfe auf der Plugin-Seite führen es automatisch mit. Außerdem
 neu: `prerelease.cfg`, die bisher fehlte, obwohl `PRERELEASECFG` gesetzt war.
 
-## Datenschutz
+## Fassung 1.1.1 — aufgeräumt
 
-Es sind **keine persönlichen Daten** im Plugin enthalten. Alle Einstellungen
-liegen lokal (`config/plugins/spotpreis/spot.json`). Externe Verbindungen gibt
-es ausschließlich zur öffentlichen aWATTar-Preis-API (ohne Kennung).
+### Der Cron-Lauf lag im unangemeldeten Web-Verzeichnis
 
-## Fassung 1.2.17 — der Stat-Zwischenspeicher
-Die Protokollkappung (512 000 Byte) stand in
-`webfrontend/html/spot_lib.php:451`. PHP merkt sich aber die Antworten von
-`stat()`: innerhalb **eines** Prozesses sieht `filesize()` die erste Größe
-und danach nie wieder eine neue — `file_put_contents(…, FILE_APPEND)` macht
-den Eintrag nicht ungültig. Die Kappung fällt dann still aus.
+`cron.php` stand unter `webfrontend/html/`. LoxBerry veröffentlicht diesen
+Ordner als `/plugins/<ordner>/` **ohne Anmeldung** — jeder im Netz konnte
 
-Gemessen am 29.08.2026, 20 000 Zeilen im selben Prozess:
+    http://<loxberry>/plugins/spotpreis/cron.php
 
-| | ohne `clearstatcache` | mit |
-|---|---|---|
-| PHP 7.4.33 | 1 220 000 Byte, **nicht gekappt** | 220 332 Byte, gekappt |
-| PHP 8.4.24 | 220 332 Byte, gekappt | 220 332 Byte, gekappt |
+aufrufen und damit den Minutenlauf auslösen: Sprachansage, Pushnachricht,
+MQTT-Veröffentlichung und, wenn eingeschaltet, `spot_marstek_control()` —
+ein HTTP-Aufruf an den Hausspeicher mit Ladeleistung und Laufzeit.
 
-Die beiden PHP-Fassungen verhalten sich also verschieden — und LoxBerry 3.x
-fährt 7.4. Wer nur unter 8.4 misst, sieht den Fehler nie. Folgen hatte das
-hier nicht: die Aufrufer sind kurzlebig, und ein **frischer** Prozess kappt
-richtig. Eine Funktion darf aber nicht davon abhängen, wer sie wie oft ruft.
+Ein Cron-Skript wird von der Kommandozeile gestartet, nicht vom Browser. Es
+liegt jetzt unter `bin/`, wo es über HTTP gar nicht erreichbar ist; `cron.01min`
+zeigt auf `REPLACELBPBINDIR` statt `REPLACELBPHTMLDIR`. Die Bibliothek
+`spot_lib.php` bleibt unter `webfrontend/html/`: sie wird auch vom
+Miniserver-Endpunkt und von der Oberfläche gebraucht, definiert aber nur
+Funktionen — ein Aufruf über HTTP liefert nichts.
 
-Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
-beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
-Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
-länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
+### Reste eines automatischen Übersetzungslaufs
+
+- **Drei Kommentare** gingen durch `spot_t()`. In einem war sogar ein Wort
+  zerschnitten: `spot_t('TEXT.EINHEIT') . 'liches'` für „Einheitliches" — auf
+  Englisch wäre daraus „Unitliches" geworden. Kommentare sind für den
+  Entwickler, nicht für den Anwender; sie stehen wieder als Klartext da.
+- **Fünf Schlüssel waren angelegt, aber nirgends angeschlossen**
+  (`GNSTIG`, `SAUBER`, `BRSENPREIS_NEGATIV`, `FESTER_TARIF_IST_GNSTIGER_UM`,
+  `DEN_GEPFLEGTEN_MONATSMENGEN`). Sie gehören zu Texten, die in PHP-Ternären
+  stehen — die der automatische Lauf nicht erwischt hat. Sie sind jetzt
+  angeschlossen, nicht gelöscht.
+- **Rund 50 weitere sichtbare Texte** hatten noch gar keinen Schlüssel:
+  Monatsnamen, Spaltenköpfe der Baustein-Tabellen, die Sätze des
+  Kostenvergleichs, die Achsenbeschriftung des Diagramms und die Meldungen
+  nach einem Abruf.
+
+Beide Sprachdateien hatten **mit 1.2.11 619 Schlüssel und waren
+deckungsgleich**; jeder wurde benutzt, keiner fehlte, die Zahl der
+`%s`-Platzhalter stimmte in beiden Sprachen überein. *(Die Zahl ist die von
+damals. Heute sind es 893 — sie steht hier, weil dieses Kapitel eine
+Fassung beschreibt, nicht den heutigen Stand.)*
+
+Nur `ALLGEMEIN.JA`, `.NEIN` und `.SPEICHERN` waren tatsächlich tot und sind
+entfernt. `REITER.MQTT` wurde damals mit entfernt, weil der Reiter in 1.1.1
+kurzzeitig fehlte — er ist seither zurück, und der Schlüssel mit ihm.
+
+### Weiteres
+
+- **`uninstall/uninstall` fehlte.** Beim Deinstallieren blieben
+  `config/plugins/<ordner>.backup.json` (die Sicherung der Tarifeinstellungen,
+  bewusst *neben* dem Konfigordner) und `/tmp/spotpreis` liegen. Im MQTT-Broker
+  bleibt nichts stehen — das Plugin sendet mit `publish`, nicht mit `retain`.
+- **Die Reiter waren `<div>`, keine Verweise**, und den Reiterwunsch nahm die
+  Seite nur per POST an. Alle Flächen stehen bis zum Lauf des JavaScripts auf
+  `display:none` — ohne JavaScript war die Seite leer, und auf einen Reiter
+  verlinken ging nicht. Jetzt echte Links mit `?tab=…`, und der Server setzt
+  `sm-active` an Reiter und Fläche.
+
+Bewusst **nicht** übersetzt: die 41 Loxone-Feldnamen (`Prio`, `MinSoc`, `ANN`),
+die Protokolleinträge und die Voreinstellung `Wärmepumpe` — letztere ist ein
+gespeicherter, vom Anwender änderbarer Wert, kein Oberflächentext.
 
 ## Lizenz
 

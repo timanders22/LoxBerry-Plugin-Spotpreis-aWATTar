@@ -7,7 +7,15 @@
  * Datei. Die Sperre ist nicht blockierend - wer nicht drankommt, geht
  * kommentarlos wieder (der naechste Takt kommt ohnehin gleich).
  */
-$spot_sperrdatei = sys_get_temp_dir() . '/spot_cron.lock';
+/* Die Sperrdatei traegt den ORDNERNAMEN dieser Installation. Bis 1.2.19
+ * hiess sie fest 'spot_cron.lock'; zwei Installationen desselben Plugins
+ * sperrten sich damit gegenseitig aus, und je Minute lief nur eine von
+ * beiden - lautlos, denn wer nicht drankommt, geht kommentarlos. REGELN_2.
+ *
+ * basename(__DIR__) ist der bin-Ordner des Plugins, also der Pluginordner
+ * selbst. Die Bibliothek steht hier noch nicht bereit; spot_paths() ist
+ * deshalb keine Wahl. */
+$spot_sperrdatei = sys_get_temp_dir() . '/' . basename(dirname(__DIR__)) . '_cron.lock';
 $spot_sperre = @fopen($spot_sperrdatei, 'c');
 if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
     exit(0);
@@ -129,9 +137,27 @@ if ((int) date('j') === 1 && (int) date('G') >= 8) {
 
 // ann und ptest gehoeren in die Signatur: sie wechseln minutengenau, und ohne sie
 // wuerde das Meldefenster erst beim naechsten Stundenschlag veroeffentlicht.
+/* DIE SCHALTREGELN GEHOEREN IN DIE SIGNATUR. Sie entscheidet, ob der volle
+ * Satz veroeffentlicht wird. Bis 1.2.19 stand sie nicht darin: schaltete
+ * eine Regel um, ohne dass sich Preis, Rang oder Niveau aenderten - Ende
+ * eines laufenden Blocks mitten in der Stunde, Hysterese, Verdraengung
+ * durch das Budget, eine Sperre durch PV-Prognose oder Speicherstand -,
+ * blieb die Veroeffentlichung aus. Loxone erfuhr davon erst beim naechsten
+ * Ruhefunk, also nach bis zu 1800 Sekunden.
+ *
+ * Aufgenommen wird nur, WAS SCHALTET: aktiv, Sperre und die verplante
+ * Leistung. Die Restlaufzeit gehoert NICHT hinein - sie zaehlt jede Minute
+ * herunter, und dann waere die Signatur immer verschieden und der
+ * Vergleich sinnlos. */
+$sig_regeln = array();
+foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $sig_r) {
+    $sig_regeln[] = (int) $sig_r['aktiv']
+        . ':' . (isset($sig_r['gesperrt']) ? (string) $sig_r['gesperrt'] : '');
+}
 $sig = json_encode(array($st['cur'], $st['rank'], $st['level'], $st['tomorrow_ok'],
                          $st['heute']['avg'], $st['morgen']['avg'], $st['fenster'], $st['co2'],
-                         spot_ann_active($st), spot_ptest_active()));
+                         spot_ann_active($st), spot_ptest_active(),
+                         $sig_regeln, isset($st['planlast']) ? $st['planlast'] : 0.0));
 $sigf = spot_tmpdir() . '/mqtt_sig.txt';
 $beat = spot_tmpdir() . '/mqtt_beat';
 $old = is_file($sigf) ? (string) file_get_contents($sigf) : '';

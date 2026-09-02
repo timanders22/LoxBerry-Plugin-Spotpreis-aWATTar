@@ -5,12 +5,23 @@
 #
 # Zum Sicherungsort und zur Bedeutung der Argumente siehe preupgrade.sh.
 #
-# Anmerkung zur Notwendigkeit: dieses Plugin liefert KEINEN config-Ordner
-# mit, der Installer kann die spot.json also gar nicht ueberschreiben, und
-# LoxBerry loescht config/plugins/<ordner> beim Upgrade nicht. Die Sicherung
-# ist damit ein zweiter Boden, kein tragendes Teil - sie bleibt trotzdem,
-# weil sie nichts kostet und der Tag kommt, an dem doch eine Vorlage
-# mitgeliefert wird.
+# ZUR NOTWENDIGKEIT - hier stand bis 1.2.19 das GEGENTEIL:
+#
+#   "LoxBerry loescht config/plugins/<ordner> beim Upgrade nicht. Die
+#    Sicherung ist damit ein zweiter Boden, kein tragendes Teil."
+#
+# Das ist falsch, und es steht im selben Ordner nachgemessen daneben: der
+# Kommentar in preupgrade.sh nennt purge_installation ausdruecklich, weil
+# genau dieses Verzeichnis vor postupgrade abgeraeumt wird. In
+# sbin/plugininstall.pl (Zweig master, 21.08.2026) steht der Aufruf im
+# UPGRADE-Zweig (:886), und sein Rumpf loescht config/plugins/<ordner>/ und
+# data/plugins/<ordner>/ mit rm -rf, ohne Pruefung auf $option eq "all"
+# (:1629 ff.). Erst danach legt der Installer die Ordner neu an (:916).
+#
+# Beim Upgrade ueberlebt in config/ und data/ also NICHTS. Diese Sicherung
+# ist das tragende Teil, nicht der zweite Boden. Der zweite Boden ist die
+# Sicherungskopie neben dem Konfigordner, die weiter unten gelesen wird -
+# sie liegt NEBEN dem Verzeichnis und wird deshalb nicht mitgeloescht.
 
 ARGV1=$1
 ARGV3=$3

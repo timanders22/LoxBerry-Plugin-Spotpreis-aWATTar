@@ -59,6 +59,12 @@ $sp_note = '';
  * ausgegeben. Eine einzelne Zuweisung verschluckt die vorherigen, und der
  * Benutzer korrigiert dann einen Fehler nach dem anderen. */
 $sp_fehler = array();
+/* Wird gesetzt, wenn eine Beanstandung das Speichern verhindert hat - und
+ * unten auch AUSGEGEBEN. Bis 1.2.19 stand diese Variable genau einmal in
+ * der Datei, naemlich in ihrer Zuweisung: der Anwender las die
+ * Beanstandung, erfuhr aber nicht, dass darueber auch seine uebrigen
+ * Eingaben liegengeblieben sind. */
+$sp_nichts_gespeichert = false;
 /* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
  * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
 $sp_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
@@ -150,7 +156,10 @@ if ($sp_ist_post && isset($_POST['vorlage']) && function_exists('spot_vorlage'))
 // ---------- Protokoll leeren ----------
 if ($sp_ist_post && isset($_POST['clearlog'])) {
     @mkdir(dirname($sp_logfile), 0775, true);
-    @file_put_contents($sp_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n");
+    // Der Satz kommt aus der Sprachdatei - bis 1.2.19 stand er fest auf
+    // Deutsch im Quelltext.
+    @file_put_contents($sp_logfile, '[' . date('Y-m-d H:i:s') . '] '
+        . spot_t('TEXT.LOG_GELEERT') . "\n");
     $sp_tab = 'tab-log';
 }
 
@@ -206,18 +215,44 @@ if ($sp_ist_post && isset($_POST['save'])) {
         $vorg = function_exists('spot_vorgaben') ? spot_vorgaben() : array();
         return isset($vorg[$k]) ? (float) $vorg[$k] : (float) $def;
     }
+    /* ---- Kappen UND SAGEN ----
+     *
+     * Bis 1.2.19 wurde still geklemmt: wer 500 kW Leistung eintrug, bekam
+     * 100 gespeichert, und das Formular zeigte danach 100. Wer nicht genau
+     * hinsah, hielt seine Eingabe fuer uebernommen.
+     *
+     * Gekappt wird WEITERHIN. Abweisen waere hier falsch - dann verhinderte
+     * ein einzelner Zahlendreher das Speichern aller uebrigen Felder, und
+     * das ist genau die Regel, die eine Zeile weiter unten gilt. Deshalb
+     * ein HINWEIS, keine Beanstandung: gespeichert wird, und der Anwender
+     * erfaehrt, was mit seiner Zahl geschehen ist.
+     *
+     * Der Vergleich laeuft ueber (float): '20' und 20.0 sollen nicht als
+     * Unterschied gelten. */
+    $sp_geklemmt = array();
+    $sp_k = function ($wert, $min, $max, $bez) use (&$sp_geklemmt) {
+        $neu = max($min, min($max, $wert));
+        if ((float) $neu !== (float) $wert) {
+            $sp_geklemmt[] = sprintf(spot_t('TEXT.GEKLEMMT'), $bez,
+                rtrim(rtrim(sprintf('%.3f', (float) $wert), '0'), '.'),
+                rtrim(rtrim(sprintf('%.3f', (float) $min), '0'), '.'),
+                rtrim(rtrim(sprintf('%.3f', (float) $max), '0'), '.'),
+                rtrim(rtrim(sprintf('%.3f', (float) $neu), '0'), '.'));
+        }
+        return $neu;
+    };
     $sp_new = array();
     $sp_new['market'] = (isset($_POST['market']) && $_POST['market'] === 'at') ? 'at' : 'de';
-    $sp_new['netz'] = max(0, min(50, sp_f('netz', 6.47)));
-    $sp_new['steuer'] = max(0, min(20, sp_f('steuer', 2.05)));
-    $sp_new['konzession'] = max(0, min(20, sp_f('konzession', 2.39)));
-    $sp_new['umlagen'] = max(0, min(20, sp_f('umlagen', 2.945)));
-    $sp_new['aufschlag'] = max(-10, min(30, sp_f('aufschlag', 0.0)));
-    $sp_new['grundpreis'] = max(0, min(100, sp_f('grundpreis', 5.27)));
-    $sp_new['vat'] = max(0, min(30, sp_f('vat', 19.0)));
-    $sp_new['cheap'] = max(0, min(200, sp_f('cheap', 20.0)));
-    $sp_new['expensive'] = max(0, min(400, sp_f('expensive', 35.0)));
-    $sp_new['window'] = max(1, min(12, (int) (isset($_POST['window']) ? $_POST['window'] : 3)));
+    $sp_new['netz'] = $sp_k(sp_f('netz', 6.47), 0, 50, 'netz');
+    $sp_new['steuer'] = $sp_k(sp_f('steuer', 2.05), 0, 20, 'steuer');
+    $sp_new['konzession'] = $sp_k(sp_f('konzession', 2.39), 0, 20, 'konzession');
+    $sp_new['umlagen'] = $sp_k(sp_f('umlagen', 2.945), 0, 20, 'umlagen');
+    $sp_new['aufschlag'] = $sp_k(sp_f('aufschlag', 0.0), -10, 30, 'aufschlag');
+    $sp_new['grundpreis'] = $sp_k(sp_f('grundpreis', 5.27), 0, 100, 'grundpreis');
+    $sp_new['vat'] = $sp_k(sp_f('vat', 19.0), 0, 30, 'vat');
+    $sp_new['cheap'] = $sp_k(sp_f('cheap', 20.0), 0, 200, 'cheap');
+    $sp_new['expensive'] = $sp_k(sp_f('expensive', 35.0), 0, 400, 'expensive');
+    $sp_new['window'] = (int) $sp_k((int) (isset($_POST['window']) ? $_POST['window'] : 3), 1, 12, 'window');
     $sp_pm = (string) (isset($_POST['profil_ein']) ? $_POST['profil_ein'] : 'absolut');
     $sp_new['profil_ein'] = in_array($sp_pm, array('aus', 'absolut', 'relativ', 'beides'), true) ? $sp_pm : 'absolut';
     // ---- Schaltregeln ----
@@ -234,23 +269,23 @@ if ($sp_ist_post && isset($_POST['save'])) {
             // Steuerzeichen und Anfuehrungszeichen raus, nicht hart filtern.
             'name' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $sp_g('r_name'))),
             'art' => in_array($sp_art, array('fenster', 'stunden', 'schwelle', 'mittel'), true) ? $sp_art : 'fenster',
-            'n' => max(1, min(12, (int) $sp_g('r_n', 3))),
+            'n' => (int) $sp_k((int) $sp_g('r_n', 3), 1, 12, 'Regel ' . ($sp_i + 1) . ': n'),
             'von' => max(0, min(23, (int) $sp_g('r_von', 0))),
             'bis' => max(0, min(23, (int) $sp_g('r_bis', 0))),
-            'horizont' => max(1, min(48, (int) $sp_g('r_horizont', 24))),
-            'schwelle' => max(-100, min(200, (float) str_replace(',', '.', (string) $sp_g('r_schwelle', 20)))),
-            'prozent' => max(0, min(90, (int) $sp_g('r_prozent', 20))),
+            'horizont' => (int) $sp_k((int) $sp_g('r_horizont', 24), 1, 48, 'Regel ' . ($sp_i + 1) . ': horizont'),
+            'schwelle' => $sp_k((float) str_replace(',', '.', (string) $sp_g('r_schwelle', 20)), -100, 200, 'Regel ' . ($sp_i + 1) . ': schwelle'),
+            'prozent' => (int) $sp_k((int) $sp_g('r_prozent', 20), 0, 90, 'Regel ' . ($sp_i + 1) . ': prozent'),
             'neg' => (int) $sp_g('r_neg', 0) ? 1 : 0,
             // ---- Fahrplaner ----
-            'rang' => max(1, min(99, (int) $sp_g('r_rang', 50))),
-            'leistung' => max(0, min(100, (float) str_replace(',', '.', (string) $sp_g('r_leistung', 0)))),
-            'energie' => max(0, min(500, (float) str_replace(',', '.', (string) $sp_g('r_energie', 0)))),
+            'rang' => (int) $sp_k((int) $sp_g('r_rang', 50), 1, 99, 'Regel ' . ($sp_i + 1) . ': rang'),
+            'leistung' => $sp_k((float) str_replace(',', '.', (string) $sp_g('r_leistung', 0)), 0, 100, 'Regel ' . ($sp_i + 1) . ': leistung'),
+            'energie' => $sp_k((float) str_replace(',', '.', (string) $sp_g('r_energie', 0)), 0, 500, 'Regel ' . ($sp_i + 1) . ': energie'),
             // -1 heisst "keine Frist". Das Auswahlfeld liefert -1 als Text.
             'frist' => (in_array((string) $sp_g('r_frist', '-1'), $sp_stunden_wahl, true))
                        ? (int) $sp_g('r_frist', -1) : -1,
-            'pv_sperre' => max(0, min(500, (float) str_replace(',', '.', (string) $sp_g('r_pv_sperre', 0)))),
-            'soc_min' => max(0, min(100, (int) $sp_g('r_soc_min', 0))),
-            'soc_max' => max(0, min(100, (int) $sp_g('r_soc_max', 0))),
+            'pv_sperre' => $sp_k((float) str_replace(',', '.', (string) $sp_g('r_pv_sperre', 0)), 0, 500, 'Regel ' . ($sp_i + 1) . ': pv_sperre'),
+            'soc_min' => (int) $sp_k((int) $sp_g('r_soc_min', 0), 0, 100, 'Regel ' . ($sp_i + 1) . ': soc_min'),
+            'soc_max' => (int) $sp_k((int) $sp_g('r_soc_max', 0), 0, 100, 'Regel ' . ($sp_i + 1) . ': soc_max'),
             // Taktschutz (planer.php 1.1.0), beide in Minuten, 0 = aus
             'min_lauf' => max(0, min(720, (int) $sp_g('r_min_lauf', 0))),
             'min_pause' => max(0, min(720, (int) $sp_g('r_min_pause', 0))),
@@ -275,19 +310,24 @@ if ($sp_ist_post && isset($_POST['save'])) {
         if ($sp_rr['aktiv'] && $sp_rr['energie'] > 0 && $sp_rr['leistung'] <= 0) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $sp_i + 1);
         }
-        if ($sp_rr['soc_min'] > 0 && $sp_rr['soc_max'] > 0
+        /* MIT der Frage nach 'aktiv', wie die beiden Pruefungen darueber.
+         * Bis 1.2.19 fehlte sie hier: eine ABGESCHALTETE Regel mit
+         * vertauschten Speichergrenzen verhinderte das Speichern aller
+         * uebrigen Felder, und die Meldung sprach von einer Regel, die gar
+         * nicht laeuft. */
+        if ($sp_rr['aktiv'] && $sp_rr['soc_min'] > 0 && $sp_rr['soc_max'] > 0
             && $sp_rr['soc_min'] >= $sp_rr['soc_max']) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_SOC_REIHE'), $sp_i + 1);
         }
     }
     // ---- Fahrplaner, global ----
-    $sp_new['budget_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0))));
-    $sp_new['pv_bonus'] = max(0, min(100, (float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0))));
+    $sp_new['budget_kw'] = $sp_k((float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0)), 0, 200, 'budget_kw');
+    $sp_new['pv_bonus'] = $sp_k((float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0)), 0, 100, 'pv_bonus');
     $sp_new['pv_schwelle'] = max(1, min(100000, (int) (isset($_POST['pv_schwelle']) ? $_POST['pv_schwelle'] : 500)));
     /* Zweites, zeitlich begrenztes Budget (Paragraf 14a) und die Hysterese.
      * Dieselben Schranken wie in spot_config() - stuenden hier andere
      * Zahlen, gaebe es zwei Wahrheiten. */
-    $sp_new['budget2_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget2_kw']) ? $_POST['budget2_kw'] : 0))));
+    $sp_new['budget2_kw'] = $sp_k((float) str_replace(',', '.', (string) (isset($_POST['budget2_kw']) ? $_POST['budget2_kw'] : 0)), 0, 200, 'budget2_kw');
     $sp_new['budget2_von'] = max(0, min(23, (int) (isset($_POST['budget2_von']) ? $_POST['budget2_von'] : 0)));
     $sp_new['budget2_bis'] = max(0, min(23, (int) (isset($_POST['budget2_bis']) ? $_POST['budget2_bis'] : 0)));
     $sp_new['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
@@ -620,8 +660,19 @@ $sp_addon = (float) $sp_cfg['netz'] + (float) $sp_cfg['steuer'] + (float) $sp_cf
  * Wer einen Zweig ergaenzt, schreibt seine Beanstandungen nach
  * $sp_fehler[] und muss sich um die Ausgabe nicht mehr kuemmern.
  * ================================================================== */
+/* Geklemmte Werte als HINWEIS. Sie stehen VOR den Beanstandungen, weil sie
+ * etwas anderes sagen: hier wurde gespeichert, nur eben nicht das
+ * Eingetippte. */
+if (!empty($sp_geklemmt)) {
+    $sp_note = ($sp_note !== '' ? $sp_note . ' | ' : '') . implode(' | ', $sp_geklemmt);
+}
 if ($sp_fehler) {
     $sp_err = ($sp_err !== '' ? $sp_err . ' | ' : '') . implode(' | ', $sp_fehler);
+    /* Der Satz gehoert HINTER die Beanstandungen: erst wird gesagt, was
+     * beanstandet ist, dann die Folge daraus. */
+    if ($sp_nichts_gespeichert) {
+        $sp_err .= ' | ' . spot_t('TEXT.NICHTS_GESPEICHERT');
+    }
 }
 /* Der Wachposten hat abgewiesen. Das ist KEIN Bedienfehler des Anwenders -
  * die haeufigste Ursache ist eine Seite, die zu lange offen stand. Der Text
@@ -664,6 +715,12 @@ if ($sp_frame) {
 .sm-tbl { border-collapse: collapse; margin: 8px 0; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
 .sm-tbl th { background: #f0f0f0; }
+/* Breite Tabellen rollen SELBST, statt die Seite nach rechts zu schieben.
+   Wortgleich aus VORLAGE_hausstandard.css.html. Bis 1.2.19 fehlte die
+   Klasse hier ganz - und mit ihr der Rollbereich um die drei Tabellen mit
+   acht, acht und sieben Spalten. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-hours { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .sm-hours label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 5px 9px; margin: 0; font-weight: 500; font-size: 0.85em; width: 95px; box-sizing: border-box; }
 .sm-hours label:hover { background: #eef7e4; border-color: #6dac20; }
@@ -809,8 +866,8 @@ foreach ($sp_reiter_ids as $sp_i) {
     <div>
         <label><?php echo spot_t('TEXT.PREISZONE_API'); ?></label>
         <select data-role="none" name="market" id="market" onchange="spMarket()">
-            <option value="de"<?= $sp_cfg['market'] === 'de' ? ' selected' : '' ?><?php echo spot_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE'); ?></option>
-            <option value="at"<?= $sp_cfg['market'] === 'at' ? ' selected' : '' ?><?php echo spot_t('TEXT.OUML_STERREICH_API_AWATTAR_AT'); ?></option>
+            <option value="de"<?= $sp_cfg['market'] === 'de' ? ' selected' : '' ?>><?php echo spot_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE'); ?></option>
+            <option value="at"<?= $sp_cfg['market'] === 'at' ? ' selected' : '' ?>><?php echo spot_t('TEXT.OUML_STERREICH_API_AWATTAR_AT'); ?></option>
         </select>
         <div class="sm-small"><?php echo spot_t('TEXT.QUELLE_OFFENE_AWATTAR_API_EPEX_SPO'); ?></div>
     </div>
@@ -871,7 +928,7 @@ foreach ($sp_reiter_ids as $sp_i) {
 
 <h2><?php echo spot_t('TEXT.ZWEITER_PREISSATZ_STEUERBARE_VERBR'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="wp_enabled" <?= !empty($sp_cfg['wp_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.ZWEITEN_PREISSATZ_BERECHNEN_UND_AU'); ?>
+    <input data-role="none" type="checkbox" name="wp_enabled" <?= !empty($sp_cfg['wp_enabled']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.ZWEITEN_PREISSATZ_BERECHNEN_UND_AU'); ?>
 </label>
 <div class="sm-small"><?php echo spot_t('TEXT.FR_WRMEPUMPE_ODER_WALLBOX_MIT'); ?> <b><?php echo spot_t('TEXT.EIGENEM_ZHLPUNKT'); ?></b> <?php echo spot_t('TEXT.NACH_14A_ENWG_MODUL_1_REDUZIERTES_'); ?><span class="sm-mono"><?php echo spot_t('TEXT.WPCUR'); ?></span>/<span class="sm-mono"><?php echo spot_t('TEXT.WPNEXT'); ?></span><?php echo spot_t('TEXT.IDEAL_UM_WRMEPUMPE_UND_HAUSHALT_GE'); ?></div>
 <div class="sm-row" style="margin-top:6px;">
@@ -893,7 +950,7 @@ foreach ($sp_reiter_ids as $sp_i) {
 
 <h2><?php echo spot_t('TEXT.CO_8322_INTENSITT_DES_STROMMIXES'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="co2_enabled" <?= !empty($sp_cfg['co2_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.CO_8322_WERTE_ABRUFEN_FRAUNHOFER_I'); ?>
+    <input data-role="none" type="checkbox" name="co2_enabled" <?= !empty($sp_cfg['co2_enabled']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.CO_8322_WERTE_ABRUFEN_FRAUNHOFER_I'); ?>
 </label>
 <div class="sm-row" style="margin-top:6px;">
     <div>
@@ -969,7 +1026,7 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
 
 <h2><?php echo spot_t('TEXT.KOPPLUNG_MIT_DEM_MARSTEK_SPEICHER_'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="marstek_enabled" <?= !empty($sp_cfg['marstek_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.SPEICHER_IN_DEN_GNSTIGSTEN_STUNDEN'); ?>
+    <input data-role="none" type="checkbox" name="marstek_enabled" <?= !empty($sp_cfg['marstek_enabled']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.SPEICHER_IN_DEN_GNSTIGSTEN_STUNDEN'); ?>
 </label>
 <div class="sm-alert sm-info" style="margin-top:6px;"><?php echo spot_t('TEXT.NUR_EINSCHALTEN_WENN_DIE_RANG_LOGI'); ?> <b><?php echo spot_t('TEXT.NICHT'); ?></b> <?php echo spot_t('TEXT.IN_LOXONE_GEBAUT_IST_SONST_BERSCHR'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.RANK'); ?></span> <?php echo spot_t('TEXT.AUS_SCHRITT_2'); ?></div>
 <div class="sm-row" style="margin-top:6px;">
@@ -989,7 +1046,7 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <div>
         <label style="min-height:2.6em;display:flex;align-items:flex-end;"><?php echo spot_t('TEXT.TEXT_3'); ?></label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
-            <input data-role="none" type="checkbox" name="marstek_neg" <?= !empty($sp_cfg['marstek_neg']) ? 'checked' : '' ?><?php echo spot_t('TEXT.BEI_NEGATIVEM_PREIS_IMMER_LADEN'); ?>
+            <input data-role="none" type="checkbox" name="marstek_neg" <?= !empty($sp_cfg['marstek_neg']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.BEI_NEGATIVEM_PREIS_IMMER_LADEN'); ?>
         </label>
     </div>
 </div>
@@ -1311,10 +1368,10 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <h2><?php echo spot_t('TEXT.ANSAGE_UND_PUSH_JE_STUNDE'); ?></h2>
 <div style="margin-bottom:6px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($sp_notify['audio']) ? 'checked' : '' ?><?php echo spot_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
+        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($sp_notify['audio']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($sp_notify['push']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
+        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($sp_notify['push']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
     </label>
     <div class="sm-small"><?php echo spot_t('TEXT.BEIDES_AN_ANSAGE_PUSH_NUR_EINES_AN'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.ANN_1'); ?></span> <?php echo spot_t('TEXT.ANLEITUNG_SCHRITT_4'); ?></div>
 </div>
@@ -1325,19 +1382,19 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <?php } ?>
 </div>
 <div style="margin-top:6px;">
-    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(1)"><?php echo spot_t('TEXT.ALLE'); ?></button>
-    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(0)"><?php echo spot_t('TEXT.KEINE'); ?></button>
-    <button data-role="none" type="button" class="sm-btn" style="margin-top:4px;padding:6px 14px;font-size:0.85em;background:#607d8b;" onclick="spHours(2)"><?php echo spot_t('TEXT.NUR_TAGSBER_721'); ?></button>
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(1)"><?php echo spot_t('TEXT.ALLE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(0)"><?php echo spot_t('TEXT.KEINE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(2)"><?php echo spot_t('TEXT.NUR_TAGSBER_721'); ?></button>
 </div>
 <div style="margin-top:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="only_cheap" <?= !empty($sp_notify['only_cheap']) ? 'checked' : '' ?><?php echo spot_t('TEXT.NUR_MELDEN_WENN_DER_PREIS_UNTER_DE'); ?>
+        <input data-role="none" type="checkbox" name="only_cheap" <?= !empty($sp_notify['only_cheap']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.NUR_MELDEN_WENN_DER_PREIS_UNTER_DE'); ?>
     </label><br>
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="neg_always" <?= !empty($sp_notify['negative']) ? 'checked' : '' ?><?php echo spot_t('TEXT.BEI_NEGATIVEM_BRSENPREIS_IMMER_MEL'); ?>
+        <input data-role="none" type="checkbox" name="neg_always" <?= !empty($sp_notify['negative']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.BEI_NEGATIVEM_BRSENPREIS_IMMER_MEL'); ?>
     </label><br>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_tomorrow" <?= !empty($sp_notify['tomorrow']) ? 'checked' : '' ?><?php echo spot_t('TEXT.EINMAL_TGLICH_MELDEN_SOBALD_DIE_PR'); ?>
+        <input data-role="none" type="checkbox" name="notify_tomorrow" <?= !empty($sp_notify['tomorrow']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.EINMAL_TGLICH_MELDEN_SOBALD_DIE_PR'); ?>
     </label>
 </div>
 
@@ -1346,10 +1403,10 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
     <div>
         <label><?php echo spot_t('TEXT.AUDIO_AUSGABE'); ?></label>
         <select data-role="none" name="tts_mode" id="tts_mode" onchange="spTtsMode()">
-            <option value="musicserver"<?= $sp_tts['mode'] === 'musicserver' ? ' selected' : '' ?><?php echo spot_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
-            <option value="ms4h"<?= $sp_tts['mode'] === 'ms4h' ? ' selected' : '' ?><?php echo spot_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
-            <option value="audioserver"<?= $sp_tts['mode'] === 'audioserver' ? ' selected' : '' ?><?php echo spot_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
-            <option value="custom"<?= $sp_tts['mode'] === 'custom' ? ' selected' : '' ?><?php echo spot_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
+            <option value="musicserver"<?= $sp_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?php echo spot_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
+            <option value="ms4h"<?= $sp_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?php echo spot_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
+            <option value="audioserver"<?= $sp_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?php echo spot_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
+            <option value="custom"<?= $sp_tts['mode'] === 'custom' ? ' selected' : '' ?>><?php echo spot_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
         </select>
     </div>
     <div>
@@ -1386,13 +1443,13 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
     <span class="sm-mono">ANN=1</span> (<?php echo spot_t('TEXT.ANLEITUNG_SCHRITT4'); ?>).
 </div>
 
-<button data-role="none" class="sm-btn" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
 <form action="index.php" method="post" style="margin-top:8px;">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <?php echo spot_fmt(); ?>
-    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" style="margin-top:0;"><?php echo spot_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
 
 <?php /* ===== Einstellungen sichern und zurueckspielen =====
@@ -1406,6 +1463,7 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <div class="sm-warnung"><?= spot_t('TEXT.SICH_WARNUNG') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
 </div>
 <div class="sm-knopfreihe">
@@ -1439,8 +1497,12 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 /* Autostart und Fassung kommen aus EINER Funktion in der Bibliothek.
  *
  * Bis 1.2.12 stand hier eine eigene, inline definierte spot_hs_autostart()
- * mit einem fest verdrahteten Rueckfall auf /opt/loxberry - ein harter
- * Systempfad in einer Oberflaeche, die den Wurzelordner ohnehin kennt.
+ * mit einem fest verdrahteten Rueckfall auf den Standard-Wurzelordner -
+ * ein harter Systempfad in einer Oberflaeche, die den Wurzelordner ohnehin
+ * kennt. (Der Pfad stand hier bis 1.2.19 woertlich. Er ist laengst
+ * ausgebaut, aber harte_pfade.py meldete ihn bei jedem Lauf, und ein
+ * Pruefer, der immer denselben Fehlalarm liefert, wird nicht mehr
+ * gelesen.)
  * Und sie las nur den Autostart; die FASSUNG des Gateways, die darueber
  * entscheidet, was der Anwender ueberhaupt tun muss, hat sie ignoriert.
  * Beides liest spot_mqtt_gateway_info() aus demselben Block - also ohne
@@ -1454,7 +1516,7 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
           ? (string) (int) $sp_gw_mq['fassung'] : spot_t('LOX.ABO_FASSUNG_UNBEKANNT')) ?>
 <?php echo spot_t('LOX.ABO_VERWEIS'); ?></div>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
 <div class="sm-row" style="margin-top:6px;">
     <div>
@@ -1480,7 +1542,10 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
     </div>
 </div>
 
-<button data-role="none" class="sm-btn" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
+</div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
 </div>
 
@@ -1518,7 +1583,10 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <?php echo spot_fmt(); ?>
   <input data-role="none" type="hidden" name="vorlage" value="1">
-  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo spot_t('REGEL.K_VORLAGE'); ?></button>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
+</div>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?php echo spot_t('REGEL.K_VORLAGE'); ?></button>
 </form>
 
 <h2><?php echo spot_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
@@ -1563,8 +1631,8 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IFIX_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IDYNM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.EIGENER_FESTPREIS_DYNAMISCHER_MONA'); ?></td><td>ct/kWh</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IDIFFM_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IEUROM_I_V'); ?></span></td><td><?php echo spot_t('TEXT.VORTEIL_DYNAMISCH_POSITIV_BZW_FEST'); ?></td><td><?php echo spot_t('TEXT.CT_KWH_EUR'); ?></td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ISHIFTJ_I_V'); ?></span></td><td><?php echo spot_t('TEXT.ERSPARNIS_POTENZIAL_PRO_JAHR_DURCH'); ?></td><td>EUR</td></tr>
-<tr><td><span class="sm-mono">\iTS=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_TS'); ?></td><td>s</td></tr>
-<tr><td><span class="sm-mono">\iLAUF=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_LAUF'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono">\i;TS=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_TS'); ?></td><td>s</td></tr>
+<tr><td><span class="sm-mono">\i;LAUF=\i\v</span></td><td><?php echo spot_t('LEBEN.Z_LAUF'); ?></td><td>&mdash;</td></tr>
 </table>
 <div class="sm-warnung"><?php echo spot_t('LEBEN.ERKLAERUNG'); ?></div>
 <span class="sm-small"><?php echo spot_t('TEXT.ALLE_PREISE_SIND'); ?> <b><?php echo spot_t('TEXT.CT_KWH_ALS_ENDPREIS'); ?></b><?php echo spot_t('TEXT.WER_DIE_ALTEN_EUR_WERTE_GEWOHNT_IS'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span> <?php echo spot_t('TEXT.STELLEN'); ?></span>
@@ -1771,6 +1839,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <?php if (!$sp_zeiten) { ?>
 <div class="sm-hinweis"><?php echo spot_t('PLAN.FAHRPLAN_LEER'); ?></div>
 <?php } else { ?>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo spot_t('PLAN.T_ZEIT'); ?></th><th><?php echo spot_t('PLAN.T_PREIS'); ?></th>
 <?php foreach ($sp_aktiv as $sp_pz) { ?>
@@ -1792,12 +1861,14 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
     <td><?php echo $sp_kw > 0 ? sp_n($sp_kw, 2) . ' kW' : '&ndash;'; ?></td></tr>
 <?php } ?>
 </table>
+</div>
 <?php if ($sp_budget > 0) { ?>
 <p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_BUDGET'); ?></p>
 <?php } } ?>
 
 <h3 class="sm-h3"><?php echo spot_t('PLAN.H_UEBERSICHT'); ?></h3>
 <p class="sm-small"><?php echo spot_t('PLAN.UEBERSICHT_TEXT'); ?></p>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo spot_t('PLAN.U_REGEL'); ?></th><th><?php echo spot_t('PLAN.U_GRUND'); ?></th>
     <th><?php echo spot_t('PLAN.U_NOETIG'); ?></th><th><?php echo spot_t('PLAN.U_GEPLANT'); ?></th>
@@ -1915,6 +1986,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
       : sprintf(spot_t('TEXT.JAHRESVERBRAUCH_VERTEILT'), (int) $sp_cfg['consumption']) ?>
 <?php echo spot_t('TEXT.SPALTE_KWH'); ?> <?php echo spot_t('TEXT.TAGE'); ?>.
 <?php echo spot_t('TEXT.TABELLE_FUELLT_SICH'); ?></div>
+<div class="sm-breit">
 <table class="sm-tbl"><tr><th><?php echo spot_t('TEXT.MONAT'); ?></th><th><?php echo spot_t('TEXT.TAGE'); ?></th><th>kWh</th><th><?php echo spot_t('TEXT.DYNAMISCH_GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.DYNAMISCH_EINFACH'); ?></th><th><?php echo spot_t('TEXT.FEST'); ?></th><th><?php echo spot_t('TEXT.VORTEIL'); ?></th><th><?php echo spot_t('TEXT.EURO'); ?></th></tr>
 <?php foreach ($sp_mc as $sp_m) { ?>
 <tr><td><?= sp_e(substr($sp_m['monat'], 4, 2) . '/' . substr($sp_m['monat'], 0, 4)) ?></td>
@@ -1930,6 +2002,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <td style="color:<?= $sp_m['diff'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><b><?= ($sp_m['diff'] >= 0 ? '+' : '') . sp_n($sp_m['diff'], 2) ?> ct</b></td>
 <td style="color:<?= $sp_m['euro'] >= 0 ? '#2e7d32' : '#c62828' ?>;"><?= ($sp_m['euro'] >= 0 ? '+' : '') . sp_n($sp_m['euro'], 2) ?> <?php echo spot_t('TEXT.TEXT_6'); ?></td></tr>
 <?php } ?></table>
+</div>
 <div class="sm-small"><?php echo spot_t('TEXT.MENGE_AUS_DEM_JAHRESVERBRAUCH_ABGE'); ?></div>
 <?php } ?>
 <?php $sp_sh = function_exists('spot_shift_saving') ? spot_shift_saving(7) : array(); if (!empty($sp_sh['tage'])) { ?>
@@ -1941,6 +2014,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <?php } ?>
 <?php $sp_hist = function_exists('spot_history_read') ? spot_history_read(14) : array(); if ($sp_hist) { ?>
 <h2><?php echo spot_t('TEXT.TAGESWERTE_DER_LETZTEN_TAGE'); ?></h2>
+<div class="sm-breit">
 <table class="sm-tbl"><tr><th><?php echo spot_t('TEXT.TAG'); ?></th><th><?php echo spot_t('TEXT.SCHNITT'); ?></th><th><?php echo spot_t('TEXT.GEWICHTET'); ?></th><th><?php echo spot_t('TEXT.MINIMUM'); ?></th><th><?php echo spot_t('TEXT.MAXIMUM'); ?></th><th>CO&#8322;</th><th><?php echo spot_t('LAST.T_GEWICHTUNG'); ?></th></tr>
 <?php foreach (array_reverse($sp_hist) as $sp_r) { ?>
 <tr><td><?= sp_e(substr($sp_r[0], 6, 2) . '.' . substr($sp_r[0], 4, 2) . '.' . substr($sp_r[0], 0, 4)) ?></td>
@@ -1951,6 +2025,7 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
       ? '<b>' . sp_e(spot_t('LAST.T_GEMESSEN')) . '</b> (' . sp_n($sp_r[7], 1) . ' kWh)'
       : sp_e(spot_t('LAST.T_PROFIL')) ?></td></tr>
 <?php } ?></table>
+</div>
 <div class="sm-small"><?php echo spot_t('LAST.T_ERKLAERUNG'); ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
@@ -2016,7 +2091,10 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <?php echo spot_fmt(); ?>
-    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo spot_t('TEXT.LOG_LEEREN'); ?></button>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
+</div>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.LOG_LEEREN'); ?></button>
 </form>
 </div>
 
@@ -2044,20 +2122,35 @@ function spSum() {
     var box = document.getElementById('sp_msum');
     var jahr = document.getElementById('consumption');
     var hint = document.getElementById('consumption_hint');
+    /* Die Saetze kommen aus der Sprachdatei, nicht aus dem Skript. Bis
+     * 1.2.19 standen sie hier fest auf Deutsch - in einer Oberflaeche, die
+     * seit 1.1.2 zweisprachig ist. Auch die Zahlenformatierung: 'de-DE'
+     * schreibt 3.500, im Englischen sind es 3,500. */
     if (gepflegt) {
-        box.innerHTML = 'Summe der Monatswerte: <b>' + Math.round(sum).toLocaleString('de-DE') +
-            ' kWh</b> &mdash; dieser Wert wird beim Speichern als Jahresverbrauch &uuml;bernommen.';
+        box.innerHTML = spTxt.summe.replace('%s',
+            '<b>' + Math.round(sum).toLocaleString(spTxt.locale) + ' kWh</b>');
         jahr.value = Math.round(sum);
         jahr.readOnly = true;
         jahr.style.background = '#f0f0f0';
-        hint.innerHTML = 'Wird aus den Monatswerten unten berechnet.';
+        hint.innerHTML = spTxt.aus_monaten;
     } else {
-        box.innerHTML = 'Summe der Monatswerte: <b>noch keine Werte gepflegt</b>';
+        box.innerHTML = spTxt.summe_leer;
         jahr.readOnly = false;
         jahr.style.background = '';
-        hint.innerHTML = 'Wird verwendet, solange unten keine Monatswerte gepflegt sind.';
+        hint.innerHTML = spTxt.ohne_monate;
     }
 }
+/* Die Saetze des Skripts, aus der Sprachdatei. json_encode maskiert
+ * Anfuehrungszeichen und schliessende Skript-Marken selbst - eine
+ * Zeichenkette, die von Hand zusammengesetzt wird, tut das nicht. */
+var spTxt = <?= json_encode(array(
+    'summe'       => spot_t('TEXT.JS_SUMME'),
+    'summe_leer'  => spot_t('TEXT.JS_SUMME_LEER'),
+    'aus_monaten' => spot_t('TEXT.JS_AUS_MONATEN'),
+    'ohne_monate' => spot_t('TEXT.JS_OHNE_MONATE'),
+    'locale'      => spot_t('TEXT.JS_LOCALE'),
+), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+
 function spHours(mode) {
     document.querySelectorAll('input[name="hours[]"]').forEach(function (c) {
         var h = parseInt(c.value, 10);
@@ -2070,7 +2163,30 @@ function spHours(mode) {
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
         document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
-    tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
+    /* Der Klick wird ABGEFANGEN - sonst schaltet das Skript die Flaeche um
+     * UND der Anker laedt die Seite neu. Bis 1.2.19 war das so: jeder
+     * Reiterklick lud die ganze Seite und nahm jede nicht gespeicherte
+     * Eingabe mit.
+     *
+     * AUSSER BEIM REITER TEST. Dessen Inhalt wird nur gerendert, wenn er
+     * angefragt ist - gemessen 104091 Byte gegen 101456 der uebrigen. Ein
+     * blosses Umschalten zeigte dort eine leere Flaeche. Er behaelt deshalb
+     * die Navigation.
+     *
+     * Das href bleibt bei ALLEN Reitern stehen: ohne Skript ist es der
+     * einzige Weg, und ein Verweis auf einen Reiter soll sich weitergeben
+     * lassen. Nur die Adresszeile wird nachgezogen, damit ein Neuladen
+     * denselben Reiter zeigt. */
+    tabs.forEach(function (t) {
+        t.addEventListener('click', function (e) {
+            if (t.dataset.pane === 'tab-test') { return; }
+            e.preventDefault();
+            activate(t.dataset.pane);
+            if (window.history && window.history.replaceState) {
+                window.history.replaceState(null, '', t.getAttribute('href'));
+            }
+        });
+    });
     activate(<?= json_encode($sp_tab) ?>);
     spTtsMode();
 })();

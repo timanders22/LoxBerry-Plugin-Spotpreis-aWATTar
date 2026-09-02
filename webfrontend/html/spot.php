@@ -121,6 +121,46 @@ if (isset($_GET['json'])) {
 
 header('Content-Type: text/plain; charset=utf-8');
 
+/* ---------- Selbstpruefung ----------
+ *
+ * Dieselben Punkte wie im Reiter Test, aber als Zeile im Hausformat. Bis
+ * 1.2.19 gab es sie nur in der Oberflaeche - also nur, wenn ein Mensch
+ * hinsah. Der Miniserver fragt diesen Endpunkt ohnehin alle 300 Sekunden;
+ * damit laesst sich "steht bei dem Ding noch alles?" verdrahten, statt es
+ * zu hoffen.
+ *
+ * Der Endpunkt selbst wird NICHT mitgeprueft (spot_selbsttest(false)): das
+ * waere ein Aufruf dieser Datei aus dieser Datei heraus, also ein Ruf im
+ * Kreis. Im Reiter Test macht ihn ein Mensch auf Verlangen.
+ *
+ * Die Werte sind 1 (in Ordnung), 0 (Befund) und 2 (nicht beurteilt). PFEHL
+ * zaehlt nur die Nullen - eine Zwei ist kein Befund, sondern eine Stelle,
+ * ueber die sich nichts sagen laesst. */
+if (isset($_GET['selftest'])) {
+    $spot_pruef = spot_selbsttest(false);
+    $spot_teile = array();
+    $spot_fehl = 0;
+    $spot_unklar = 0;
+    foreach ($spot_pruef as $spot_z) {
+        // 'PRUEF.LEBEN' -> 'LEBEN'; der Punkt hat in der Zeile nichts zu suchen.
+        $spot_k = str_replace('PRUEF.', '', (string) $spot_z['schluessel']);
+        $spot_teile[] = $spot_k . '=' . (int) $spot_z['ok'];
+        if ((int) $spot_z['ok'] === 0) { $spot_fehl++; }
+        if ((int) $spot_z['ok'] === 2) { $spot_unklar++; }
+    }
+    echo 'PRUEF;PANZ=' . count($spot_pruef) . ';PFEHL=' . $spot_fehl
+        . ';PUNKLAR=' . $spot_unklar . ';' . implode(';', $spot_teile) . "\n";
+    /* Der Klartext DAHINTER, eine Zeile je Punkt. Loxone liest ihn nicht,
+     * ein Mensch mit einem Browser schon - und der ist der zweite Nutzer
+     * dieser Adresse. */
+    foreach ($spot_pruef as $spot_z) {
+        echo sprintf("%-22s %s  %s\n", $spot_z['schluessel'],
+            (int) $spot_z['ok'] === 1 ? 'ok  ' : ((int) $spot_z['ok'] === 0 ? 'BEFUND' : '-   '),
+            $spot_z['text']);
+    }
+    exit;
+}
+
 /* ---------- Test-Ansagen ---------- */
 if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
     $st = spot_state();

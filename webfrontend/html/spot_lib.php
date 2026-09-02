@@ -100,7 +100,14 @@ function spot_paths() {
             'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
             'log' => $lbhomedir . '/log/plugins/' . $plugindir . '/spot.log',
             'datadir' => $lbhomedir . '/data/plugins/' . $plugindir,
-            'tmp' => '/tmp/spotpreis',
+            /* Der Zwischenspeicher traegt den ERMITTELTEN Ordnernamen, nicht
+             * einen festen. Bis 1.2.19 stand hier '/tmp/spotpreis'. Zwei
+             * Installationen desselben Plugins - etwa eine zweite fuer den
+             * oesterreichischen Markt - teilten sich damit state.json,
+             * laufend.json und die Sperrdatei des Cron; je Minute lief nur
+             * eine von beiden, und beide sahen die Zahlen der anderen.
+             * REGELN_2. */
+            'tmp' => '/tmp/' . $plugindir,
             'lbhome' => $lbhomedir,
         );
     }
@@ -218,10 +225,41 @@ function spot_vorgaben()
 
 function spot_config() {
     $p = spot_paths();
-    // Selbstheilung: fehlende/leere Konfiguration aus Sicherung wiederherstellen
-    if ((!is_file($p['config']) || trim((string) @file_get_contents($p['config'])) === '' || trim((string) @file_get_contents($p['config'])) === '{}') && is_file($p['backup'])) {
+    /* ---- Selbstheilung ----
+     *
+     * DREI Faelle, nicht zwei. Bis 1.2.19 kannte diese Stelle nur "fehlt"
+     * und "leer". Der dritte - die Datei ist da, aber ihr JSON ist
+     * beschaedigt - fiel durch: json_decode gibt null, das ?: array()
+     * darunter machte daraus ein leeres Feld, und die Vorgaben fuellten es
+     * auf. Die Oberflaeche zeigte danach eine Anlage in Werkseinstellung
+     * mit leerem Token, ohne ein Wort darueber. Speicherte der Anwender
+     * dann irgendetwas, kopierte spot_config_save() diese Werkseinstellung
+     * ueber die Sicherung - die letzte gute Fassung war weg.
+     *
+     * Jetzt wird die beschaedigte Datei beiseitegelegt und aus der
+     * Sicherung zurueckgeholt. Beides steht im Protokoll: eine
+     * Selbstheilung, die schweigt, ist von einem Datenverlust nicht zu
+     * unterscheiden. */
+    $sp_roh = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    $sp_leer = (trim($sp_roh) === '' || trim($sp_roh) === '{}');
+    $sp_kaputt = (!$sp_leer && !is_array(json_decode($sp_roh, true)));
+    if ($sp_kaputt) {
+        $sp_weg = $p['config'] . '.kaputt.' . date('YmdHis');
+        if (@rename($p['config'], $sp_weg) && function_exists('spot_log')) {
+            spot_log('Konfiguration war beschaedigt und wurde beiseitegelegt: '
+                . basename($sp_weg));
+        }
+    }
+    if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && is_file($p['backup'])) {
         @mkdir(dirname($p['config']), 0775, true);
-        @copy($p['backup'], $p['config']);
+        if (@copy($p['backup'], $p['config'])) {
+            // Die Zweitschrift traegt dasselbe Geheimnis - und bekommt
+            // deshalb dieselben Rechte wie das Original.
+            @chmod($p['config'], 0600);
+            if ($sp_kaputt && function_exists('spot_log')) {
+                spot_log('Konfiguration aus der Sicherung zurueckgeholt.');
+            }
+        }
     }
     $cfg = is_file($p['config']) ? (json_decode((string) file_get_contents($p['config']), true) ?: array()) : array();
     if (!is_array($cfg)) {
@@ -271,6 +309,47 @@ function spot_config() {
         $r['min_pause'] = max(0, min(720, (int) $r['min_pause']));
         $cfg['regeln'][$i] = $r;
     }
+    /* ---- Preisbestandteile und Schwellen kappen ----
+     *
+     * Aus demselben Grund wie bei den Regelfeldern: was schon in der Datei
+     * steht, soll das Plugin nicht zum Absturz bringen. Das Abweisen macht
+     * die Oberflaeche beim Speichern.
+     *
+     * 'vat' ist der wichtigste davon. Es ging bis 1.2.19 an zwei Stellen
+     * mit max(0, ..) durch, an einer dritten roh: spot_state() legt es in
+     * den Zustand, und WPNEXT teilt durch (1 + vat/100) - bei vat = -100
+     * eine Teilung durch Null. Der Weg dahin ist real, denn
+     * spot_sicherung_lesen() uebernimmt jeden Wert eines bekannten
+     * Schluessels ungeprueft, und die Datei laesst sich von Hand
+     * bearbeiten. Gekappt wird HIER, an der einen Stelle, durch die alles
+     * Lesen geht - zwei Pruefungen fuer dieselbe Sache laufen auseinander.
+     *
+     * Die Grenzen sind weit gewaehlt: sie sollen Unsinn abfangen, nicht
+     * eine ungewoehnliche, aber richtige Rechnung verbieten. Negative
+     * Preisbestandteile gibt es wirklich (Rueckerstattungen), ein
+     * negativer Steuersatz nicht. */
+    $cfg['vat'] = max(0.0, min(30.0, (float) $cfg['vat']));
+    /* DIESELBEN SCHRANKEN WIE DIE OBERFLAECHE (index.php). Stuenden hier
+     * andere Zahlen, gaebe es zwei Wahrheiten - genau davor warnt der
+     * Kommentar beim zweiten Budget ein Stueck weiter unten. */
+    foreach (array('netz' => 50.0, 'steuer' => 20.0, 'konzession' => 20.0,
+                   'umlagen' => 20.0, 'grundpreis' => 100.0) as $sp_f => $sp_max) {
+        $cfg[$sp_f] = max(0.0, min($sp_max, (float) $cfg[$sp_f]));
+    }
+    $cfg['aufschlag'] = max(-10.0, min(30.0, (float) $cfg['aufschlag']));
+    $cfg['cheap'] = max(0.0, min(200.0, (float) $cfg['cheap']));
+    $cfg['expensive'] = max(0.0, min(400.0, (float) $cfg['expensive']));
+    $cfg['fixed_price'] = max(0.0, min(200.0, (float) $cfg['fixed_price']));
+    $cfg['window'] = max(1, min(12, (int) $cfg['window']));
+    $cfg['co2_clean'] = max(0, min(2000, (int) $cfg['co2_clean']));
+    /* Das MQTT-Thema geht in den Gateway-Befehl "publish <thema> <wert>".
+     * Ein Leerzeichen darin verschiebt den Wert. Die Oberflaeche saeubert
+     * es beim Speichern (index.php); eine zurueckgespielte Sicherung geht
+     * daran vorbei. Dieselbe Regel, an der Stelle, an der es BENUTZT
+     * wird. */
+    $sp_thema = preg_replace('#[^\w/\-]#', '', (string) $cfg['mqtt_topic']);
+    $cfg['mqtt_topic'] = ($sp_thema === '' || $sp_thema === null) ? 'spot_awattar' : $sp_thema;
+
     // Fahrplaner, global
     $cfg['budget_kw'] = max(0.0, min(200.0, (float) $cfg['budget_kw']));
     $cfg['pv_bonus'] = max(0.0, min(100.0, (float) $cfg['pv_bonus']));
@@ -408,6 +487,33 @@ function spot_lauf_weiter() {
     $neu = (spot_lauf_stand() + 1) % 1000;
     spot_write_atomic(spot_datadir() . '/laufzaehler', (string) $neu);
     return $neu;
+}
+
+
+/**
+ * Zeitpunkt des letzten CRON-Laufs, in Unix-Sekunden. 0, wenn der Cron noch
+ * nie gelaufen ist.
+ *
+ * WARUM NICHT $st['ts']: das ist der Zeitpunkt, zu dem der ZUSTAND zuletzt
+ * gerechnet wurde - und rechnen laesst ihn auch der Abruf des Miniservers.
+ * Bis 1.2.19 ging genau dieser Wert als TS hinaus. Gemessen mit einem
+ * kuenstlich zwei Stunden gealterten Zustand und ohne einen einzigen
+ * Cron-Lauf dazwischen: TS = jetzt, Alter 0 s. Die Ausfallerkennung, die
+ * der Reiter Loxone vorschreibt (Formel Zeit minus TS, Ein bei 900), konnte
+ * damit nie anschlagen.
+ *
+ * Der Laufzaehler wird ausschliesslich von bin/cron.php geschrieben, und
+ * dort als ERSTES im Lauf - vor dem Abruf bei aWATTar, vor den Meldungen,
+ * vor allem, was scheitern kann. Sein Zeitstempel beantwortet deshalb
+ * genau die Frage "laeuft der Cron noch?".
+ *
+ * clearstatcache, weil derselbe Prozess die Datei kurz zuvor geschrieben
+ * haben kann - PHP haelt sonst den alten Stand.
+ */
+function spot_cron_puls() {
+    $f = spot_datadir() . '/laufzaehler';
+    clearstatcache(true, $f);
+    return is_file($f) ? (int) filemtime($f) : 0;
 }
 
 /**
@@ -570,7 +676,22 @@ function spot_day($startTs, $force = false) {
     $tld = $cfg['market'] === 'at' ? 'at' : 'de';
     $cache = spot_datadir() . '/markt_' . $tld . '_' . date('Ymd', $startTs) . '.json';
     $start = $startTs * 1000;
-    $end = $start + 24 * 3600 * 1000;
+    /* Das Fenster endet am ANFANG DES NAECHSTEN TAGES, nicht 24 Stunden
+     * spaeter. Bis 1.2.19 stand hier "+ 24 * 3600 * 1000". Gerechnet an
+     * drei Tagen, ohne Netz:
+     *     15.06.2026  Tag hat 24 h, im Fenster 24
+     *     25.10.2026  Tag hat 25 h, im Fenster 24 - 23:00 fehlt
+     *     29.03.2026  Tag hat 23 h, im Fenster 23
+     * Am Ende der Sommerzeit wurde also die letzte Stunde des Tages nie
+     * abgerufen. Zusammen mit dem Ersatzwert fuer die laufende Stunde ergab
+     * das einmal im Jahr eine Stunde mit CUR=0, RANK=1 und LEVEL=1 bei
+     * HOK=1 - die Stunde sah fuer den Spot Price Optimizer aus wie die
+     * guenstigste des Tages.
+     *
+     * Ueber die Datumsfunktion und nicht mit +86400: an genau diesen
+     * beiden Tagen ist ein Tag nicht 86400 Sekunden lang. Das ist dieselbe
+     * Ueberlegung wie in plan_frist_ende() im Fahrplaner. */
+    $end = strtotime(date('Y-m-d', $startTs) . ' +1 day 00:00:00') * 1000;
     $js = false;
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $js = file_get_contents($cache);
@@ -984,7 +1105,13 @@ function spot_laufend_fortschreiben($regeln, $jetzt) {
         $rest = isset($r['rest']) ? (int) $r['rest'] : 0;
         if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 3600; }
     }
-    @file_put_contents($f, json_encode($neu));
+    /* UNTEILBAR schreiben. An dieser Datei haengen zwei Schreiber - der
+     * Cron jede Minute und jeder Abruf der Oberflaeche. Ein halb
+     * geschriebenes JSON liest spot_laufend_lesen() als leer, und die
+     * Hysterese vergisst genau in dem Augenblick, in dem sie gebraucht
+     * wird, welche Bloecke laufen. spot_write_atomic() steht in dieser
+     * Datei und wird ueberall sonst benutzt. */
+    spot_write_atomic($f, json_encode($neu));
 }
 
 function spot_regeln($all, $st) {
@@ -1047,9 +1174,21 @@ function spot_fahrplan($st = null) {
     $all = array();
     $heute = spot_day(strtotime('today 00:00'));
     $morgen = spot_day(strtotime('tomorrow 00:00'));
+    /* Der Planer rechnet in ct/kWh - so steht es im Kopf von planer.php,
+     * und so uebergibt es spot_state(). Bis 1.2.19 reichte diese Funktion
+     * den Endpreis in EUR/kWh weiter, also hundertmal zu klein, waehrend
+     * das Tagesmittel im selben Aufruf in ct stand.
+     *
+     * Gemessen an einer Regel der Art 'schwelle' mit Grenze 20,0 ct bei
+     * einem Endpreis von rund 26 ct - die Regel darf nicht laufen:
+     *     Loxone-Zeile (aus spot_state)    R1=0
+     *     Anzeige      (aus spot_fahrplan) aktiv=1, grund=schwelle
+     * Dieselbe Regel, derselbe Preis, zwei Antworten. */
     foreach (array($heute, $morgen) as $tag) {
         if (is_array($tag)) {
-            foreach ($tag as $ts => $netto) { $all[$ts] = spot_endprice($netto); }
+            foreach ($tag as $ts => $netto) {
+                $all[$ts] = round(spot_endprice($netto) * 100, 3);
+            }
         }
     }
     ksort($all);
@@ -1105,9 +1244,48 @@ function spot_state($force = false) {
         }
     }
     ksort($all);
-    $cur = isset($all[$hstart]) ? $all[$hstart] : 0;
-    $curb = ($ph && isset($ph[$hstart])) ? round($ph[$hstart] * 100, 3) : (($pm && isset($pm[$hstart])) ? round($pm[$hstart] * 100, 3) : 0);
-    $next = isset($all[$hstart + 3600]) ? $all[$hstart + 3600] : 0;
+
+    /* ---- Ersatzwerte, falls eine Stunde fehlt ----
+     *
+     * Die Ueberlegung steht ausfuehrlich weiter unten beim Stundenprofil:
+     * Fehlt eine Stunde, ist die Frage nicht "welche Zahl passt am besten",
+     * sondern "welche Zahl richtet keinen Schaden an". Eine 0 ist die
+     * schlechteste - sie sieht fuer den Spot Price Optimizer wie die
+     * guenstigste Stunde des Tages aus.
+     *
+     * Bis 1.2.19 galt das NUR fuer das Stundenprofil. CUR, CURB und NEXT
+     * nahmen die 0. Gemessen an einem vollstaendigen Tag, aus dem genau
+     * die laufende Stunde entfernt wurde:
+     *
+     *     Kontrollfall  HOK=1  CUR=46.761  RANK=13  LEVEL=3  WPCUR=49.141
+     *     Prueffall     HOK=1  CUR=0.000   RANK=1   LEVEL=1  WPCUR=20.200
+     *
+     * HOK blieb dabei 1, denn der Tag war ja da - die Anleitung sagt, ohne
+     * HOK gelte kein Wert, aber HOK stand auf 1. PH19 war durch den
+     * Ersatzwert geschuetzt (49.141), CUR nicht.
+     *
+     * Die Werte werden deshalb HIER gerechnet, vor ihrer ersten Benutzung,
+     * und weiter unten fuer die Profile wiederverwendet. */
+    $ph_ersatz = ($sh && isset($sh['maxp'])) ? round((float) $sh['maxp'], 3) : 0.0;
+    $pm_ersatz = ($sm && isset($sm['maxp'])) ? round((float) $sm['maxp'], 3) : $ph_ersatz;
+    $pr_ersatz = max($ph_ersatz, $pm_ersatz);
+    /* Fuer CURB derselbe Gedanke, nur eine Stufe frueher: der BOERSENPREIS
+     * der teuersten Stunde. Aus ihm rechnet WPCUR den Preis des zweiten
+     * Zaehlpunkts; stuende dort eine 0, waere die Waermepumpe genau in der
+     * Stunde ohne Preis am billigsten dran. */
+    $b_ersatz = ($sh && isset($sh['maxh'], $sh['hours'][$sh['maxh']]['boerse']))
+        ? (float) $sh['hours'][$sh['maxh']]['boerse'] : 0.0;
+    if ($sm && isset($sm['maxh'], $sm['hours'][$sm['maxh']]['boerse'])
+        && (float) $sm['hours'][$sm['maxh']]['boerse'] > $b_ersatz) {
+        $b_ersatz = (float) $sm['hours'][$sm['maxh']]['boerse'];
+    }
+    /* Ohne jeden Preis - erster Start, aWATTar nicht erreichbar - bleibt es
+     * bei 0. Dann steht aber auch HOK auf 0. */
+    $cur_fehlt = isset($all[$hstart]) ? 0 : 1;
+    $cur = isset($all[$hstart]) ? $all[$hstart] : $pr_ersatz;
+    $curb = ($ph && isset($ph[$hstart])) ? round($ph[$hstart] * 100, 3)
+        : (($pm && isset($pm[$hstart])) ? round($pm[$hstart] * 100, 3) : $b_ersatz);
+    $next = isset($all[$hstart + 3600]) ? $all[$hstart + 3600] : $pr_ersatz;
     // Rang der aktuellen Stunde in den naechsten 24 h
     $win = array();
     foreach ($all as $ts => $ct) {
@@ -1131,6 +1309,11 @@ function spot_state($force = false) {
         'market' => $cfg['market'],
         'hstart' => $hstart,
         'stunde' => (int) date('G'),
+        /* Sagt AN, dass fuer die laufende Stunde ein Ersatzwert steht.
+         * Eine stille Ersetzung waere nur die naechste Fassung desselben
+         * Fehlers: der Miniserver saehe eine teure Stunde und wuesste
+         * nicht, dass sie in Wahrheit fehlt. Geht als CURX in die Zeile. */
+        'cur_fehlt' => $cur_fehlt,
         'cur' => $cur,
         'cur_boerse' => $curb,
         'next' => $next,
@@ -1202,8 +1385,8 @@ function spot_state($force = false) {
      * Ohne jeden Preis - erster Start, aWATTar nicht erreichbar - bleibt es
      * bei 0. Dann steht aber auch HOK auf 0, und die Anleitung sagt, dass
      * ohne HOK kein Wert dieser Zeile gilt. */
-    $ph_ersatz = ($sh && isset($sh['maxp'])) ? round((float) $sh['maxp'], 3) : 0.0;
-    $pm_ersatz = ($sm && isset($sm['maxp'])) ? round((float) $sm['maxp'], 3) : $ph_ersatz;
+    // $ph_ersatz und $pm_ersatz stehen schon oben - sie werden dort fuer
+    // CUR, CURB und NEXT gebraucht und sind hier dieselben.
     for ($h = 0; $h < 24; $h++) {
         $st['profil_heute'][$h] = isset($st['heute']['hours'][$h]['ct'])
             ? round((float) $st['heute']['hours'][$h]['ct'], 3) : $ph_ersatz;
@@ -1224,7 +1407,7 @@ function spot_state($force = false) {
      * hoehere der beiden Tageshoechstpreise - so wird die Stunde nie
      * gewaehlt. Ohne jeden Preis bleibt es bei 0, und dann steht auch
      * HOK auf 0. */
-    $pr_ersatz = max($ph_ersatz, $pm_ersatz);
+    // $pr_ersatz steht ebenfalls schon oben.
     for ($h = 0; $h < 24; $h++) {
         $st['profil_relativ'][$h] = isset($all[$hstart + $h * 3600])
             ? round((float) $all[$hstart + $h * 3600], 3) : $pr_ersatz;
@@ -1666,16 +1849,35 @@ function spot_config_save($cfg) {
     if ($json === false) {
         return false;
     }
+    /* RECHTE VOR INHALT. In dieser Datei steht der Aktionstoken. "Schreiben,
+     * dann chmod" liesse sie fuer die Dauer des Schreibens mit den Vorgaben
+     * der umask stehen - bei einem Geheimnis ist das der Unterschied
+     * zwischen "kurz lesbar" und "nie lesbar". Deshalb: leer anlegen,
+     * schuetzen, dann fuellen. Die Nebendatei traegt die Prozessnummer,
+     * sonst zerlegen zwei gleichzeitige Schreiber einander. REGELN_2. */
     $tmp = $p['config'] . '.tmp.' . getmypid();
-    if (@file_put_contents($tmp, $json) === false) {
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
         return false;
     }
-    @chmod($tmp, 0644);
+    @chmod($tmp, 0600);
+    if (!@ftruncate($fh, 0) || @fwrite($fh, $json) === false) {
+        @fclose($fh);
+        @unlink($tmp);
+        return false;
+    }
+    @fclose($fh);
     if (!@rename($tmp, $p['config'])) {
         @unlink($tmp);
         return false;
     }
-    @copy($p['config'], $p['backup']);
+    /* Die Zweitschrift bekommt DIESELBEN RECHTE wie das Original - sie
+     * enthaelt dasselbe Geheimnis. Genau diese Stelle nennt REGELN_2 als
+     * Beispiel: dort fehlte das chmod an der Zweitschrift, waehrend
+     * preupgrade.sh es setzte. */
+    if (@copy($p['config'], $p['backup'])) {
+        @chmod($p['backup'], 0600);
+    }
     // Zwischenspeicher verwerfen: die Preise werden mit den neuen
     // Aufschlaegen neu gerechnet.
     @unlink(spot_tmpdir() . '/state.json');
@@ -1997,8 +2199,10 @@ function spot_mqtt_publish($st = null) {
         'audio' => empty($cfg['notify']['audio']) ? 0 : 1,
         'push' => empty($cfg['notify']['push']) ? 0 : 1,
         'ptest' => spot_ptest_active(),
-        // Lebenszeichen - siehe den Block ueber spot_lauf_stand().
-        'status/ts' => isset($st['ts']) ? (int) $st['ts'] : time(),
+        /* Lebenszeichen - siehe den Block ueber spot_lauf_stand() und
+         * spot_cron_puls(). ts ist der CRON, rechne das Rechnen. */
+        'status/ts' => spot_cron_puls(),
+        'status/rechne' => isset($st['ts']) ? (int) $st['ts'] : time(),
         'status/zaehler' => spot_lauf_stand(),
         'status/ok' => (int) $st['ok'],
     );
@@ -2060,7 +2264,8 @@ function spot_mqtt_lebenszeichen($st = null) {
     }
     $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
     spot_mqtt_senden($prefix, $udpport, array(
-        'status/ts' => ($st !== null && isset($st['ts'])) ? (int) $st['ts'] : time(),
+        'status/ts' => spot_cron_puls(),
+        'status/rechne' => ($st !== null && isset($st['ts'])) ? (int) $st['ts'] : time(),
         'status/zaehler' => spot_lauf_stand(),
         'status/ok' => ($st !== null && isset($st['ok'])) ? (int) $st['ok'] : 0,
     ));
@@ -2137,7 +2342,7 @@ function spot_zeile($st, $cfg) {
      * von ruhigen Preisen unterscheiden. Angehaengt, nicht eingeschoben -
      * die Befehlserkennung in Loxone sucht Textstellen, bestehende
      * Eingaenge merken von den beiden neuen Feldern nichts. */
-    $o = sprintf("SPOT;OK=%d;MINH=%d;MINP=%.3f;MAXH=%d;MAXP=%.3f;AVG=%.3f;HOK=%d;HMINH=%d;HMINP=%.3f;HMAXH=%d;HMAXP=%.3f;HAVG=%.3f;CUR=%.3f;CURB=%.3f;NEXT=%.3f;NEG=%d;RANK=%d;RANKD=%d;LEVEL=%d;WINH=%d;WININ=%d;WINCT=%.3f;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d;CO2=%d;CO2MIN=%d;CO2MINH=%d;CO2CLEAN=%d;WPCUR=%.3f;WPNEXT=%.3f;FIX=%.3f;DYNM=%.3f;DIFFM=%.3f;EUROM=%.2f;SHIFTJ=%.2f\n",
+    $o = sprintf("SPOT;OK=%d;MINH=%d;MINP=%.3f;MAXH=%d;MAXP=%.3f;AVG=%.3f;HOK=%d;HMINH=%d;HMINP=%.3f;HMAXH=%d;HMAXP=%.3f;HAVG=%.3f;CUR=%.3f;CURB=%.3f;NEXT=%.3f;NEG=%d;RANK=%d;RANKD=%d;LEVEL=%d;WINH=%d;WININ=%d;WINCT=%.3f;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d;CO2=%d;CO2MIN=%d;CO2MINH=%d;CO2CLEAN=%d;WPCUR=%.3f;WPNEXT=%.3f;FIX=%.3f;DYNM=%.3f;DIFFM=%.3f;EUROM=%.2f;SHIFTJ=%.2f;CURX=%d\n",
         $st['tomorrow_ok'], $st['morgen']['minh'], $st['morgen']['minp'], $st['morgen']['maxh'], $st['morgen']['maxp'], $st['morgen']['avg'],
         $st['ok'], $st['heute']['minh'], $st['heute']['minp'], $st['heute']['maxh'], $st['heute']['maxp'], $st['heute']['avg'],
         $st['cur'], $st['cur_boerse'], $st['next'], $st['neg'], $st['rank'], $st['rankd'], $st['level'],
@@ -2148,7 +2353,8 @@ function spot_zeile($st, $cfg) {
         spot_ptest_active(),
         $st['co2'], $st['co2_min'], $st['co2_minh'], $st['co2_clean'],
         $st['wp_cur'], $st['wp_next'],
-        $st['fix'], $st['dyn_monat'], $st['diff_monat'], $st['euro_monat'], $st['shift_jahr']);
+        $st['fix'], $st['dyn_monat'], $st['diff_monat'], $st['euro_monat'], $st['shift_jahr'],
+        isset($st['cur_fehlt']) ? (int) $st['cur_fehlt'] : 0);
 
     /* Lebenszeichen als eigene Zeile. TS ist der Zeitpunkt, zu dem der
      * Zustand zuletzt wirklich gerechnet wurde - nicht der Zeitpunkt dieses
@@ -2156,9 +2362,18 @@ function spot_zeile($st, $cfg) {
      * der Cron ist seit zwei Stunden tot, dann steht hier ein zwei Stunden
      * alter TS, waehrend jede andere Zahl der Zeile unveraendert plausibel
      * aussieht. */
-    $o .= sprintf("LEBEN;TS=%d;LAUF=%d\n",
-        isset($st['ts']) ? (int) $st['ts'] : time(),
-        spot_lauf_stand());
+    /* TS ist der Zeitpunkt des letzten CRON-Laufs, RECHNE der des letzten
+     * Zustandsrechnens. Bis 1.2.19 stand an beiden Stellen dieselbe Zahl -
+     * und weil der Abruf des Miniservers den Zustand selbst neu rechnet,
+     * war TS immer frisch. Ein toter Cron sah aus wie ruhige Preise.
+     *
+     * RECHNE bleibt trotzdem da: es beantwortet die andere Frage - wie alt
+     * sind die Zahlen dieser Zeile? Zwei Fragen, zwei Zahlen. Angehaengt,
+     * nicht eingeschoben: bestehende Eingaenge merken davon nichts. */
+    $o .= sprintf("LEBEN;TS=%d;LAUF=%d;RECHNE=%d\n",
+        spot_cron_puls(),
+        spot_lauf_stand(),
+        isset($st['ts']) ? (int) $st['ts'] : time());
 
     // Schaltregeln als EIGENE Zeile hinter der bisherigen. Die
     // Befehlserkennung in Loxone sucht Textstellen, nicht Zeilen -
@@ -2248,7 +2463,9 @@ function spot_felder() {
          * das Ende der 32-Bit-Zeitrechnung (2038) und die groesste Zahl,
          * die Config an dieser Stelle sinnvoll fuehrt.
          * In Loxone: Alter in Sekunden = (Zeit-Baustein + 1230768000) - TS. */
-        'TS'      => array(1, 0, 2147483647, 's', 'Zeitpunkt des letzten Laufs (Unix-Sekunden)'),
+        'CURX'    => array(0, 0, 1, '', 'Fuer die laufende Stunde steht ein Ersatzwert (Tageshoechstpreis)'),
+        'TS'      => array(1, 0, 2147483647, 's', 'Zeitpunkt des letzten CRON-Laufs (Unix-Sekunden)'),
+        'RECHNE'  => array(1, 0, 2147483647, 's', 'Zeitpunkt der letzten Zustandsrechnung (Unix-Sekunden)'),
         'LAUF'    => array(1, 0, 999, '', 'Laufzaehler, laeuft bei 999 um - wechselt er nicht mehr, steht der Cron'),
     );
     // Schaltregeln - der Grund fuer die ganze Uebung: R<n> ist digital.
@@ -2337,6 +2554,7 @@ function spot_vorlage() {
         $ordner = getenv('LBPPLUGINDIR') ?: 'spotpreis';
     }
     $st = spot_state();
+    $token = (string) spot_cfg_wert('token', '');
     $cmds = array();
     foreach (spot_felder() as $name => $d) {
         list($analog, $min, $max, $einheit, $text) = $d;
@@ -2351,14 +2569,37 @@ function spot_vorlage() {
         $cmds[] = array(
             'title' => 'SPOT_' . $name,
             'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
-            'check' => '\i' . $name . '=\i\v',
+            /* MIT SEMIKOLON. Loxone nimmt die ERSTE Fundstelle des
+             * Suchtextes in der Antwortzeile. Ohne Trennzeichen trifft
+             * "CUR=" auch in "WPCUR=", "MINH=" auch in "HMINH=" und in
+             * "CO2MINH=". Gemessen an der echten Zeile mit 141 Feldnamen:
+             * acht Felder treffen mehrfach, MINH dreifach; mit Semikolon
+             * keines. Heute steht das kuerzere Feld zufaellig vorn, die
+             * Werte stimmen also - aber jede Umsortierung der Zeile
+             * machte daraus eine lautlose Falschmessung. Jedes Feld der
+             * Zeile hat ein Semikolon vor sich, auch das erste: die
+             * Zeilen beginnen mit SPOT;, LEBEN;, REGEL;, PLAN;, PROFIL;
+             * und PROFILR;. Haus-Form nach REGELN_3 A11. */
+            'check' => '\i;' . $name . '=\i\v',
             'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
             'analog' => $analog, 'min' => $min, 'max' => $max,
         );
     }
     return array('VI_spotpreis.xml', spot_xml_virtual_in_http(array(
         'title' => 'Spotpreis aWATTar',
-        'address' => 'http://' . $host . '/plugins/' . $ordner . '/spot.php',
+        /* MIT MARKE, wenn eine gesetzt ist. spot.php verlangt sie bei
+         * JEDEM Abruf, sobald sie in den Einstellungen steht - auch beim
+         * reinen Lesen. Bis 1.2.19 stand die Adresse ohne sie da; der
+         * Miniserver bekam 403 und "SPOT;OK=0;GRUND=TOKEN", und von 139
+         * Eingaengen fanden 115 gar nichts mehr. Die Anlage sah dabei
+         * eingerichtet aus.
+         *
+         * Die Marke steht damit in der erzeugten Vorlagendatei. Das ist
+         * gewollt: die Datei geht vom LoxBerry in die Loxone Config des
+         * Anwenders, nicht ins Netz. Ohne sie waere die Vorlage nutzlos,
+         * und eine nutzlose Vorlage laedt zum Abschalten der Marke ein. */
+        'address' => 'http://' . $host . '/plugins/' . $ordner . '/spot.php'
+                   . ($token !== '' ? '?token=' . rawurlencode($token) : ''),
         'polling' => '300',
         'comment' => 'Erzeugt vom LoxBerry-Plugin Spotpreis aWATTar (' . date('d.m.Y') . '). '
                    . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
@@ -2559,7 +2800,18 @@ function spot_announce_check() {
     $cfg = spot_config();
     $st = spot_state();
     // 1) Stuendliche Ansage
-    if (!empty($cfg['notify']['audio']) && $st['ok'] && (int) date('i') === 0) {
+    /* FUENF MINUTEN, nicht eine.
+     *
+     * Bis 1.2.19 stand hier (int) date('i') === 0. Das ist genau die
+     * Bedingung, die beim Monatsbericht in 1.1.1 als Fehler erkannt und
+     * behoben wurde - die Begruendung steht ausfuehrlich in bin/cron.php:
+     * ein Cron-Lauf, der sich unter Last um eine Minute verspaetet oder
+     * ganz ausfaellt (Neustart, Update), kostet die Ansage. Dort kostete
+     * es den Bericht des ganzen Monats, hier die Ansage der ganzen Stunde.
+     *
+     * Zweimal kann sie dadurch nicht kommen: der Merker said_<YmdH> steht
+     * schon und traegt die Stunde im Namen. */
+    if (!empty($cfg['notify']['audio']) && $st['ok'] && (int) date('i') < 5) {
         $flag = spot_tmpdir() . '/said_' . date('YmdH');
         if (!is_file($flag)) {
             $sel = spot_hour_selected();
@@ -3011,12 +3263,18 @@ function spot_selbsttest($endpunkt_pruefen = false)
             : spot_t('PRUEFTEXT.PREISE_FEHLT'));
 
     /* Lebenszeichen. Erst pruefen, ob der Cron ueberhaupt schon einmal
-     * gelaufen ist - ueber eine leere Menge wird nicht geurteilt. */
-    $tsdatei = spot_tmpdir() . '/state.json';
-    if (!is_file($tsdatei)) {
+     * gelaufen ist - ueber eine leere Menge wird nicht geurteilt.
+     *
+     * GEMESSEN WIRD DER LAUFZAEHLER, nicht state.json. Bis 1.2.19 stand
+     * hier state.json - und die schreibt auch der Abruf des Miniservers
+     * neu. Diese Pruefung war damit genauso blind wie das TS in der Zeile:
+     * mit einem zwei Stunden gealterten Zustand und ohne einen einzigen
+     * Cron-Lauf meldete sie "Alter 0 Minuten". */
+    $puls = spot_cron_puls();
+    if ($puls <= 0) {
         $add('PRUEF.LEBEN', 2, spot_t('PRUEFTEXT.LEBEN_NIE'));
     } else {
-        $alter = time() - (int) filemtime($tsdatei);
+        $alter = time() - $puls;
         // Der Cron laeuft jede Minute, der Zustand wird alle 5 Minuten neu
         // gerechnet. 15 Minuten sind deutlich darueber und schlagen nicht
         // bei einem einzelnen verpassten Lauf an.
@@ -3106,7 +3364,15 @@ function spot_selbsttest($endpunkt_pruefen = false)
      * Stundenprofil fuer einen Defekt haelt. */
     $luecken = isset($st['luecken_heute']) ? (array) $st['luecken_heute'] : array();
     $doppelt = isset($st['doppelt_heute']) ? (int) $st['doppelt_heute'] : 0;
-    if (!$luecken && !$doppelt) {
+    if (empty($st['ok']) || (int) $st['heute']['n'] <= 0) {
+        /* UEBER DIE LEERE MENGE WIRD NICHT GEURTEILT. Gibt es fuer heute
+         * gar keine Preise, ist auch die Lueckenliste leer - bis 1.2.19
+         * meldete diese Pruefung daraufhin einen Haken, mit "0 Stunden"
+         * daneben. Ein Haken, der bedeutet "es ist nichts da", ist
+         * schlimmer als kein Haken. Dass die Preise fehlen, sagt
+         * PRUEF.PREISE eine Zeile weiter oben. */
+        $add('PRUEF.STUNDEN', 2, spot_t('PRUEFTEXT.STUNDEN_KEINE'));
+    } elseif (!$luecken && !$doppelt) {
         $add('PRUEF.STUNDEN', 1, sprintf(spot_t('PRUEFTEXT.STUNDEN_OK'), (int) $st['heute']['n']));
     } else {
         $add('PRUEF.STUNDEN', 2,
@@ -3159,15 +3425,43 @@ function spot_selbsttest($endpunkt_pruefen = false)
         $add('PRUEF.REITER', 2, spot_t('PRUEFTEXT.OBERFLAECHE_UNKLAR'));
     } else {
         $q = (string) @file_get_contents($oberflaeche);
-        // Formulare, die etwas absenden, gegen die Zahl der Merkmale.
+        /* JEDES absendende Formular muss ein Merkmal TRAGEN. Nachgesehen,
+         * nicht gezaehlt.
+         *
+         * Bis 1.2.19 stand hier ein Vergleich zweier Zahlen: Vorkommen von
+         * 'spot_fmt()' gegen Zahl der Formulare. Das ging an zwei Stellen
+         * daneben. Erstens zaehlte es auch, was keine Ausgabe ist -
+         * index.php traegt den Namen in einem Kommentar, gemessen wurden
+         * daher 13 Merkmale auf 12 Formulare. Zweitens sagt eine Summe
+         * nichts ueber die Verteilung: zwei Merkmale im einen Formular und
+         * keines im anderen ergeben dieselbe Zahl.
+         *
+         * Geeicht: nimmt man dem ersten Formular sein Merkmal, meldet die
+         * alte Regel weiter gruen (12 >= 12), die neue nennt das Formular.
+         *
+         * Der Ausdruck verlangt ein passendes </form>. Faende er weniger
+         * Formulare als die einfache Suche nach <form ... method=post>,
+         * waere das selbst ein Befund - deshalb wird beides gezaehlt und
+         * die kleinere Zahl beanstandet. */
         $formulare = preg_match_all('/<form\b[^>]*method=["\']post["\']/i', $q);
-        $merkmale = substr_count($q, 'spot_fmt()');
+        $paare = preg_match_all('/<form\b[^>]*method=["\']post["\'][^>]*>(.*?)<\/form>/is',
+                                $q, $sp_mm, PREG_SET_ORDER);
+        $ohne = array();
+        foreach ($sp_mm as $sp_i => $sp_m) {
+            if (strpos($sp_m[1], 'spot_fmt()') === false) { $ohne[] = $sp_i + 1; }
+        }
         if ($formulare === 0) {
             $add('PRUEF.FORMULARE', 2, spot_t('PRUEFTEXT.FORMULARE_KEINE'));
+        } elseif ($paare !== $formulare) {
+            $add('PRUEF.FORMULARE', 0,
+                sprintf(spot_t('PRUEFTEXT.FORMULARE_UNPAAR'), $formulare, $paare));
+        } elseif ($ohne) {
+            $add('PRUEF.FORMULARE', 0,
+                sprintf(spot_t('PRUEFTEXT.FORMULARE_FEHLT'),
+                        implode(', ', $ohne), $formulare));
         } else {
-            $add('PRUEF.FORMULARE', $merkmale >= $formulare ? 1 : 0,
-                sprintf(spot_t($merkmale >= $formulare ? 'PRUEFTEXT.FORMULARE_OK' : 'PRUEFTEXT.FORMULARE_FEHLT'),
-                        $merkmale, $formulare));
+            $add('PRUEF.FORMULARE', 1,
+                sprintf(spot_t('PRUEFTEXT.FORMULARE_OK'), $formulare));
         }
         // Reiterleiste, Flaechen und Positivliste - drei Stellen, die
         // auseinanderlaufen koennen, ohne dass es eine Fehlermeldung gibt.

@@ -5,4 +5,9 @@
 # ersetzt. Bis 1.1.0 stand hier REPLACELBPHTMLDIR - das Skript lag also im
 # unangemeldeten Web-Verzeichnis und war ueber HTTP ausloesbar. Siehe den
 # Kopf von bin/cron.php.
-php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+# Nur die NORMALE Ausgabe wird unterdrueckt, die Fehlerausgabe geht ins
+# Protokoll des Plugins. ">/dev/null 2>&1" verschluckt auch die Meldung
+# "spot_lib.php nicht gefunden - Plugin neu installieren." Der
+# Abfahrts-Assistent lief so von 1.5.0 bis 1.5.7 kein einziges Mal, und
+# acht Fassungen sind daran vorbeigelaufen. REGELN_2.
+php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron_fehler.log"

@@ -20,11 +20,18 @@
 #      ueberstehen (spot_paths()['backup'], postinstall.sh,
 #      postupgrade.sh). Beim Deinstallieren ist genau das falsch.
 #
-#   2. /tmp/spotpreis
+#   2. /tmp/<ordner>
 #      Zwischenspeicher fuer Marktdaten, Ansage-Merker und die
 #      MQTT-Signatur. /tmp ist auf dem LoxBerry eine Ramdisk, der Ordner
 #      verschwindet also spaetestens beim naechsten Neustart - bis dahin
 #      wuerde er aber weiter dastehen.
+#
+#      DER NAME KOMMT AUS DEM ARGUMENT, nicht fest aus dem Skript. Bis
+#      1.2.19 stand hier /tmp/spotpreis; seit 1.2.20 heisst der
+#      Zwischenspeicher /tmp/<ordner>, damit sich zwei Installationen
+#      nicht denselben Zustand und dieselbe Sperrdatei teilen. Mit dem
+#      festen Namen haette dieses Skript entweder den Speicher der
+#      anderen Installation abgeraeumt oder den eigenen stehen lassen.
 #
 #   3. data/plugins/<ordner>.upgrade_sicherung
 #      Seit 1.2.9 liegt die Sicherung beim Aktualisieren NEBEN dem
@@ -34,9 +41,19 @@
 #      history.csv - die Preisgeschichte, keine Zugangsdaten, aber sie
 #      gehoert nach dem Entfernen nicht mehr auf die Karte.
 #
-# Was NICHT aufgeraeumt werden muss: MQTT. Das Plugin sendet ueber das
-# UDP-Relais des Gateways mit "publish", nicht mit "retain"
-# (spot_lib.php, spot_mqtt_publish). Im Broker bleibt nichts stehen.
+# ZU MQTT - und zwar genau so weit, wie es gemessen ist:
+#
+# GEMESSEN ist, dass DIESES PLUGIN kein Retain setzt. Es schickt an das
+# UDP-Relais des Gateways ausschliesslich "publish <thema> <wert>"; das
+# Wort "retain" kommt in spot_lib.php nicht vor.
+#
+# NICHT GEMESSEN ist, was das Gateway daraus macht. Ob es seinerseits mit
+# Retain an den Broker weitergibt, laesst sich nur an einem laufenden
+# Gateway feststellen, und das ist hier nicht geschehen. Sollte es das tun,
+# blieben die Themen nach dem Deinstallieren im Broker stehen - dieses
+# Skript kann daran nichts aendern, denn es spricht nicht mit dem Broker.
+#
+# Wer sichergehen will, loescht die Themen im Broker von Hand.
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="spotpreis"
@@ -56,9 +73,16 @@ else
     echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
 fi
 
-# Nur den eigenen Ordner, und nur wenn es wirklich einer ist.
-if [ -d "/tmp/spotpreis" ]; then
-    rm -rf "/tmp/spotpreis" && echo "<OK> Zwischenspeicher /tmp/spotpreis entfernt."
+# Nur den eigenen Ordner, und nur wenn es wirklich einer ist. Der Name kommt
+# aus dem Argument - siehe Punkt 2 oben.
+TMPD="/tmp/$PDIR"
+if [ -d "$TMPD" ]; then
+    rm -rf "$TMPD" && echo "<OK> Zwischenspeicher $TMPD entfernt."
+fi
+# Der alte, fest verdrahtete Ort aus Fassungen bis 1.2.19. Nur wenn er nicht
+# ohnehin schon der eigene war, sonst stuende die Meldung zweimal da.
+if [ "$PDIR" != "spotpreis" ] && [ -d "/tmp/spotpreis" ]; then
+    rm -rf "/tmp/spotpreis" && echo "<OK> Alter Zwischenspeicher /tmp/spotpreis entfernt."
 fi
 
 # Der Nachbar des Datenordners - siehe Punkt 3 oben.
@@ -67,5 +91,7 @@ if [ -d "$SICH" ]; then
     rm -rf "$SICH" && echo "<OK> Sicherung des Aktualisierens entfernt: $PDIR.upgrade_sicherung"
 fi
 
-echo "<INFO> Im MQTT-Broker bleibt nichts stehen - das Plugin sendet ohne Retain-Merker."
+echo "<INFO> Das Plugin sendet ohne Retain-Merker. Ob das Gateway die Themen"
+echo "<INFO> dennoch mit Retain weitergibt, ist nicht nachgemessen - falls ja,"
+echo "<INFO> bleiben sie im Broker stehen und muessen dort entfernt werden."
 exit 0
