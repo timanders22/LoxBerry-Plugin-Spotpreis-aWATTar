@@ -1919,6 +1919,43 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 <div class="sm-pre"><?php echo sp_e($sp_plantest); ?></div>
 <?php } ?>
 
+<h3 class="sm-h3"><?php echo spot_t('PLAN.H_KOPIEN'); ?></h3>
+<p class="sm-small"><?php echo spot_t('PLAN.KOPIEN_TEXT'); ?></p>
+<?php
+/* Die Rechnung steht in planer.php (ab 1.1.6), nicht hier - sie ist die
+ * Pruefung zu der Regel, die im Kopf derselben Datei steht, und sie darf
+ * nicht in drei Kopien gefuehrt werden.
+ *
+ * Drei Ausgaenge, und der dritte ist Pflicht: eine Schwesterlinie, die auf
+ * diesem LoxBerry nicht installiert ist, ist kein Befund und kein Haken.
+ * Wer sie zu einem der beiden anderen zaehlt, bekommt eine Zeile, die bei
+ * jeder Einzelinstallation gruen leuchtet, ohne je etwas verglichen zu
+ * haben. */
+$pl_summen = plan_pruefsummen(spot_paths()['lbhome']);
+$pl_vorhanden = 0;
+$pl_ungleich = 0;
+foreach (array_slice($pl_summen, 1) as $pl_e) {
+    if ($pl_e['lage'] === 'fehlt') { continue; }
+    $pl_vorhanden++;
+    if ($pl_e['lage'] === 'verschieden') { $pl_ungleich++; }
+}
+?>
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('PLAN.K_LINIE'); ?></th><th><?php echo spot_t('PLAN.K_LAGE'); ?></th></tr>
+<?php foreach ($pl_summen as $pl_e) { ?>
+<tr><td><span class="sm-mono"><?php echo sp_e($pl_e['ordner']); ?></span></td>
+    <td class="<?php echo $pl_e['lage'] === 'verschieden' ? 'sm-aus' : ($pl_e['lage'] === 'gleich' ? 'sm-an' : ''); ?>"><?php
+      echo sp_e(spot_t('PLAN.LAGE_' . strtoupper($pl_e['lage']))); ?></td></tr>
+<?php } ?>
+</table>
+<?php if ($pl_vorhanden === 0) { ?>
+<div class="sm-hinweis"><?php echo spot_t('PLAN.KOPIEN_KEINE'); ?></div>
+<?php } elseif ($pl_ungleich > 0) { ?>
+<div class="sm-warnung"><?php echo spot_t('PLAN.KOPIEN_UNGLEICH'); ?></div>
+<?php } else { ?>
+<div class="sm-hinweis"><?php echo sprintf(spot_t('PLAN.KOPIEN_GLEICH'), (int) $pl_vorhanden); ?></div>
+<?php } ?>
+
 <?php /* Der frueher hier stehende Kasten "Feldnamen gegen die Zeile" ist in
          spot_selbsttest() aufgegangen (Zeilen PRUEF.FELDER und
          PRUEF.VORLAGE, oben in der Tabelle). Zwei Stellen, die dasselbe
