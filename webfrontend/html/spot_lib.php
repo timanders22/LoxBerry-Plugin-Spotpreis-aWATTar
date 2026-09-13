@@ -1299,10 +1299,18 @@ function spot_state($force = false) {
     foreach ($vals as $v) {
         if ($v < $cur) { $rank++; }
     }
-    // Preisniveau relativ zu den Schwellen
-    $level = 2; // 1=guenstig 2=normal 3=teuer
-    if ($cur <= (float) $cfg['cheap']) { $level = 1; }
-    if ($cur >= (float) $cfg['expensive']) { $level = 3; }
+    /* Preisniveau relativ zu den Schwellen.
+     *
+     * OHNE GUELTIGE PREISE IST ES NICHT BEKANNT. Bis 1.2.23 wurde es
+     * ohne jede Wache gerechnet: bei fehlenden Preisen ist $cur = 0,
+     * und 0 <= cheap ergibt Niveau 1 - 'guenstig', obwohl gar kein
+     * Preis vorliegt. -1 heisst 'nicht bekannt'; die Ansage haengt
+     * bereits an === 1 bzw. === 3 und sagt dann nichts Zusaetzliches.
+     * Anlass: derselbe Befund in der Schwesterlinie Octopus, am
+     * Geraet gemessen am 13.09.2026. */
+    $level = $sh ? 2 : -1;
+    if ($sh && $cur <= (float) $cfg['cheap']) { $level = 1; }
+    if ($sh && $cur >= (float) $cfg['expensive']) { $level = 3; }
     $st = array(
         'ok' => $sh ? 1 : 0,
         'tomorrow_ok' => $sm ? 1 : 0,
@@ -1318,8 +1326,19 @@ function spot_state($force = false) {
         'cur_boerse' => $curb,
         'next' => $next,
         'neg' => $curb < 0 ? 1 : 0,
-        'rank' => $rank,
-        'rankd' => count($vals) ? count($vals) + 1 - $rank : 99,
+        /* EIN RANG OHNE PREISE IST KEIN RANG.
+         *
+         * $rank faengt bei 1 an und wird je guenstigerem Wert erhoeht;
+         * bei leerer Liste bleibt er 1 - und 1 heisst laut spot_felder()
+         * 'guenstigste'. rankd hatte fuer diesen Fall schon einen
+         * Ersatzwert (99), rank nicht. Beide tragen jetzt -1; die 99
+         * war nirgends beschrieben und deshalb keine Zusage.
+         *
+         * Gegengeprueft, dass der Ersatzwert nichts ausloest:
+         * spot_marstek_control() kehrt bei !$st['ok'] vorher um, und
+         * die Ansage haengt an === 1 bzw. === 3. */
+        'rank' => count($vals) ? $rank : -1,
+        'rankd' => count($vals) ? count($vals) + 1 - $rank : -1,
         'n' => count($vals),
         'level' => $level,
         'heute' => $sh ? $sh : array('minh' => 0, 'minp' => 0, 'maxh' => 0, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
@@ -2161,26 +2180,19 @@ function spot_mqtt_wert_saeubern($v)
     return trim(preg_replace('/ {2,}/', ' ', $wert));
 }
 
-function spot_mqtt_publish($st = null) {
+/**
+ * Die Themen und Werte, die ueber MQTT hinausgehen - als EINE Quelle.
+ *
+ * Bis 1.2.23 entstanden sie mitten in spot_mqtt_publish(). Die
+ * Pruefzeile im Reiter Test, die die Retain-Tabelle dagegen haelt,
+ * haette dann eine zweite, abgeschriebene Liste gebraucht - und zwei
+ * Listen laufen auseinander. Der Rumpf ist woertlich derselbe.
+ */
+function spot_mqtt_themen($st = null) {
     $cfg = spot_config();
-    if (empty($cfg['mqtt_enabled'])) {
-        return;
-    }
-    $p = spot_paths();
-    if ($p['lbhome'] === '') {
-        return;
-    }
     if ($st === null) {
         $st = spot_state();
     }
-    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
-    $udpport = 0;
-    if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
-    if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
-    if (!$udpport) {
-        return;
-    }
-    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
     $msgs = array(
         'ok' => $st['ok'], 'cur' => $st['cur'], 'cur_boerse' => $st['cur_boerse'], 'next' => $st['next'],
         'neg' => $st['neg'], 'rank' => $st['rank'], 'rankd' => $st['rankd'], 'level' => $st['level'],
@@ -2234,6 +2246,30 @@ function spot_mqtt_publish($st = null) {
     if (isset($st['soc']) && $st['soc'] !== null) {
         $msgs['plan/soc'] = (float) $st['soc'];
     }
+    return $msgs;
+}
+
+function spot_mqtt_publish($st = null) {
+    $cfg = spot_config();
+    if (empty($cfg['mqtt_enabled'])) {
+        return;
+    }
+    $p = spot_paths();
+    if ($p['lbhome'] === '') {
+        return;
+    }
+    if ($st === null) {
+        $st = spot_state();
+    }
+    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+    $udpport = 0;
+    if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
+    if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
+    if (!$udpport) {
+        return;
+    }
+    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
+    $msgs = spot_mqtt_themen($st);
     spot_mqtt_senden($prefix, $udpport, $msgs);
 }
 
@@ -2283,6 +2319,62 @@ function spot_mqtt_lebenszeichen($st = null) {
  * und in der Logdatei steht nichts, was darauf hinweist - deshalb der
  * Rueckfallweg ueber Datenstroeme.
  */
+/**
+ * Welche Themen gehen ZURUECKBEHALTEN (retained) hinaus?
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, damit
+ * Loxone nach einem Neustart des Miniservers oder des Gateways sofort den
+ * Stand hat; Messwerte mit Zeitbezug nicht; das Lebenszeichen nie.
+ *
+ * Bis 1.2.23 ging alles fluechtig hinaus. Am Geraet gemessen (13.09.2026):
+ * unter spotpreis/# lagen 0 zurueckbehaltene Themen, waehrend andere
+ * Linien am selben Broker 19 bis 59 fuehrten.
+ *
+ * Der UDP-Weg kann das: `retain <thema> <wert>` statt `publish ...`
+ * (mqttgateway.pl, sub udpin). Am laufenden Gateway nachgemessen.
+ *
+ * NICHT in der Tabelle, mit Absicht:
+ *   status/ts, status/rechne, status/zaehler, status/ok - das
+ *       Lebenszeichen. Zurueckbehalten stuende dort fuer immer "laeuft".
+ *   regel/N/... - Schaltsignale fuer den laufenden Augenblick. Ein
+ *       stehengebliebenes 1 liesse einen Verbraucher eingeschaltet.
+ *   alle Preise, Raenge, Fenster, CO2- und Waermepumpenwerte,
+ *       plan/last, plan/pv_prognose, plan/soc, plan/spart - Messwerte mit
+ *       Zeitbezug.
+ *   ann und ptest - sie wechseln allein durch Zeitablauf.
+ */
+function spot_retain_liste() {
+    return array(
+        /* Zustand der Datenlage. */
+        'ok' => 1,
+        'morgen_ok' => 1,
+        /* Freigaben aus der Konfiguration. */
+        'audio' => 1,
+        'push' => 1,
+        /* Einstellungen des Fahrplaners. */
+        'plan/budget' => 1,
+        'plan/budget2' => 1,
+        /* Kostenvergleich: entsteht einmal im Monat aus der Historie. */
+        'fix' => 1,
+        'dyn_monat' => 1,
+        'diff_monat' => 1,
+        'euro_monat' => 1,
+        'shift_jahr' => 1,
+    );
+}
+
+/**
+ * Geht dieses Thema zurueckbehalten hinaus?
+ *
+ * Eine LEERE Nutzlast loescht ein zurueckbehaltenes Thema im Broker; sie
+ * geht deshalb immer als publish hinaus, auch wenn die Tabelle retain sagt.
+ */
+function spot_retain_fuer($thema, $nutzlast = null) {
+    if ($nutzlast !== null && (string) $nutzlast === '') { return 0; }
+    $l = spot_retain_liste();
+    return isset($l[(string) $thema]) ? 1 : 0;
+}
+
 function spot_mqtt_senden($prefix, $udpport, $msgs) {
     $udpport = (int) $udpport;
     if ($udpport < 1 || $udpport > 65535 || !$msgs) {
@@ -2294,7 +2386,12 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
             return;
         }
         foreach ($msgs as $k => $v) {
-            $msg = 'publish ' . $prefix . '/' . $k . ' ' . spot_mqtt_wert_saeubern($v);
+            $wert = spot_mqtt_wert_saeubern($v);
+            /* Das Befehlswort entscheidet die Tabelle, nicht der
+             * Aufruf - sonst ginge das Lebenszeichen zurueckbehalten
+             * hinaus oder die Zustaende fluechtig. */
+            $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
+            $msg = $verb . ' ' . $prefix . '/' . $k . ' ' . $wert;
             @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
         }
         socket_close($s);
@@ -2306,7 +2403,9 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
         return;
     }
     foreach ($msgs as $k => $v) {
-        @fwrite($strom, 'publish ' . $prefix . '/' . $k . ' ' . spot_mqtt_wert_saeubern($v));
+        $wert = spot_mqtt_wert_saeubern($v);
+        $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
+        @fwrite($strom, $verb . ' ' . $prefix . '/' . $k . ' ' . $wert);
     }
     fclose($strom);
 }
@@ -2427,9 +2526,12 @@ function spot_felder() {
         'CURB'    => array(1, -100, 200, 'ct/kWh', 'Reiner Boersenanteil der laufenden Stunde'),
         'NEXT'    => array(1, -100, 200, 'ct/kWh', 'Endpreis der naechsten Stunde'),
         'NEG'     => array(0, 0, 1, '', 'Boersenpreis ist negativ'),
-        'RANK'    => array(1, 1, 48, '', 'Rang der laufenden Stunde (1 = guenstigste)'),
-        'RANKD'   => array(1, 1, 48, '', 'Rang von hinten (1 = teuerste)'),
-        'LEVEL'   => array(1, 1, 3, '', 'Preisniveau: 1 guenstig, 2 normal, 3 teuer'),
+        /* MinVal -1: die drei senden -1, wenn keine Preise vorliegen.
+         * Ohne das stuende in der Visualisierung eine 0, und 0 waere
+         * bei einem Rang eine Aussage statt einer Luecke. */
+        'RANK'    => array(1, -1, 48, '', 'Rang der laufenden Stunde (1 = guenstigste, -1 = nicht bekannt)'),
+        'RANKD'   => array(1, -1, 48, '', 'Rang von hinten (1 = teuerste, -1 = nicht bekannt)'),
+        'LEVEL'   => array(1, -1, 3, '', 'Preisniveau: 1 guenstig, 2 normal, 3 teuer, -1 = nicht bekannt'),
         'MINH'    => array(1, 0, 23, 'h', 'Guenstigste Stunde morgen'),
         'MINP'    => array(1, -100, 200, 'ct/kWh', 'Preis der guenstigsten Stunde morgen'),
         'MAXH'    => array(1, 0, 23, 'h', 'Teuerste Stunde morgen'),
@@ -3308,6 +3410,21 @@ function spot_selbsttest($endpunkt_pruefen = false)
             ? sprintf(spot_t('PRUEFTEXT.PREISE_OK'), (int) $st['heute']['n'],
                       !empty($st['tomorrow_ok']) ? (int) $st['morgen']['n'] : 0)
             : spot_t('PRUEFTEXT.PREISE_FEHLT'));
+
+    /* Die Retain-Tabelle gegen die Themen, die wirklich hinausgehen.
+     *
+     * Nennt die Tabelle einen Namen, den spot_mqtt_themen() nicht
+     * bildet, wirkt der Eintrag still nicht - gesendet wird trotzdem,
+     * nur fluechtig. Die Zeile nennt die Zahl der angesehenen Stellen
+     * mit; eine Null waere kein 'in Ordnung'. */
+    $rt = array_keys(spot_retain_liste());
+    $alle = array_keys(spot_mqtt_themen($st));
+    $fremd = array_diff($rt, $alle);
+    $add('PRUEF.RETAIN', (count($rt) > 0 && !$fremd) ? 1 : 0,
+        (count($rt) > 0 && !$fremd)
+            ? sprintf(spot_t('PRUEFTEXT.RETAIN_OK'), count($rt), count($alle))
+            : sprintf(spot_t('PRUEFTEXT.RETAIN_FREMD'),
+                      $fremd ? implode(', ', $fremd) : '-'));
 
     /* Lebenszeichen. Erst pruefen, ob der Cron ueberhaupt schon einmal
      * gelaufen ist - ueber eine leere Menge wird nicht geurteilt.

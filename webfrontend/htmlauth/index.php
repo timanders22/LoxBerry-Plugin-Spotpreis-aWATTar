@@ -1754,6 +1754,18 @@ $sp_gwf = ($sp_gw === null) ? 0 : (int) $sp_gw['fassung'];
 <div class="sm-step"><b><?php echo spot_t('LOX.H_ABO'); ?></b><br>
 <?php echo spot_t('LOX.ABO_EINLEITUNG'); ?>
 <pre class="sm-pre"><?= sp_e($sp_cfg['mqtt_topic']) ?>/#</pre>
+<!-- Welche Themen zurueckbehalten hinausgehen. Die Liste wird NICHT
+     abgeschrieben, sondern aus spot_retain_liste() gebildet - zwei
+     Listen liefen sonst auseinander, und die Oberflaeche behauptete
+     etwas anderes, als der Dienst sendet. -->
+<div class="sm-small"><?php echo spot_t('LOX.RETAIN_TEXT'); ?></div>
+<div class="sm-pre"><?php
+    $sp_rt = array_keys(spot_retain_liste());
+    sort($sp_rt);
+    $sp_rz = array();
+    foreach ($sp_rt as $sp_r) { $sp_rz[] = $sp_cfg['mqtt_topic'] . '/' . $sp_r; }
+    echo sp_e(implode('   ', $sp_rz));
+?></div>
 <?php if ($sp_gwf >= 2) { ?>
 <div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
 <?php } elseif ($sp_gwf === 1) { ?>

@@ -8,6 +8,69 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.24 behebt
+
+Zwei Befunde, gefunden bei der Durchsicht der Schwesterlinie *Spotpreis
+Octopus* am **13.09.2026** und dort gleichlautend behoben. Der Fahrplaner
+`planer.php` ist unverändert und in beiden Linien weiterhin byteweise
+gleich.
+
+### Rang und Preisniveau logen, wenn keine Preise vorlagen
+
+Ist die Börse nicht erreichbar und liegt kein Zwischenspeicher vor, war
+`cur = 0` — und weil das Preisniveau **ohne jede Wache** gerechnet wurde,
+ergab `0 ≤ cheap` das Niveau **1**, also *„günstig"*. Gemessen mit einer
+Attrappe, die den Abruf scheitern lässt:
+
+```
+1.2.23:  ok=0  n=0  rank=1   rankd=99  level=1   cur=0
+1.2.24:  ok=0  n=0  rank=-1  rankd=-1  level=-1  cur=0
+```
+
+`RANK = 1` heißt laut Feldtabelle *„günstigste"*. Eine Regel „schalten,
+wenn Rang ≤ 3" hätte damit geschaltet, ohne dass ein Preis vorlag. **Alle
+drei tragen jetzt −1 für „nicht bekannt"**, und `spot_felder()` setzt
+`MinVal = -1`.
+
+Gegengeprüft, dass der Ersatzwert nichts auslöst: `spot_marstek_control()`
+kehrt bei `!$st['ok']` vorher um, und die Ansage hängt an `=== 1` bzw.
+`=== 3`.
+
+**Wer eine Regel auf `RANK` oder `LEVEL` gebaut hat, prüft sie.**
+
+### Nichts ging zurückbehalten (retained) hinaus
+
+Am Gerät gemessen: unter `spotpreis/#` lagen **0** zurückbehaltene Themen.
+Nach einem Neustart des Miniservers standen die Eingänge leer, bis sich der
+Wert das nächste Mal änderte.
+
+**11 der 89 Themen gehen jetzt zurückbehalten hinaus**, nach dem
+Hausstandard vom 03.09.2026:
+
+| zurückbehalten | warum |
+|---|---|
+| `ok`, `morgen_ok` | Zustand der Datenlage |
+| `audio`, `push` | Freigaben aus der Konfiguration |
+| `plan/budget`, `plan/budget2` | Einstellungen des Fahrplaners |
+| `fix`, `dyn_monat`, `diff_monat`, `euro_monat`, `shift_jahr` | Kostenvergleich, entsteht einmal im Monat |
+
+Nicht zurückbehalten: das Lebenszeichen (`status/ts`, `status/rechne`,
+`status/zaehler`, `status/ok`), die Schaltsignale `regel/N/…` und alle
+Messwerte mit Zeitbezug. Eine leere Nutzlast geht immer flüchtig hinaus —
+sie löscht ein zurückbehaltenes Thema.
+
+Damit die Prüfung im Reiter *Test* die Tabelle gegen die **wirklich**
+gesendeten Themen halten kann, entstehen sie jetzt in `spot_mqtt_themen()`
+statt mitten in der Sendefunktion — eine Quelle statt zweier Listen. Der
+verschobene Rumpf ist byteweise derselbe (53 Zeilen, nachgemessen).
+
+### Nebenher
+
+Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
+13.09.2026); die Symbole sind byteweise unverändert.
+
+---
+
 ## Neu in 1.2.22
 
 - **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.2.21 kam er von der
