@@ -8,6 +8,35 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.25 behebt
+
+### Der Installer schützte die Konfiguration nicht
+
+Der Schreibweg dieser Linie legt die Konfiguration seit je richtig an —
+Rechte **vor** dem Inhalt, 0600 für die Datei und für die Zweitschrift. Der
+**Installer** tat nichts dergleichen, und `postinstall.sh` wie
+`postupgrade.sh` holen die Konfiguration mit `cp -p` aus der Sicherung: das
+trägt die Rechte der alten Datei mit.
+
+Am Gerät gemessen (13.09.2026): `spot.json` stand auf **0664**, weltweit
+lesbar — eine Datei vom 26. Juli, die seither kein Schreibweg mehr angefasst
+hatte. Genau der Fall, den der Hausstandard nennt: aus dem Archiv oder aus
+einer Sicherung kommt die Datei mit den alten Rechten an und bliebe so bis
+zum ersten Speichern.
+
+Heute steht in dieser Konfiguration kein Geheimnis — das Feld `token` ist
+leer. Es ist aber dafür vorgesehen, und dann wäre 0664 ein Leck. Beide
+Hakenskripte setzen jetzt **nach** der Wiederherstellung 0600 auf die
+Konfiguration und auf die Zweitschrift.
+
+Gemessen am Gerät: 666/664 → **600/600**; ohne den Block bleibt es bei 666,
+und eine fehlende Zweitschrift bricht den Installer nicht (`rc=0`).
+
+Die Schwesterlinie *Octopus Dynamic* zieht mit 1.1.10 in derselben Sache
+nach; dort war zusätzlich der Schreibweg selbst auf 0640.
+
+---
+
 ## Was 1.2.24 behebt
 
 Zwei Befunde, gefunden bei der Durchsicht der Schwesterlinie *Spotpreis

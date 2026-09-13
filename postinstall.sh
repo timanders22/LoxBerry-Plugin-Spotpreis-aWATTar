@@ -17,6 +17,16 @@ if [ -f "$BK" ]; then
         echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
     fi
 fi
+
+# Rechte NACH der Wiederherstellung, nicht davor: "cp -p" oben traegt die
+# Rechte der Sicherung mit und dreht ein frueheres chmod zurueck. In dieser
+# Konfiguration steht das Aktionstoken; wer es lesen kann, kann den Endpunkt
+# abfragen und jedes Formular der Oberflaeche absenden. Hausstandard 0600
+# (Regeln/05, 13.09.2026). Die Zweitschrift traegt dasselbe Geheimnis.
+chmod 600 "$CF" 2>/dev/null
+if [ -f "$BK" ]; then
+    chmod 600 "$BK" 2>/dev/null
+fi
 echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und Preisbestandteile pruefen."
 
 # ---------- Langzeitwerte zurueckholen ----------
