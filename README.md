@@ -8,6 +8,78 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.26 behebt
+
+Gemessen am 17.09.2026 gegen die Hausregeln (Stand 17.09.) und am Gerät
+(installiert 1.2.25). Jeder Punkt ist auf dem Prüfstand zweimal gemessen:
+auf 1.2.26 vor der Änderung rot, danach grün, unter PHP 7.4 und 8.4.
+
+### Ein Aufruf ohne Anmeldung legte die Konfiguration an
+
+`spot.php` ist ohne Anmeldung erreichbar. Fehlte `spot.json`, schrieb schon
+ein **abgewiesener** Aufruf (HTTP 403) die Datei mit Vorgaben — und legte
+damit fest, was der Hausherr später vorfindet. Der Endpunkt liest jetzt nur
+noch; die Zweitschrift wird im Speicher gelesen, geschrieben wird nichts.
+
+### Die Konfiguration am Gerät war nie vervollständigt
+
+Am Gerät standen **35 von 59** Schlüsseln in `spot.json` — die Datei stammt
+vom 26. Juli, die 24 später hinzugekommenen Schlüssel galten nur im Speicher.
+Der Minutenlauf ergänzt fehlende Schlüssel jetzt **einmal** mit ihren
+Vorgaben und schreibt dazu eine Protokollzeile. Nicht angefasst wird eine
+Datei, deren Zustand beim Start nicht „in Ordnung" war, und eine Datei ohne
+Token, wenn die Zweitschrift eines trägt. Die Selbstprüfung nennt fehlende
+und fremde Schlüssel beim Namen.
+
+### Ohne Preise meldete der Endpunkt „alles in Ordnung"
+
+Lagen für heute keine Preise vor, kam trotzdem HTTP 200 mit lauter Nullen.
+Jetzt antwortet der Endpunkt mit **HTTP 503** und
+`SPOT;OK=0;HOK=0;GRUND=KEINE_PREISE`, dahinter weiter die `LEBEN`-Zeile;
+`?json=1` entsprechend mit `{"ok":0,"hok":0,"grund":"KEINE_PREISE",…}`.
+`?debug=1` bleibt bei 200.
+
+### Der Selbsttest antwortete ohne Token
+
+`?selftest=1` gibt jetzt die drei vorgesehenen Antworten:
+
+| Lage | Antwort |
+|---|---|
+| kein Token eingerichtet | 403 `SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET` |
+| falsches Token | 403 `SELFTEST;OK=0;ERR=TOKEN` |
+| richtiges Token | 200 `SELFTEST;OK=1;TOKEN=OK`, danach die `PRUEF`-Zeile und der Klartext |
+
+### MQTT schickte bei jeder Änderung den vollen Satz
+
+Änderte sich ein einziger Wert, gingen alle **89** Themen hinaus — mit einem
+Gateway, dessen UDP-Puffer ohnehin überläuft. Jetzt gehen nur die geänderten
+Themen hinaus, der volle Satz alle 30 Minuten; das Lebenszeichen
+(`status/…`) bei jedem Lauf. Gemessen: zweiter Lauf ohne Änderung 4 statt 89
+Datagramme. `?ptest=1` meldet sofort. Der Merker heißt `mqtt_letzte.json`.
+
+### Die Loxone-Vorlage trug Sätze als Kachelnamen
+
+Der Kommentar eines Befehls wird in Loxone Config zum Anzeigenamen. 55 von
+117 waren länger als 40 Zeichen, 28 standen in Umschrift („Guenstigste").
+Jetzt kurz, mit Umlauten und dem Vorsatz `aWATTar:`. Titel und Suchtexte
+sind byteweise gleich — ein erneuter Import legt keine neuen Bausteine an,
+und schon importierte behalten ihren Namen.
+
+### Oberfläche nach Hausvorlage
+
+Der Stilblock war ein eigener: 17 Regeln der Vorlage fehlten, darunter die
+Knopffarben für den Hover-Zustand. Er steht jetzt wortgetreu aus der Vorlage
+da, die Reiter heißen `?form=…`; `?tab=…` gilt weiter, alte Lesezeichen
+reißen nicht.
+
+### Nicht im Plugin
+
+Das MQTT-Gateway am Gerät reichte eine Meldung erst nach 3½ Minuten weiter,
+der Empfangspuffer seines UDP-Ports stand bei über 1 MB. Das liegt am
+Gateway, nicht an diesem Plugin; die Differenzsendung entlastet es.
+
+---
+
 ## Was 1.2.25 behebt
 
 ### Der Installer schützte die Konfiguration nicht
@@ -166,7 +238,9 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
 | `/plugins/spotpreis/spot.php` | Loxone-Zeile `SPOT;OK=..;MINH=..;…;CUR=..;RANK=..;LEVEL=..;WINH=..;ANN=..;CURX=..`, dazu `LEBEN;TS=..;LAUF=..;RECHNE=..` |
 | `/plugins/spotpreis/spot.php?debug=1` | alle Stundenpreise heute + morgen |
 | `/plugins/spotpreis/spot.php?json=1` | kompletter Zustand als JSON |
-| `/plugins/spotpreis/spot.php?selftest=1` | die Selbstprüfung als Zeile: `PRUEF;PANZ=13;PFEHL=0;PUNKLAR=5;KONFIG=1;PREISE=1;…`, dahinter der Klartext je Punkt (seit 1.2.20) |
+
+Liegen für heute keine Preise vor, antworten die Zeile und `?json=1` mit
+**HTTP 503** und `GRUND=KEINE_PREISE` (seit 1.2.26).
 
 Drei Felder der Zeile sind neu oder haben ihre Bedeutung geschärft:
 
@@ -185,6 +259,7 @@ Drei Felder der Zeile sind neu oder haben ihre Bedeutung geschärft:
 | `/plugins/spotpreis/spot.php?say=1` | Test-Ansage (aktueller Preis) |
 | `/plugins/spotpreis/spot.php?saytomorrow=1` | Test-Ansage (Preise für morgen) |
 | `/plugins/spotpreis/spot.php?ptest=1` | Test-Pushnachricht auslösen |
+| `/plugins/spotpreis/spot.php?selftest=1&token=…` | die Selbstprüfung: `SELFTEST;OK=1;TOKEN=OK`, dann `PRUEF;PANZ=14;PFEHL=0;…` und der Klartext je Punkt (seit 1.2.20, Token seit 1.2.26) |
 
 Der Unterschied hat einen Grund: `?say=1` spricht über die Lautsprecher der
 Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` stößt einen Abruf bei

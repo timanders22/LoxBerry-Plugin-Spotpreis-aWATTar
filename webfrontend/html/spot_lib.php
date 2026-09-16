@@ -223,8 +223,48 @@ function spot_vorgaben()
 ) + plan_global_vorgabe();
 }
 
-function spot_config() {
+/**
+ * Nur-Lese-Betrieb fuer den unangemeldeten Endpunkt (Regeln/05).
+ *
+ * spot.php schaltet ihn als ERSTES ein. Solange er an ist, legt
+ * spot_config() nichts an: kein Ordner, keine Kopie der Zweitschrift, kein
+ * Beiseitelegen einer kaputten Datei. Die Zweitschrift wird dann nur
+ * GELESEN. Gemessen an 1.2.26 am Pruefstand: Konfigordner geloescht,
+ * Zweitschrift da, ein tokenloser Lesezugriff - danach stand spot.json
+ * wieder da, und die Antwort kam als HTTP 403, weil die gerade geheilte
+ * Datei ein Token trug. Der Aufruf hat sich also selbst ausgesperrt.
+ */
+function spot_nur_lesen($an = null) {
+    static $wert = false;
+    if ($an !== null) {
+        $wert = (bool) $an;
+    }
+    return $wert;
+}
+
+/**
+ * Die Lage der Konfigurationsdatei, wie sie VOR jeder Selbstheilung war.
+ *
+ * Regeln/05: eine Zeile, die den Zustand meldet, merkt ihn sich, bevor die
+ * Selbstheilung ihn beseitigt. Der erste Aufruf von spot_config() heilt;
+ * wer danach nachsieht, sieht eine heile Datei und meldet "in Ordnung".
+ * Der zuerst festgestellte Zustand wird deshalb fuer die Dauer des
+ * Prozesses gehalten und von einem spaeteren nicht ueberschrieben.
+ */
+function spot_konfig_lage_merken($lage = null) {
+    static $erste = null;
+    if ($lage !== null && $erste === null) {
+        $erste = (string) $lage;
+    }
+    return $erste;
+}
+
+function spot_config($erzeugen = null) {
     $p = spot_paths();
+    if ($erzeugen === null) {
+        $erzeugen = !spot_nur_lesen();
+    }
+    spot_konfig_lage_merken(spot_konfig_lage_jetzt());
     /* ---- Selbstheilung ----
      *
      * DREI Faelle, nicht zwei. Bis 1.2.19 kannte diese Stelle nur "fehlt"
@@ -243,6 +283,18 @@ function spot_config() {
     $sp_roh = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
     $sp_leer = (trim($sp_roh) === '' || trim($sp_roh) === '{}');
     $sp_kaputt = (!$sp_leer && !is_array(json_decode($sp_roh, true)));
+    if (!$erzeugen) {
+        /* Nur lesen: die Zweitschrift wird im Speicher benutzt, auf der
+         * Platte bleibt alles, wie es war. */
+        $cfg = $sp_kaputt ? array() : (json_decode($sp_roh, true) ?: array());
+        if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && is_file($p['backup'])) {
+            $z = json_decode((string) @file_get_contents($p['backup']), true);
+            if (is_array($z)) {
+                $cfg = $z;
+            }
+        }
+        return spot_config_normalisieren(is_array($cfg) ? $cfg : array());
+    }
     if ($sp_kaputt) {
         $sp_weg = $p['config'] . '.kaputt.' . date('YmdHis');
         if (@rename($p['config'], $sp_weg) && function_exists('spot_log')) {
@@ -265,6 +317,14 @@ function spot_config() {
     if (!is_array($cfg)) {
         $cfg = array();
     }
+    return spot_config_normalisieren($cfg);
+}
+
+/**
+ * Vorgaben ergaenzen und jeden Wert in seinen Bereich bringen - fuer beide
+ * Wege von spot_config() dieselbe Rechnung.
+ */
+function spot_config_normalisieren($cfg) {
     $cfg += spot_vorgaben();
     // Alte Konfigurationen trugen hier 0/1 - auf die neuen Namen heben.
     if ($cfg['profil_ein'] === 1 || $cfg['profil_ein'] === '1' || $cfg['profil_ein'] === true) {
@@ -413,7 +473,7 @@ function spot_datadir() {
  *
  * spot_tmpdir() zeigt auf /tmp/spotpreis - und /tmp ist auf dem LoxBerry
  * fluechtig. Fuer Merker, die nur ein paar Minuten gelten (ptest, said_,
- * mqtt_sig), ist das genau richtig: nach einem Neustart soll wieder von vorn
+ * mqtt_letzte.json), ist das genau richtig: nach einem Neustart soll wieder von vorn
  * begonnen werden.
  *
  * Fuer "das ist heute/diesen Monat schon geschehen" ist es falsch. Der
@@ -526,6 +586,70 @@ function spot_cron_puls() {
  * Rueckgabe: 'ok' | 'vorgabe' | 'zweitschrift' | 'kaputt'
  */
 function spot_konfig_lage() {
+    $erste = spot_konfig_lage_merken();
+    return $erste !== null ? $erste : spot_konfig_lage_jetzt();
+}
+
+/**
+ * Welche Schluessel fehlen in der Datei, und welche stehen darin, die das
+ * Plugin nicht kennt? Regeln/05: fehlende werden geschrieben, fremde
+ * GENANNT und stehen gelassen. Rueckgabe array(fehlend, fremd) oder null,
+ * wenn die Datei nicht lesbar ist.
+ */
+function spot_konfig_schluessel() {
+    $p = spot_paths();
+    if (!is_file($p['config'])) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($p['config']), true);
+    if (!is_array($d)) {
+        return null;
+    }
+    $vorg = spot_vorgaben();
+    $fehlend = array_values(array_diff(array_keys($vorg), array_keys($d)));
+    $fremd = array();
+    foreach (array_keys($d) as $k) {
+        if (!array_key_exists($k, $vorg) && !($k !== '' && $k[0] === '_')) {
+            $fremd[] = (string) $k;
+        }
+    }
+    return array($fehlend, $fremd);
+}
+
+/**
+ * Fehlende Schluessel einmal mit ihrer Vorgabe in die Datei schreiben, mit
+ * Protokollzeile (Regeln/05). Nur wenn die Datei heil ist, nie im
+ * Nur-Lese-Betrieb, und die Zweitschrift nur dann mit, wenn dabei kein
+ * Token verlorengeht. Rueckgabe: Zahl der ergaenzten Schluessel.
+ *
+ * Gemessen am Geraet (17.09.2026): spot.json vom 26.07.2026 mit 35
+ * Schluesseln, die Vorgaben kennen 59. Die fehlenden galten still mit
+ * ihrer Vorgabe - ein stiller Vorgabewert ist eine Annahme, keine Auskunft.
+ */
+function spot_config_vervollstaendigen() {
+    if (spot_nur_lesen() || spot_konfig_lage_jetzt() !== 'ok') {
+        return 0;
+    }
+    $sk = spot_konfig_schluessel();
+    if ($sk === null || !$sk[0]) {
+        return 0;
+    }
+    $p = spot_paths();
+    $cfg = spot_config(true);
+    $z = is_file($p['backup']) ? json_decode((string) @file_get_contents($p['backup']), true) : null;
+    if (is_array($z) && !empty($z['token']) && (string) $cfg['token'] === '') {
+        spot_log('Konfiguration NICHT vervollstaendigt: die Datei hat kein Token, die Zweitschrift schon.');
+        return 0;
+    }
+    if (!spot_config_save($cfg)) {
+        return 0;
+    }
+    spot_log('Konfiguration vervollstaendigt: ' . count($sk[0]) . ' Schluessel mit Vorgabe ergaenzt ('
+        . implode(', ', $sk[0]) . ')');
+    return count($sk[0]);
+}
+
+function spot_konfig_lage_jetzt() {
     $p = spot_paths();
     if (!is_file($p['config'])) {
         return is_file($p['backup']) ? 'zweitschrift' : 'vorgabe';
@@ -2249,14 +2373,55 @@ function spot_mqtt_themen($st = null) {
     return $msgs;
 }
 
-function spot_mqtt_publish($st = null) {
+/** Wo der Merker der zuletzt gesendeten Werte liegt. */
+function spot_mqtt_merker() {
+    return spot_tmpdir() . '/mqtt_letzte.json';
+}
+
+/**
+ * Welche Themen haben sich gegenueber dem letzten Versand geaendert?
+ * Verglichen wird als Zeichenkette: aus dem Merker kommen die Werte ueber
+ * json_decode() zurueck, und aus 0 kann dabei "0" geworden sein.
+ */
+function spot_mqtt_diff($jetzt, $vorher) {
+    $neu = array();
+    foreach ((array) $jetzt as $k => $v) {
+        if (!array_key_exists($k, (array) $vorher) || (string) $vorher[$k] !== (string) $v) {
+            $neu[$k] = $v;
+        }
+    }
+    return $neu;
+}
+
+/**
+ * Zustand veroeffentlichen - nur die Themen, deren Wert sich geaendert hat.
+ *
+ * WARUM NICHT MEHR ALLES AUF EINMAL (neu in 1.2.26): bis dahin ging bei
+ * jeder Aenderung der Signatur der volle Satz von 89 Datagrammen in einem
+ * Stoss hinaus, mindestens stuendlich. Regeln/07 verlangt "nur Aenderungen
+ * und den vollen Satz in grobem Takt". Am Geraet (17.09.2026) stand die
+ * Warteschlange des Gateways auf Port 11884 ueber 1 MB; ein erzwungener
+ * Vollversand kam dreieinhalb Minuten spaeter im Gateway-Protokoll an.
+ * Bauart wie AWM-Abfuhr 1.4.9 - samt der dortigen Lehre: der Merker wird
+ * NUR fortgeschrieben, wenn wirklich etwas hinausging. Sonst gilt ein Lauf
+ * ohne UDP-Port als erledigt, und Felder, die tagelang gleich stehen,
+ * fehlten dauerhaft.
+ *
+ * Das Lebenszeichen (status/...) geht hier NICHT mit: es geht bei jedem
+ * Lauf ueber spot_mqtt_lebenszeichen() hinaus, am Filter vorbei.
+ *
+ * $erzwingen = true schickt alles (Vollversand, halbstuendlich).
+ * Rueckgabe: Zahl der abgesetzten Themen, -1 wenn nicht gesendet werden
+ * konnte.
+ */
+function spot_mqtt_publish($st = null, $erzwingen = false) {
     $cfg = spot_config();
     if (empty($cfg['mqtt_enabled'])) {
-        return;
+        return -1;
     }
     $p = spot_paths();
     if ($p['lbhome'] === '') {
-        return;
+        return -1;
     }
     if ($st === null) {
         $st = spot_state();
@@ -2266,11 +2431,31 @@ function spot_mqtt_publish($st = null) {
     if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
     if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
     if (!$udpport) {
-        return;
+        return -1;
     }
     $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
-    $msgs = spot_mqtt_themen($st);
-    spot_mqtt_senden($prefix, $udpport, $msgs);
+    $msgs = array();
+    foreach (spot_mqtt_themen($st) as $k => $v) {
+        if (strpos((string) $k, 'status/') !== 0) {
+            $msgs[$k] = $v;
+        }
+    }
+    $vorher = array();
+    $merker = spot_mqtt_merker();
+    if (!$erzwingen && is_file($merker)) {
+        $d = json_decode((string) @file_get_contents($merker), true);
+        if (is_array($d)) { $vorher = $d; }
+    }
+    $neu = spot_mqtt_diff($msgs, $vorher);
+    if (!$neu) {
+        return 0;
+    }
+    $n = spot_mqtt_senden($prefix, $udpport, $neu);
+    if ($n < 1) {
+        return -1;      // nichts hinausgegangen - Merker NICHT fortschreiben
+    }
+    spot_write_atomic($merker, json_encode($msgs));
+    return $n;
 }
 
 /**
@@ -2376,14 +2561,19 @@ function spot_retain_fuer($thema, $nutzlast = null) {
 }
 
 function spot_mqtt_senden($prefix, $udpport, $msgs) {
+    /* Rueckgabe: Zahl der abgesetzten Datagramme, -1 wenn keines. Das ist
+     * KEINE Zustellbestaetigung - sendto() meldet auch fuer ein am Gateway
+     * verworfenes Datagramm Erfolg (Regeln/07). Es sagt nur, ob der Weg
+     * ueberhaupt offen war. */
     $udpport = (int) $udpport;
     if ($udpport < 1 || $udpport > 65535 || !$msgs) {
-        return;
+        return -1;
     }
+    $n = 0;
     if (function_exists('socket_create')) {
         $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
         if (!$s) {
-            return;
+            return -1;
         }
         foreach ($msgs as $k => $v) {
             $wert = spot_mqtt_wert_saeubern($v);
@@ -2392,22 +2582,27 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
              * hinaus oder die Zustaende fluechtig. */
             $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
             $msg = $verb . ' ' . $prefix . '/' . $k . ' ' . $wert;
-            @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
+            if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport) !== false) {
+                $n++;
+            }
         }
         socket_close($s);
-        return;
+        return $n > 0 ? $n : -1;
     }
     $nr = 0; $txt = '';
     $strom = @stream_socket_client('udp://127.0.0.1:' . $udpport, $nr, $txt, 2);
     if (!$strom) {
-        return;
+        return -1;
     }
     foreach ($msgs as $k => $v) {
         $wert = spot_mqtt_wert_saeubern($v);
         $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
-        @fwrite($strom, $verb . ' ' . $prefix . '/' . $k . ' ' . $wert);
+        if (@fwrite($strom, $verb . ' ' . $prefix . '/' . $k . ' ' . $wert) !== false) {
+            $n++;
+        }
     }
     fclose($strom);
+    return $n > 0 ? $n : -1;
 }
 
 /* ==================================================================
@@ -2520,85 +2715,85 @@ function spot_zeile($st, $cfg) {
 /** Alle Felder der Loxone-Zeile: name => array(analog, min, max, einheit, text). */
 function spot_felder() {
     $f = array(
-        'OK'      => array(0, 0, 1, '', 'Preise fuer morgen liegen vor'),
-        'HOK'     => array(0, 0, 1, '', 'Preise fuer heute liegen vor'),
-        'CUR'     => array(1, -100, 200, 'ct/kWh', 'Endpreis der laufenden Stunde'),
-        'CURB'    => array(1, -100, 200, 'ct/kWh', 'Reiner Boersenanteil der laufenden Stunde'),
-        'NEXT'    => array(1, -100, 200, 'ct/kWh', 'Endpreis der naechsten Stunde'),
-        'NEG'     => array(0, 0, 1, '', 'Boersenpreis ist negativ'),
+        'OK'      => array(0, 0, 1, '', 'Preise morgen da'),
+        'HOK'     => array(0, 0, 1, '', 'Preise heute da'),
+        'CUR'     => array(1, -100, 200, 'ct/kWh', 'Endpreis jetzt'),
+        'CURB'    => array(1, -100, 200, 'ct/kWh', 'Börsenanteil jetzt'),
+        'NEXT'    => array(1, -100, 200, 'ct/kWh', 'Preis nächste Stunde'),
+        'NEG'     => array(0, 0, 1, '', 'Börsenpreis negativ'),
         /* MinVal -1: die drei senden -1, wenn keine Preise vorliegen.
          * Ohne das stuende in der Visualisierung eine 0, und 0 waere
          * bei einem Rang eine Aussage statt einer Luecke. */
-        'RANK'    => array(1, -1, 48, '', 'Rang der laufenden Stunde (1 = guenstigste, -1 = nicht bekannt)'),
-        'RANKD'   => array(1, -1, 48, '', 'Rang von hinten (1 = teuerste, -1 = nicht bekannt)'),
-        'LEVEL'   => array(1, -1, 3, '', 'Preisniveau: 1 guenstig, 2 normal, 3 teuer, -1 = nicht bekannt'),
-        'MINH'    => array(1, 0, 23, 'h', 'Guenstigste Stunde morgen'),
-        'MINP'    => array(1, -100, 200, 'ct/kWh', 'Preis der guenstigsten Stunde morgen'),
+        'RANK'    => array(1, -1, 48, '', 'Rang jetzt (1 = günstigste)'),
+        'RANKD'   => array(1, -1, 48, '', 'Rang von hinten'),
+        'LEVEL'   => array(1, -1, 3, '', 'Preisniveau 1 bis 3'),
+        'MINH'    => array(1, 0, 23, 'h', 'Günstigste Stunde morgen'),
+        'MINP'    => array(1, -100, 200, 'ct/kWh', 'Tiefstpreis morgen'),
         'MAXH'    => array(1, 0, 23, 'h', 'Teuerste Stunde morgen'),
-        'MAXP'    => array(1, -100, 200, 'ct/kWh', 'Preis der teuersten Stunde morgen'),
+        'MAXP'    => array(1, -100, 200, 'ct/kWh', 'Höchstpreis morgen'),
         'AVG'     => array(1, -100, 200, 'ct/kWh', 'Tagesmittel morgen'),
-        'HMINH'   => array(1, 0, 23, 'h', 'Guenstigste Stunde heute'),
-        'HMINP'   => array(1, -100, 200, 'ct/kWh', 'Preis der guenstigsten Stunde heute'),
+        'HMINH'   => array(1, 0, 23, 'h', 'Günstigste Stunde heute'),
+        'HMINP'   => array(1, -100, 200, 'ct/kWh', 'Tiefstpreis heute'),
         'HMAXH'   => array(1, 0, 23, 'h', 'Teuerste Stunde heute'),
-        'HMAXP'   => array(1, -100, 200, 'ct/kWh', 'Preis der teuersten Stunde heute'),
+        'HMAXP'   => array(1, -100, 200, 'ct/kWh', 'Höchstpreis heute'),
         'HAVG'    => array(1, -100, 200, 'ct/kWh', 'Tagesmittel heute'),
-        'WINH'    => array(1, -1, 23, 'h', 'Startstunde des guenstigsten Fensters'),
-        'WININ'   => array(1, -1, 48, 'h', 'Stunden bis zu diesem Fenster'),
-        'WINCT'   => array(1, -100, 200, 'ct/kWh', 'Schnitt in diesem Fenster'),
-        'CO2'     => array(1, 0, 1000, 'g/kWh', 'CO2-Intensitaet jetzt'),
-        'CO2MIN'  => array(1, 0, 1000, 'g/kWh', 'Sauberste Stunde'),
-        'CO2MINH' => array(1, -1, 23, 'h', 'Stunde der saubersten Stunde'),
-        'CO2CLEAN' => array(0, 0, 1, '', 'Strommix gilt als sauber'),
-        'WPCUR'   => array(1, -100, 200, 'ct/kWh', 'Par.-14a-Preissatz jetzt'),
-        'WPNEXT'  => array(1, -100, 200, 'ct/kWh', 'Par.-14a-Preissatz naechste Stunde'),
-        'FIX'     => array(1, 0, 200, 'ct/kWh', 'Fester Vergleichstarif'),
-        'DYNM'    => array(1, -100, 200, 'ct/kWh', 'Dynamischer Preis laufender Monat'),
-        'DIFFM'   => array(1, -200, 200, 'ct/kWh', 'Unterschied dynamisch zu fest'),
-        'EUROM'   => array(1, -10000, 10000, 'EUR', 'Unterschied in Euro im laufenden Monat'),
-        'SHIFTJ'  => array(1, 0, 10000, 'EUR', 'Verschiebe-Potenzial im Jahr'),
+        'WINH'    => array(1, -1, 23, 'h', 'Fenster: Startstunde'),
+        'WININ'   => array(1, -1, 48, 'h', 'Fenster: Stunden bis Start'),
+        'WINCT'   => array(1, -100, 200, 'ct/kWh', 'Fenster: Schnitt'),
+        'CO2'     => array(1, 0, 1000, 'g/kWh', 'CO₂ jetzt'),
+        'CO2MIN'  => array(1, 0, 1000, 'g/kWh', 'CO₂ sauberste Stunde'),
+        'CO2MINH' => array(1, -1, 23, 'h', 'Sauberste Stunde'),
+        'CO2CLEAN' => array(0, 0, 1, '', 'Strommix sauber'),
+        'WPCUR'   => array(1, -100, 200, 'ct/kWh', '§14a-Preis jetzt'),
+        'WPNEXT'  => array(1, -100, 200, 'ct/kWh', '§14a nächste Stunde'),
+        'FIX'     => array(1, 0, 200, 'ct/kWh', 'Fester Tarif'),
+        'DYNM'    => array(1, -100, 200, 'ct/kWh', 'Dynamisch im Monat'),
+        'DIFFM'   => array(1, -200, 200, 'ct/kWh', 'Vorteil dynamisch'),
+        'EUROM'   => array(1, -10000, 10000, 'EUR', 'Vorteil im Monat'),
+        'SHIFTJ'  => array(1, 0, 10000, 'EUR', 'Verschiebe-Potenzial Jahr'),
         'ANN'     => array(0, 0, 1, '', 'Meldefenster offen'),
         'AUDIO'   => array(0, 0, 1, '', 'Ansage freigegeben'),
         'PUSH'    => array(0, 0, 1, '', 'Push freigegeben'),
-        'PTEST'   => array(0, 0, 1, '', 'Test-Pushnachricht angefordert'),
+        'PTEST'   => array(0, 0, 1, '', 'Test-Push angefordert'),
         /* Lebenszeichen. TS ist eine Unix-Sekundenzahl und damit gross -
          * MaxVal muss reichen, sonst kappt Loxone den Wert. 2147483647 ist
          * das Ende der 32-Bit-Zeitrechnung (2038) und die groesste Zahl,
          * die Config an dieser Stelle sinnvoll fuehrt.
          * In Loxone: Alter in Sekunden = (Zeit-Baustein + 1230768000) - TS. */
-        'CURX'    => array(0, 0, 1, '', 'Fuer die laufende Stunde steht ein Ersatzwert (Tageshoechstpreis)'),
-        'TS'      => array(1, 0, 2147483647, 's', 'Zeitpunkt des letzten CRON-Laufs (Unix-Sekunden)'),
-        'RECHNE'  => array(1, 0, 2147483647, 's', 'Zeitpunkt der letzten Zustandsrechnung (Unix-Sekunden)'),
-        'LAUF'    => array(1, 0, 999, '', 'Laufzaehler, laeuft bei 999 um - wechselt er nicht mehr, steht der Cron'),
+        'CURX'    => array(0, 0, 1, '', 'Ersatzwert jetzt'),
+        'TS'      => array(1, 0, 2147483647, 's', 'Letzter Minutenlauf'),
+        'RECHNE'  => array(1, 0, 2147483647, 's', 'Letzte Zustandsrechnung'),
+        'LAUF'    => array(1, 0, 999, '', 'Laufzähler'),
     );
     // Schaltregeln - der Grund fuer die ganze Uebung: R<n> ist digital.
     for ($i = 1; $i <= SPOT_REGELN; $i++) {
-        $f['R' . $i]          = array(0, 0, 1, '', 'Schaltregel ' . $i . ': jetzt einschalten');
-        $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', 'Schaltregel ' . $i . ': Stunden bis zum naechsten Fenster');
-        $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', 'Schaltregel ' . $i . ': verbleibende Stunden');
-        $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', 'Schaltregel ' . $i . ': Schnitt im Fenster');
+        $f['R' . $i]          = array(0, 0, 1, '', 'Regel ' . $i . ': einschalten');
+        $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', 'Regel ' . $i . ': Stunden bis Start');
+        $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', 'Regel ' . $i . ': Reststunden');
+        $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', 'Regel ' . $i . ': Schnitt');
         // Fahrplaner ab 1.2.0. VERD und SPERRE beantworten die Frage, die
         // sonst im Dunkeln bleibt: warum laeuft es gerade NICHT?
         $f['R' . $i . 'VERD']   = array(1, 0, 96, '',
-            'Schaltregel ' . $i . ': Stunden, die eine hoeher gereihte Regel weggenommen hat');
+            'Regel ' . $i . ': verdrängt');
         $f['R' . $i . 'SPERRE'] = array(1, 0, 3, '',
-            'Schaltregel ' . $i . ': 0 frei, 1 PV-Prognose, 2 Speicher zu leer, 3 Speicher zu voll');
+            'Regel ' . $i . ': Sperre');
     }
     // Fahrplaner, global
-    $f['PVSUM'] = array(1, 0, 1000, 'kWh', 'PV-Prognose der naechsten 24 Stunden');
-    $f['SOC']   = array(1, -1, 100, '%', 'Speicherstand, -1 = keine Auskunft');
-    $f['BUDGET'] = array(1, 0, 200, 'kW', 'Eingestelltes Leistungsbudget, 0 = keines');
-    $f['PLANLAST'] = array(1, 0, 200, 'kW', 'Verplante Leistung in der laufenden Stunde');
+    $f['PVSUM'] = array(1, 0, 1000, 'kWh', 'PV-Prognose 24 h');
+    $f['SOC']   = array(1, -1, 100, '%', 'Speicherstand');
+    $f['BUDGET'] = array(1, 0, 200, 'kW', 'Leistungsbudget');
+    $f['PLANLAST'] = array(1, 0, 200, 'kW', 'Verplante Leistung jetzt');
     $cfg = spot_config();
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $f[sprintf('PH%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis heute %02d Uhr - Spot Price Optimizer, Modus Absolut, Eingang %02d:00', $h, $h));
-            $f[sprintf('PM%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis morgen %02d Uhr', $h));
+            $f[sprintf('PH%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis heute %02d Uhr', $h));
+            $f[sprintf('PM%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis morgen %02d Uhr', $h));
         }
     }
     if ($modus === 'relativ' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $f[sprintf('PR%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Endpreis in %d Stunden - Spot Price Optimizer, Modus Relativ, Eingang +%d', $h, $h));
+            $f[sprintf('PR%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis in %d Stunden', $h));
         }
     }
     return $f;
@@ -2665,12 +2860,19 @@ function spot_vorlage() {
         if (preg_match('/^R([0-9]+)/', $name, $m)) {
             $i = (int) $m[1] - 1;
             if (isset($st['regeln'][$i]) && $st['regeln'][$i]['name'] !== '') {
-                $text = str_replace('Schaltregel ' . ($i + 1), $st['regeln'][$i]['name'], $text);
+                /* Hoechstens 14 Zeichen des Namens - der Kachelname soll
+                 * kurz bleiben. Gezaehlt in Zeichen, nicht in Byte
+                 * (Modifikator u, ohne mbstring). */
+                $sp_name = preg_replace('/^(.{0,14}).*$/su', '$1', (string) $st['regeln'][$i]['name']);
+                $text = str_replace('Regel ' . ($i + 1), $sp_name, $text);
             }
         }
         $cmds[] = array(
             'title' => 'SPOT_' . $name,
-            'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            /* Der Comment wird in Loxone Config zum Kachelnamen (Regeln/07) -
+             * kurz, mit Umlauten und mit Vorsatz. Bis 1.2.26 standen hier
+             * ganze Erklaersaetze: 55 von 117 ueber 40 Zeichen. */
+            'comment' => 'aWATTar: ' . $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             /* MIT SEMIKOLON. Loxone nimmt die ERSTE Fundstelle des
              * Suchtextes in der Antwortzeile. Ohne Trennzeichen trifft
              * "CUR=" auch in "WPCUR=", "MINH=" auch in "HMINH=" und in
@@ -2704,7 +2906,7 @@ function spot_vorlage() {
                    . ($token !== '' ? '?token=' . rawurlencode($token) : ''),
         'polling' => '300',
         'comment' => 'Erzeugt vom LoxBerry-Plugin Spotpreis aWATTar (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'Loxone Config legt beim Import neu an und überschreibt nichts - '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
     ), $cmds));
 }
@@ -3374,6 +3576,10 @@ function spot_endpunkt_probe($force = false)
         $erg = array(2, 'ENDPUNKT_UNKLAR');
     } elseif (strpos($r, 'GRUND=TOKEN') !== false) {
         $erg = array(0, 'ENDPUNKT_TOKEN');
+    } elseif (strpos($r, 'GRUND=KEINE_PREISE') !== false) {
+        // HTTP 503 ohne Preise: der Endpunkt tut, was er soll; ueber die
+        // Zeile selbst laesst sich so nichts sagen.
+        $erg = array(2, 'ENDPUNKT_KEINE_PREISE');
     } elseif (strpos($r, 'SPOT;OK=') === 0 && strpos($r, ';CUR=') !== false) {
         $erg = array(1, 'ENDPUNKT_OK');
     } else {
@@ -3400,8 +3606,15 @@ function spot_selbsttest($endpunkt_pruefen = false)
      * erklaert das jede leere Zahl darunter - wer die Reihenfolge umdreht,
      * schickt den Leser in die falsche Ecke. */
     $lage = spot_konfig_lage();
-    $add('PRUEF.KONFIG', $lage === 'kaputt' ? 0 : ($lage === 'ok' ? 1 : 2),
-        spot_t('PRUEFTEXT.KONFIG_' . strtoupper($lage)));
+    $sp_text = spot_t('PRUEFTEXT.KONFIG_' . strtoupper($lage));
+    $sk = spot_konfig_schluessel();
+    if ($sk !== null && $sk[0]) {
+        $sp_text .= ' ' . sprintf(spot_t('PRUEFTEXT.KONFIG_FEHLEND'), count($sk[0]), implode(', ', $sk[0]));
+    }
+    if ($sk !== null && $sk[1]) {
+        $sp_text .= ' ' . sprintf(spot_t('PRUEFTEXT.KONFIG_FREMD'), count($sk[1]), implode(', ', $sk[1]));
+    }
+    $add('PRUEF.KONFIG', $lage === 'kaputt' ? 0 : ($lage === 'ok' ? 1 : 2), $sp_text);
 
     // Marktdaten. Ohne sie ist jede Zahl darunter eine Null, und das hat
     // dann nichts mit der Einrichtung zu tun.
@@ -3641,7 +3854,7 @@ function spot_selbsttest($endpunkt_pruefen = false)
          * kann sie jetzt auch von den anderen beiden abweichen. Wer sie
          * ausschreibt, ohne sie nachrechnen zu lassen, hat den Fehler nur
          * verschoben. */
-        $leiste = preg_match_all('/data-pane="tab-([a-z0-9_]+)"/', $q, $l) ? $l[1] : array();
+        $leiste = preg_match_all('/data-ziel="tab-([a-z0-9_]+)"/', $q, $l) ? $l[1] : array();
         $fehlend = array_merge(array_diff($ids, $flaechen), array_diff($ids, $leiste));
         $ueberzaehlig = array_merge(array_diff($flaechen, $ids), array_diff($leiste, $ids));
         if (!$ids) {

@@ -100,7 +100,7 @@ if ($sp_ist_post && function_exists('spot_formtoken_ok') && !spot_formtoken_ok()
 }
 
 // Der Reiter kommt aus einem abgesendeten Formular (activetab) oder aus der
-// Adresse (?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
+// Adresse (?form=..., bis 1.2.26 ?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
 // sind - siehe die Reiterleiste weiter unten.
 /* EINE Quelle fuer Reihenfolge, Positivliste und Beschriftung. Die Namen
  * standen bis 1.1.1 an zwei Stellen: in diesem Muster und weiter unten im
@@ -112,7 +112,10 @@ if ($sp_ist_post && function_exists('spot_formtoken_ok') && !spot_formtoken_ok()
 $sp_reiter_ids = array('settings', 'mqtt', 'loxone', 'costs', 'test', 'log');
 
 $sp_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
-    : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
+    : ((isset($_GET['form']) && is_string($_GET['form'])) ? 'tab-' . $_GET['form']
+    /* ?tab= ist der Name bis 1.2.26 und bleibt als Ausweichname gueltig -
+     * bestehende Lesezeichen reissen nicht. Die Hausform ist ?form=. */
+    : ((isset($_GET['tab']) && is_string($_GET['tab'])) ? 'tab-' . $_GET['tab'] : ''));
 $sp_tab = preg_match('/^tab-(' . implode('|', $sp_reiter_ids) . ')$/', $sp_wunsch)
     ? $sp_wunsch : 'tab-' . $sp_reiter_ids[0];
 
@@ -687,38 +690,104 @@ if ($sp_frame) {
 
 ?>
 <style>
-.sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+/* Hausstandard: eigener Behaelter, kein Schattenwurf, Reiter im Fluss */
+.sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap, .sm-wrap *, .sm-tabs, .sm-tabs * { text-shadow: none !important; }
 .sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
+.sm-wrap h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+.sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0;
+          padding: 9px 18px; font-size: 0.95em; color: #444 !important; text-decoration: none; display: inline-block; }
+.sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
+.sm-feld { margin: 14px 0; }
+.sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
+/* Bedienelemente werden von jQuery Mobile umgebaut und bekommen einen eigenen
+   Behaelter. Begrenzt man das Feld selbst, bleibt der Behaelter breit - man
+   sieht ein schmales Feld in einem breiten weissen Kasten. Und beim
+   Auswahlfeld liegt das unsichtbare <select> ueber dem Knopf und faengt die
+   Klicks ab; wer es gestaltet, schiebt es weg. Deshalb wird ausschliesslich
+   der Behaelter begrenzt. */
+.sm-feld .ui-input-text, .sm-feld .ui-select, .sm-feld .ui-textinput { max-width: 520px; }
+.sm-feld .ui-input-text input, .sm-feld .ui-input-text textarea { font-size: 0.95em; }
+.sm-hilfe { font-size: 0.85em; color: #555; margin: 4px 0 0; max-width: 640px; }
+.sm-step { border: 1px solid #ddd; border-left: 4px solid #6dac20; background: #fafafa;
+    border-radius: 6px; padding: 12px 14px; margin: 12px 0; font-size: 0.92em; line-height: 1.5; }
+.sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
+.sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
+.sm-tbl th { background: #eef3e6; font-weight: 600; }
+.sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
+    padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
+.sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
+    overflow: auto; margin: 8px 0; }
+.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+/* LoxBerry bringt jQuery Mobile mit. Das formatiert JEDES <button> mit eigenem
+   Hintergrund UND eigenen Hover-Regeln. Ohne !important steht weisse Schrift
+   auf hellgrauem Grund - und beim Ueberfahren weiss auf weiss. Die
+   Hover-Farben unten sind kein Feinschliff, sondern Pflicht: fehlen sie, kommt
+   der Hover-Zustand vom Rahmen und ist unlesbar. */
+.sm-wrap .sm-knopfreihe .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button.sm-btn {
+    flex: 0 0 auto; min-width: 250px; text-align: center; display: inline-flex;
+    align-items: center; justify-content: center; line-height: 1.25;
+    padding: 10px 14px !important; border-radius: 6px !important;
+    color: #fff !important; text-decoration: none !important; font-size: 0.92em;
+    border: 0 !important; cursor: pointer; font-weight: 600 !important;
+    text-shadow: none !important; box-shadow: none !important;
+    opacity: 1 !important; margin: 0 !important; width: auto !important; }
+/* Statuskacheln — bewusst ein anderer Name als sm-knopfreihe.
+   Beide zu verwechseln hat am 26.07.2026 die Statusanzeige zerlegt. */
+.sm-kacheln { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.sm-kachel { border: 1px solid #ddd; border-radius: 10px; padding: 10px 14px; min-width: 130px; }
+.sm-kachel b { display: block; font-size: 1.35em; color: #33691e; }
+
+.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sm-wrap .sm-btn.sm-b-lesen   { background: #6dac20 !important; }
+.sm-wrap .sm-btn.sm-b-technik { background: #546e7a !important; }
+.sm-wrap .sm-btn.sm-b-aktion  { background: #e0620d !important; }
+/* Eigene Hover- und Fokusfarben je Gruppe - sonst uebernimmt der Rahmen. */
+.sm-wrap .sm-btn.sm-b-lesen:hover,   .sm-wrap .sm-btn.sm-b-lesen:focus   { background: #5c9219 !important; color: #fff !important; }
+.sm-wrap .sm-btn.sm-b-technik:hover, .sm-wrap .sm-btn.sm-b-technik:focus { background: #435962 !important; color: #fff !important; }
+.sm-wrap .sm-btn.sm-b-aktion:hover,  .sm-wrap .sm-btn.sm-b-aktion:focus  { background: #b84f0a !important; color: #fff !important; }
+.sm-punkt.sm-b-lesen   { background: #6dac20; }
+.sm-punkt.sm-b-technik { background: #546e7a; }
+.sm-punkt.sm-b-aktion  { background: #e0620d; }
+/* Reiterinhalte: nur der aktive ist sichtbar.
+   Ohne diese zwei Zeilen stehen alle fuenf Reiter untereinander.
+   MIT ihnen und OHNE serverseitiges sm-active ist die Seite dagegen
+   vollstaendig leer, sobald das Skript nicht laeuft - genau das war bis
+   07.08.2026 der Fall. Die Klasse gehoert deshalb schon ins ausgelieferte
+   HTML, siehe die Reiterleiste weiter unten. */
+.sm-seite { display: none; padding-top: 4px; }
+.sm-seite.sm-active { display: block; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+.sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+.sm-an  { color: #1a7f1a; font-weight: 700; }
+.sm-aus { color: #b00000; font-weight: 700; }
+/* ==================================================================
+   Bis hierher wortgetreu aus VORLAGE_hausstandard.css.html (Stand
+   17.09.2026). Bis 1.2.26 stand hier ein eigener Block: 17 Regeln der
+   Vorlage fehlten, darunter die Knopffarben mit !important und ihre
+   Hover-Farben, 7 wichen ab, und die Flaechen hiessen sm-pane statt
+   sm-seite. Ab hier folgen NUR Regeln, die die Vorlage nicht kennt.
+   ================================================================== */
 .sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
 .sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
 .sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sm-row > div { flex: 1; min-width: 150px; }
-.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
+.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; font-weight: 600; }
 .sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
 .sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
 .sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-warn { background: #fff8e1; border: 1px solid #ffe082; }
-.sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
-.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
-    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
-.sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
-.sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
-.sm-pane { display: none; padding-top: 4px; }
-.sm-pane.sm-active { display: block; }
-.sm-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
-.sm-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
-.sm-tbl { border-collapse: collapse; margin: 8px 0; }
-.sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
-.sm-tbl th { background: #f0f0f0; }
-/* Breite Tabellen rollen SELBST, statt die Seite nach rechts zu schieben.
-   Wortgleich aus VORLAGE_hausstandard.css.html. Bis 1.2.19 fehlte die
-   Klasse hier ganz - und mit ihr der Rollbereich um die drei Tabellen mit
-   acht, acht und sieben Spalten. */
+.sm-log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+/* Breite Tabellen rollen SELBST, statt die Seite nach rechts zu schieben. */
 .sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
 .sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-hours { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
@@ -731,52 +800,11 @@ if ($sp_frame) {
 /* Beschriftungen einer Zeile auf gleiche Hoehe bringen, damit die Eingabefelder
    waagrecht fluchten - auch wenn ein Text zweizeilig umbricht */
 .sm-row > div > label:not([style]) { min-height: 2.6em; display: flex; align-items: flex-end; }
-.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button { text-shadow: none !important; box-shadow: none !important; }
-.sm-wrap a.sm-btn, .sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover { color: #fff !important; text-decoration: none; }
-
-/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
-.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
-.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
 .sm-knopfreihe form { margin: 0; display: flex; }
-.sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
-    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
-.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
-.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
-.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
-.sm-btn.sm-b-lesen   { background: #6dac20; }
-.sm-btn.sm-b-technik { background: #546e7a; }
-.sm-btn.sm-b-aktion  { background: #e0620d; }
-.sm-punkt.sm-b-lesen   { background: #6dac20; }
-.sm-punkt.sm-b-technik { background: #546e7a; }
-.sm-punkt.sm-b-aktion  { background: #e0620d; }
-
-/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
-   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
-   bzw. der Referenzimplementierung uebernommen. */
-.sm-an { color: #1a7f1a; font-weight: 700; }
-/* .sm-aus fehlte, seit die Regeluebersicht sie benutzt - wortgleich aus
-   VORLAGE_hausstandard.css.html nachgetragen. Eine Klasse, die nur im
-   HTML steht und in keinem Stilblock, faerbt nichts: die Zahl unter
-   "fehlt" saehe aus wie jede andere. */
-.sm-aus { color: #b00000; font-weight: 700; }
-.sm-feld { margin: 14px 0; }
-.sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
-.sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
-  overflow: auto; margin: 8px 0; }
-.sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
-  padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
-/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
-   05.09.2026 nach Regeln/04; Wortlaut aus VORLAGE_hausstandard.css.html.
-
-   Am Geraet gemessen (LoxBerry 4.0.0.15, components.css): die Rahmen-CSS
-   zeichnet seit der neuen Oberflaeche selbst einen Pfeil - Regel
-   ".lb-content select". Darauf kann sich eine Plugin-Oberflaeche nicht
-   verlassen: die Regel gibt es erst seit dieser Fassung, und die eigene
-   Feldregel loescht sie, sobald sie die Kurzform "background:" benutzt.
-   Dann steht ein Auswahlfeld da, das aussieht wie ein Textfeld.
-
-   Die Raute im SVG wird als %23 geschrieben: eine rohe Raute beendet in
-   einer CSS-Adresse den Wert. */
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen (Regeln/04). Die Raute im
+   SVG wird als %23 geschrieben: eine rohe Raute beendet in einer CSS-Adresse
+   den Wert. */
 .sm-wrap select {
     appearance: none; -webkit-appearance: none; -moz-appearance: none;
     background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
@@ -860,21 +888,21 @@ foreach ($sp_reiter_ids as $sp_i) {
 ?>
 <div class="sm-tabs">
     <a class="sm-tab<?php echo $sp_tab === 'tab-settings' ? ' sm-active' : ''; ?>"
-       data-pane="tab-settings" href="index.php?tab=settings"><?php echo $sp_reiter['tab-settings']; ?></a>
+       data-ziel="tab-settings" href="index.php?form=settings"><?php echo $sp_reiter['tab-settings']; ?></a>
     <a class="sm-tab<?php echo $sp_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>"
-       data-pane="tab-mqtt" href="index.php?tab=mqtt"><?php echo $sp_reiter['tab-mqtt']; ?></a>
+       data-ziel="tab-mqtt" href="index.php?form=mqtt"><?php echo $sp_reiter['tab-mqtt']; ?></a>
     <a class="sm-tab<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>"
-       data-pane="tab-loxone" href="index.php?tab=loxone"><?php echo $sp_reiter['tab-loxone']; ?></a>
+       data-ziel="tab-loxone" href="index.php?form=loxone"><?php echo $sp_reiter['tab-loxone']; ?></a>
     <a class="sm-tab<?php echo $sp_tab === 'tab-costs' ? ' sm-active' : ''; ?>"
-       data-pane="tab-costs" href="index.php?tab=costs"><?php echo $sp_reiter['tab-costs']; ?></a>
+       data-ziel="tab-costs" href="index.php?form=costs"><?php echo $sp_reiter['tab-costs']; ?></a>
     <a class="sm-tab<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>"
-       data-pane="tab-test" href="index.php?tab=test"><?php echo $sp_reiter['tab-test']; ?></a>
+       data-ziel="tab-test" href="index.php?form=test"><?php echo $sp_reiter['tab-test']; ?></a>
     <a class="sm-tab<?php echo $sp_tab === 'tab-log' ? ' sm-active' : ''; ?>"
-       data-pane="tab-log" href="index.php?tab=log"><?php echo $sp_reiter['tab-log']; ?></a>
+       data-ziel="tab-log" href="index.php?form=log"><?php echo $sp_reiter['tab-log']; ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-pane<?php echo $sp_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<div class="sm-seite<?php echo $sp_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1400,10 +1428,10 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
     <label><input data-role="none" type="checkbox" name="hours[]" value="<?= $sp_h ?>" <?= in_array($sp_h, $sp_hoursel, true) ? 'checked' : '' ?>> <?= sprintf('%02d', $sp_h) ?> <?php echo spot_t('TEXT.UHR_3'); ?></label>
 <?php } ?>
 </div>
-<div style="margin-top:6px;">
-    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(1)"><?php echo spot_t('TEXT.ALLE'); ?></button>
-    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(0)"><?php echo spot_t('TEXT.KEINE'); ?></button>
-    <button data-role="none" type="button" class="sm-btn sm-b-technik" style="margin-top:4px;padding:6px 14px;font-size:0.85em;" onclick="spHours(2)"><?php echo spot_t('TEXT.NUR_TAGSBER_721'); ?></button>
+<div class="sm-knopfreihe">
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" onclick="spHours(1)"><?php echo spot_t('TEXT.ALLE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" onclick="spHours(0)"><?php echo spot_t('TEXT.KEINE'); ?></button>
+    <button data-role="none" type="button" class="sm-btn sm-b-technik" onclick="spHours(2)"><?php echo spot_t('TEXT.NUR_TAGSBER_721'); ?></button>
 </div>
 <div style="margin-top:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
@@ -1506,7 +1534,7 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <!-- ================= Reiter: MQTT (eigener Reiter seit 1.2.5, Hausstandard) ================= -->
-<div class="sm-pane<?php echo $sp_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+<div class="sm-seite<?php echo $sp_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="mqtt_save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
@@ -1568,7 +1596,7 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
 </form>
 </div>
 
-<div class="sm-pane<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
+<div class="sm-seite<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo spot_t('EM.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('EM.EINLEITUNG'); ?></div>
 
@@ -1784,7 +1812,7 @@ $sp_gwf = ($sp_gw === null) ? 0 : (int) $sp_gw['fassung'];
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-pane<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
+<div class="sm-seite<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2><?php echo spot_t('TEXT.TEST'); ?></h2>
 
 <?php
@@ -2107,7 +2135,7 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 </div>
 
 <!-- ================= Reiter: Kostenvergleich ================= -->
-<div class="sm-pane<?php echo $sp_tab === 'tab-costs' ? ' sm-active' : ''; ?>" id="tab-costs">
+<div class="sm-seite<?php echo $sp_tab === 'tab-costs' ? ' sm-active' : ''; ?>" id="tab-costs">
 <?php $sp_cc = function_exists('spot_cost_compare') ? spot_cost_compare() : null; if ($sp_cc) { ?>
 <h2><?php echo spot_t('TEXT.KOSTENVERGLEICH_AUF_EIN_JAHR_HOCHG'); ?></h2>
 <div class="sm-small" style="margin-bottom:6px;"><?php echo spot_t('TEXT.BEIDE_TARIFE_MIT_ALLEN_BESTANDTEIL'); ?> <b><?= sp_n($sp_cc['kwh'], 0) ?> kWh</b> <?php echo spot_t('TEXT.JAHRESVERBRAUCH'); ?>
@@ -2147,7 +2175,7 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-pane<?php echo $sp_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
+<div class="sm-seite<?php echo $sp_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
 <h2><?php echo spot_t('TEXT.LOGDATEI'); ?></h2>
 <div class="sm-small" style="margin-bottom:8px;"><?php echo spot_t('TEXT.PROTOKOLLIERT_WERDEN_PREISNDERUNGE'); ?><br><?php echo spot_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= sp_e($sp_logfile) ?></span></div>
 <?php if ($sp_loglines) { ?>
@@ -2227,9 +2255,13 @@ function spHours(mode) {
 }
 (function () {
     var tabs = document.querySelectorAll('.sm-tab');
+    /* Wortgetreu wie die Vorlage (zeige): Reiter, Flaeche, die versteckten
+     * activetab-Felder und die Adresszeile. */
     function activate(id) {
-        tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
-        document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
+        tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.ziel === id); });
+        document.querySelectorAll('.sm-seite').forEach(function (s) { s.classList.toggle('sm-active', s.id === id); });
+        document.querySelectorAll('input[name="activetab"]').forEach(function (f) { f.value = id; });
+        if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
     }
     /* Der Klick wird ABGEFANGEN - sonst schaltet das Skript die Flaeche um
      * UND der Anker laedt die Seite neu. Bis 1.2.19 war das so: jeder
@@ -2247,12 +2279,9 @@ function spHours(mode) {
      * denselben Reiter zeigt. */
     tabs.forEach(function (t) {
         t.addEventListener('click', function (e) {
-            if (t.dataset.pane === 'tab-test') { return; }
+            if (t.dataset.ziel === 'tab-test') { return; }
             e.preventDefault();
-            activate(t.dataset.pane);
-            if (window.history && window.history.replaceState) {
-                window.history.replaceState(null, '', t.getAttribute('href'));
-            }
+            activate(t.dataset.ziel);
         });
     });
     activate(<?= json_encode($sp_tab) ?>);

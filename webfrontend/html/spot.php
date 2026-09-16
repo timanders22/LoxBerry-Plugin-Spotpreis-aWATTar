@@ -38,6 +38,10 @@
 
 require_once __DIR__ . '/spot_lib.php';
 
+/* Der unangemeldete Endpunkt legt nichts an (Regeln/05) - siehe
+ * spot_nur_lesen(). Muss vor dem ersten Lesen der Konfiguration stehen. */
+spot_nur_lesen(true);
+
 /* ---------------- Token ----------------
  *
  * Dieser Ordner ist bewusst der UNANGEMELDETE Bereich: der Miniserver soll
@@ -96,6 +100,59 @@ function spot_abweisen($grund, $klartext) {
     exit;
 }
 
+/* ---------- Selbstpruefung ?selftest=1&token=... ----------
+ *
+ * Drei Antworten, Hausform nach Regeln/07:
+ *   richtiges Token        HTTP 200  SELFTEST;OK=1;TOKEN=OK
+ *   falsches oder keines   HTTP 403  SELFTEST;OK=0;ERR=TOKEN
+ *   kein Token eingerichtet HTTP 403 SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET
+ * Bis 1.2.26 antwortete ?selftest=1 ohne jede Tokenpruefung mit der
+ * ganzen Pruefliste - samt Pfaden des Geraets - und mit falschem Token in
+ * der Form des Lesezugriffs (SPOT;OK=0;GRUND=TOKEN). Nach der ersten
+ * Zeile folgt bei Erfolg die Pruefliste als Zeile im Hausformat und der
+ * Klartext je Punkt; Loxone liest die erste Zeile, ein Mensch den Rest.
+ *
+ * Der Endpunkt selbst wird NICHT mitgeprueft (spot_selbsttest(false)): das
+ * waere ein Aufruf dieser Datei aus dieser Datei heraus.
+ *
+ * Die Werte sind 1 (in Ordnung), 0 (Befund) und 2 (nicht beurteilt). PFEHL
+ * zaehlt nur die Nullen. */
+if (isset($_GET['selftest'])) {
+    header('Content-Type: text/plain; charset=utf-8');
+    if ($spot_soll === '') {
+        http_response_code(403);
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n" . spot_t('ENDPUNKT.SELFTEST_KEIN_TOKEN') . "\n";
+        exit;
+    }
+    if (!hash_equals($spot_soll, $spot_ist)) {
+        spot_log('Endpunkt abgewiesen: GRUND=SELFTEST_TOKEN, Anrufer '
+            . (isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '?'));
+        http_response_code(403);
+        echo "SELFTEST;OK=0;ERR=TOKEN\n" . spot_t('ENDPUNKT.TOKEN_FALSCH') . "\n";
+        exit;
+    }
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
+    $spot_pruef = spot_selbsttest(false);
+    $spot_teile = array();
+    $spot_fehl = 0;
+    $spot_unklar = 0;
+    foreach ($spot_pruef as $spot_z) {
+        // 'PRUEF.LEBEN' -> 'LEBEN'; der Punkt hat in der Zeile nichts zu suchen.
+        $spot_k = str_replace('PRUEF.', '', (string) $spot_z['schluessel']);
+        $spot_teile[] = $spot_k . '=' . (int) $spot_z['ok'];
+        if ((int) $spot_z['ok'] === 0) { $spot_fehl++; }
+        if ((int) $spot_z['ok'] === 2) { $spot_unklar++; }
+    }
+    echo 'PRUEF;PANZ=' . count($spot_pruef) . ';PFEHL=' . $spot_fehl
+        . ';PUNKLAR=' . $spot_unklar . ';' . implode(';', $spot_teile) . "\n";
+    foreach ($spot_pruef as $spot_z) {
+        echo sprintf("%-22s %s  %s\n", $spot_z['schluessel'],
+            (int) $spot_z['ok'] === 1 ? 'ok  ' : ((int) $spot_z['ok'] === 0 ? 'BEFUND' : '-   '),
+            $spot_z['text']);
+    }
+    exit;
+}
+
 if ($spot_loest_aus && $spot_soll === '') {
     // Fail closed: wo die Angabe fehlt, wird abgewiesen statt geraten.
     // Und die Meldung sagt, WAS zu tun ist - nicht nur, dass es nicht geht.
@@ -113,6 +170,13 @@ if ($spot_soll !== '') {
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
     $st = spot_state(isset($_GET['refresh']));
+    if (empty($st['ok'])) {
+        // Regeln/07: faellt die Quelle ganz aus, 503 ohne Daten.
+        http_response_code(503);
+        echo json_encode(array('ok' => 0, 'hok' => 0, 'grund' => 'KEINE_PREISE',
+                               'ts' => spot_cron_puls(), 'lauf' => spot_lauf_stand())) . "\n";
+        exit;
+    }
     $st['ann'] = spot_ann_active($st);
     $st['ptest'] = spot_ptest_active();
     echo json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
@@ -120,46 +184,6 @@ if (isset($_GET['json'])) {
 }
 
 header('Content-Type: text/plain; charset=utf-8');
-
-/* ---------- Selbstpruefung ----------
- *
- * Dieselben Punkte wie im Reiter Test, aber als Zeile im Hausformat. Bis
- * 1.2.19 gab es sie nur in der Oberflaeche - also nur, wenn ein Mensch
- * hinsah. Der Miniserver fragt diesen Endpunkt ohnehin alle 300 Sekunden;
- * damit laesst sich "steht bei dem Ding noch alles?" verdrahten, statt es
- * zu hoffen.
- *
- * Der Endpunkt selbst wird NICHT mitgeprueft (spot_selbsttest(false)): das
- * waere ein Aufruf dieser Datei aus dieser Datei heraus, also ein Ruf im
- * Kreis. Im Reiter Test macht ihn ein Mensch auf Verlangen.
- *
- * Die Werte sind 1 (in Ordnung), 0 (Befund) und 2 (nicht beurteilt). PFEHL
- * zaehlt nur die Nullen - eine Zwei ist kein Befund, sondern eine Stelle,
- * ueber die sich nichts sagen laesst. */
-if (isset($_GET['selftest'])) {
-    $spot_pruef = spot_selbsttest(false);
-    $spot_teile = array();
-    $spot_fehl = 0;
-    $spot_unklar = 0;
-    foreach ($spot_pruef as $spot_z) {
-        // 'PRUEF.LEBEN' -> 'LEBEN'; der Punkt hat in der Zeile nichts zu suchen.
-        $spot_k = str_replace('PRUEF.', '', (string) $spot_z['schluessel']);
-        $spot_teile[] = $spot_k . '=' . (int) $spot_z['ok'];
-        if ((int) $spot_z['ok'] === 0) { $spot_fehl++; }
-        if ((int) $spot_z['ok'] === 2) { $spot_unklar++; }
-    }
-    echo 'PRUEF;PANZ=' . count($spot_pruef) . ';PFEHL=' . $spot_fehl
-        . ';PUNKLAR=' . $spot_unklar . ';' . implode(';', $spot_teile) . "\n";
-    /* Der Klartext DAHINTER, eine Zeile je Punkt. Loxone liest ihn nicht,
-     * ein Mensch mit einem Browser schon - und der ist der zweite Nutzer
-     * dieser Adresse. */
-    foreach ($spot_pruef as $spot_z) {
-        echo sprintf("%-22s %s  %s\n", $spot_z['schluessel'],
-            (int) $spot_z['ok'] === 1 ? 'ok  ' : ((int) $spot_z['ok'] === 0 ? 'BEFUND' : '-   '),
-            $spot_z['text']);
-    }
-    exit;
-}
 
 /* ---------- Test-Ansagen ---------- */
 if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
@@ -181,6 +205,10 @@ if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
 if (isset($_GET['ptest'])) {
     @file_put_contents(spot_tmpdir() . '/ptest', '1');
     spot_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten)');
+    /* Der Ausloeser meldet SOFORT (Regeln/07) - bis 1.2.26 kam PTEST=1 ueber
+     * MQTT erst mit dem naechsten Minutenlauf. Gesendet wird nur, was sich
+     * geaendert hat, also im Regelfall genau dieses eine Thema. */
+    spot_mqtt_publish(null, false);
     echo "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 4) verdrahtet ist.\n";
     exit;
 }
@@ -222,6 +250,20 @@ if (isset($_GET['debug'])) {
         printf("Min %02d Uhr %.3f | Max %02d Uhr %.3f | Schnitt %.3f\n\n",
             $st[$k]['minh'], $st[$k]['minp'], $st[$k]['maxh'], $st[$k]['maxp'], $st[$k]['avg']);
     }
+}
+
+/* FAELLT DIE QUELLE GANZ AUS, antwortet der Endpunkt mit HTTP 503 und
+ * ohne Preise (Regeln/07). Loxone behaelt dann die letzten Werte und
+ * schaltet den Onlinestatus des Behaelters ab - der Ausfall ist sichtbar.
+ * Bis 1.2.26 kam HTTP 200 mit einer vollen Zeile aus Nullen und HOK=0;
+ * wer HOK nicht auswertete, las 0 ct als Preis. Das Lebenszeichen steht
+ * trotzdem darunter: es ist kein Preis, sondern die Auskunft, dass der
+ * Minutenlauf lebt. ?debug=1 bleibt fuer den Menschen bei 200. */
+if (empty($st['ok']) && !isset($_GET['debug'])) {
+    http_response_code(503);
+    echo "SPOT;OK=0;HOK=0;GRUND=KEINE_PREISE\n";
+    printf("LEBEN;TS=%d;LAUF=%d\n", spot_cron_puls(), spot_lauf_stand());
+    exit;
 }
 
 echo spot_zeile($st, $cfg);

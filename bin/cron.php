@@ -84,6 +84,11 @@ $st = spot_state();
  * misst den Erfolg, nicht den Lauf - dafuer gibt es OK. */
 spot_lauf_weiter();
 
+/* Fehlende Schluessel einmal in die Datei schreiben (Regeln/05). Die
+ * Funktion tut nichts, solange nichts fehlt - geschrieben wird also nur beim
+ * ersten Lauf nach einem Update. */
+spot_config_vervollstaendigen();
+
 spot_announce_check();
 spot_marstek_control($st); // nur aktiv, wenn in den Einstellungen eingeschaltet
 
@@ -137,45 +142,29 @@ if ((int) date('j') === 1 && (int) date('G') >= 8) {
 
 // ann und ptest gehoeren in die Signatur: sie wechseln minutengenau, und ohne sie
 // wuerde das Meldefenster erst beim naechsten Stundenschlag veroeffentlicht.
-/* DIE SCHALTREGELN GEHOEREN IN DIE SIGNATUR. Sie entscheidet, ob der volle
- * Satz veroeffentlicht wird. Bis 1.2.19 stand sie nicht darin: schaltete
- * eine Regel um, ohne dass sich Preis, Rang oder Niveau aenderten - Ende
- * eines laufenden Blocks mitten in der Stunde, Hysterese, Verdraengung
- * durch das Budget, eine Sperre durch PV-Prognose oder Speicherstand -,
- * blieb die Veroeffentlichung aus. Loxone erfuhr davon erst beim naechsten
- * Ruhefunk, also nach bis zu 1800 Sekunden.
+/* MQTT: nur Aenderungen, der volle Satz halbstuendlich, das Lebenszeichen
+ * bei JEDEM Durchgang (Regeln/07).
  *
- * Aufgenommen wird nur, WAS SCHALTET: aktiv, Sperre und die verplante
- * Leistung. Die Restlaufzeit gehoert NICHT hinein - sie zaehlt jede Minute
- * herunter, und dann waere die Signatur immer verschieden und der
- * Vergleich sinnlos. */
-$sig_regeln = array();
-foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $sig_r) {
-    $sig_regeln[] = (int) $sig_r['aktiv']
-        . ':' . (isset($sig_r['gesperrt']) ? (string) $sig_r['gesperrt'] : '');
-}
-$sig = json_encode(array($st['cur'], $st['rank'], $st['level'], $st['tomorrow_ok'],
-                         $st['heute']['avg'], $st['morgen']['avg'], $st['fenster'], $st['co2'],
-                         spot_ann_active($st), spot_ptest_active(),
-                         $sig_regeln, isset($st['planlast']) ? $st['planlast'] : 0.0));
-$sigf = spot_tmpdir() . '/mqtt_sig.txt';
+ * Bis 1.2.26 entschied hier eine Signatur ueber einige Werte, ob der VOLLE
+ * Satz hinausging - 89 Datagramme in einem Stoss, mindestens stuendlich.
+ * Die Signatur musste jede schaltende Groesse kennen (sie war in 1.2.19
+ * deshalb schon einmal zu klein); jetzt vergleicht spot_mqtt_publish()
+ * jedes Thema einzeln mit dem zuletzt gesendeten Wert, und keine Liste
+ * muss mehr gepflegt werden. Wer nichts geaendert hat, schickt nichts.
+ *
+ * Der volle Satz alle 30 Minuten muss bleiben: ein neu gestarteter Broker
+ * haette die Werte sonst nicht, und ein am Gateway verworfenes Datagramm
+ * wuerde nie nachgeholt. */
 $beat = spot_tmpdir() . '/mqtt_beat';
-$old = is_file($sigf) ? (string) file_get_contents($sigf) : '';
-if ($sig !== $old || !is_file($beat) || time() - filemtime($beat) > 1800) {
-    spot_mqtt_publish($st);
-    @file_put_contents($sigf, $sig);
+$voll = !is_file($beat) || time() - filemtime($beat) > 1800;
+if (spot_mqtt_publish($st, $voll) > 0 && $voll) {
     @touch($beat);
-} else {
-    /* Nichts hat sich geaendert - der volle Satz bleibt aus. Das
-     * Lebenszeichen geht trotzdem hinaus, und zwar bei JEDEM Durchgang.
-     *
-     * Genau darin besteht seine Aufgabe: ein virtueller Eingang behaelt
-     * seinen letzten Wert, und bei MQTT mit Retain ueberlebt er sogar einen
-     * Neustart des Miniservers. Stirbt der Cron, steht in Loxone weiter der
-     * Preis vom Ausfallzeitpunkt - das ist keine fehlende Auskunft, sondern
-     * eine Falschaussage, und sie sieht aus wie eine richtige. */
-    spot_mqtt_lebenszeichen($st);
 }
+/* Das Lebenszeichen geht bei JEDEM Durchgang hinaus, am Filter vorbei.
+ * Genau darin besteht seine Aufgabe: ein virtueller Eingang behaelt seinen
+ * letzten Wert. Stirbt der Cron, steht in Loxone sonst weiter der Preis vom
+ * Ausfallzeitpunkt - eine Falschaussage, die aussieht wie eine richtige. */
+spot_mqtt_lebenszeichen($st);
 
 if ((int) date('G') === 23 && (int) date('i') >= 50) {
     spot_history_add($st); // Tageswerte kurz vor Mitternacht sichern
