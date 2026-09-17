@@ -1,8 +1,8 @@
 #!/bin/sh
 # Spotpreis aWATTar - minutlicher Cron (Preisabruf, stuendliche Ansage/Push, MQTT)
 #
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins
-# ersetzt. Bis 1.1.0 stand hier REPLACELBPHTMLDIR - das Skript lag also im
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
+# Bis 1.1.0 stand hier der HTML-Pfad des Plugins - das Skript lag also im
 # unangemeldeten Web-Verzeichnis und war ueber HTTP ausloesbar. Siehe den
 # Kopf von bin/cron.php.
 # Nur die NORMALE Ausgabe wird unterdrueckt, die Fehlerausgabe geht ins
