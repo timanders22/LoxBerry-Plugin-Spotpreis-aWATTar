@@ -8,6 +8,88 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.28 behebt
+
+Nachlese vom 24.09.2026 nach den Entscheidungen des Hausherrn zu Retain (18. und 19.09.2026)
+und den Hausregeln zu Wurzelsuche und Pfaden. Jeder Punkt ist in WSL am Prüfstand
+`Pruefung-Spotpreis-aWATTar-1.2.28` gemessen (81 Fälle: vor der Änderung 50 rot, danach 0) —
+nicht am Gerät und nicht an einem echten Broker.
+
+### Zurückbehalten nur noch, was eingestellt ist
+
+`ok`, `morgen_ok`, `dyn_monat`, `diff_monat`, `euro_monat` und `shift_jahr` gingen seit 1.2.24
+zurückbehalten (retained) hinaus. Alle sechs werden allein durch den Lauf der Uhr falsch:
+`ok` („für heute liegen Preise vor") und `morgen_ok` um Mitternacht, die drei Monatswerte zum
+Monatswechsel, `shift_jahr` (aus den letzten sieben Tagen) jeden Tag; `ok` ist dazu eine
+Aussage des Plugins über den eigenen Abruf. Stand der Minutenlauf still, bekam der Miniserver
+diese Werte nach jedem Neustart von Broker oder Gateway trotzdem wieder. Sie gehen jetzt
+flüchtig hinaus. Zurückbehalten bleiben `fix`, `audio`, `push`, `plan/budget` und
+`plan/budget2` — Einstellungen, die gelten, bis sie geändert werden.
+
+Die Altwerte räumt das Plugin einmal ab. Es fragt den Broker (mit der Anmeldung aus der
+LoxBerry-Konfiguration), welche der sechs Themen noch zurückbehalten stehen, und schickt für
+jedes unmittelbar vor dem neuen Wert eine leere Nachricht. Erst wenn der Broker bestätigt, dass
+keines mehr dasteht, legt es einen Merker im Datenordner ab und fragt nicht mehr. Ist der Broker
+nicht zu fragen, wird vor jedem Senden gelöscht, und das Protokoll sagt es einmal je Stunde.
+
+**Wer die sechs Werte in Loxone nutzt:** nach einem Neustart von Broker oder Gateway fehlen sie,
+bis sie sich ändern oder der volle Satz hinausgeht (halbstündlich).
+
+### Die Deinstallation räumt den Broker ab
+
+Bis 1.2.27 blieben die zurückbehaltenen Themen nach dem Deinstallieren im Broker stehen; der
+Kommentar im Skript behauptete sogar, das Plugin setze kein Retain. Jetzt leert die
+Deinstallation alle Themen, die die Linie je zurückbehalten gesendet hat, unter dem
+eingestellten Präfix, und liest beim Broker nach, ob sie fort sind. Themen unter einem früher
+eingestellten Präfix bleiben stehen; das Skript sagt, wie man nachsieht.
+
+### Wurzelsuche und Pfade
+
+- Die LoxBerry-Wurzel gilt nur noch, wenn dort `config/system/general.json` liegt. Vorher nahm
+  die Suche einen Ordner mit `config/plugins` und `webfrontend` — wie ihn ein Prüfstand auf
+  einem Arbeitsrechner hinterlässt — für einen LoxBerry, und der Minutenlauf schrieb dort.
+- Ein ausgepacktes Archiv unterhalb einer echten Wurzel benutzt nicht mehr Konfiguration, Daten
+  und Protokoll der Anlage, und `bin/cron.php` steigt dort mit einer Meldung aus. Die Anlage gilt
+  nur, wenn die Bibliothek dort installiert liegt oder `LBHOMEDIR` und `LBPPLUGINDIR` gesetzt
+  sind. Ohne Wurzel bleiben Zwischenspeicher, Daten und Protokoll im Archiv — vorher lagen sie in
+  `/tmp/spotpreis`, dem Ordner der installierten Anlage.
+- Keine Pfade mehr ab der Laufwerkswurzel und kein fest verdrahteter Systempfad: Sprachdateien,
+  Fassungsanzeige, die Oberflächendatei der Selbstprüfung und die Suche nach der Bibliothek in
+  `bin/cron.php` und `htmlauth/index.php` nehmen nur noch die eigenen Dateien oder die der
+  Anlage.
+- `postinstall.sh`, `preupgrade.sh`, `postupgrade.sh` und `uninstall` suchen die Wurzel ebenso
+  und warnen, statt ab der Laufwerkswurzel anzulegen oder in einem fremden Baum zu löschen.
+- Die Oberfläche brach ohne `LBHOMEDIR` ab (eine Funktion wurde vor ihrer Definition
+  aufgerufen); sie nimmt die Pfade jetzt aus der Bibliothek.
+- Die Loxone-Vorlage einer Zweitinstallation (`spotpreis_01`) trug die Adresse der ersten
+  Installation; jetzt die eigene.
+- Aus einem ausgepackten Archiv fand die Selbstprüfung ihre eigene Oberflächendatei nie (falscher
+  Pfad) und meldete „Formulare" und „Reiter" als nicht feststellbar.
+
+### Rechte und Zwischenspeicher
+
+- Eine beiseitegelegte kaputte Konfiguration (`spot.json.kaputt.*`) bekommt die Rechte 0600.
+- Die Oberfläche legte eine fehlende `spot.json` aus der Zweitschrift mit 644 an. Diese eigene
+  Heilung ist entfallen; die Bibliothek heilt ohnehin, mit 0600.
+- Die Deinstallation einer Zweitinstallation löscht `/tmp/spotpreis` nur noch, wenn keine
+  Installation `spotpreis` daneben lebt.
+
+### Die Sicherung wird nach Inhalt zurückgespielt
+
+`postinstall.sh` und `postupgrade.sh` holten die Zweitschrift der Einstellungen nur zurück, wenn
+`spot.json` leer war oder `{}` enthielt, und sahen die Zweitschrift selbst gar nicht an. Eine
+abgeschnittene, kaputte oder nur mit Vorgaben gefüllte `spot.json` galt als vorhanden, die heile
+Zweitschrift blieb liegen; eine kaputte Zweitschrift wurde über `{}` kopiert. Jetzt zählt der
+Inhalt: zurückgespielt wird nur, wenn `spot.json` weder ein Aktionstoken noch eine vom Werk
+abweichende Einstellung trägt und die Zweitschrift eines von beiden. Die verdrängte Datei bleibt
+als `spot.json.kaputt.<Zeit>` (Rechte 0600) liegen.
+
+### Kein Fehler
+
+Einen Dienst gibt es in dieser Linie nicht, nur den Minutenlauf; argumentweise
+Diensterkennung, `pgrep`/`kill` und Healthcheck entfallen. Warnungen `Undefined array key`
+traten nicht auf (MQTT aus, ohne UDP-Port, mit Port).
+
 ## Was 1.2.26 behebt
 
 Gemessen am 17.09.2026 gegen die Hausregeln (Stand 17.09.) und am Gerät

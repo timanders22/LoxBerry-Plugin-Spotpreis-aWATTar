@@ -41,32 +41,77 @@
 #      history.csv - die Preisgeschichte, keine Zugangsdaten, aber sie
 #      gehoert nach dem Entfernen nicht mehr auf die Karte.
 #
-# ZU MQTT - und zwar genau so weit, wie es gemessen ist:
-#
-# GEMESSEN ist, dass DIESES PLUGIN kein Retain setzt. Es schickt an das
-# UDP-Relais des Gateways ausschliesslich "publish <thema> <wert>"; das
-# Wort "retain" kommt in spot_lib.php nicht vor.
-#
-# NICHT GEMESSEN ist, was das Gateway daraus macht. Ob es seinerseits mit
-# Retain an den Broker weitergibt, laesst sich nur an einem laufenden
-# Gateway feststellen, und das ist hier nicht geschehen. Sollte es das tun,
-# blieben die Themen nach dem Deinstallieren im Broker stehen - dieses
-# Skript kann daran nichts aendern, denn es spricht nicht mit dem Broker.
-#
-# Wer sichergehen will, loescht die Themen im Broker von Hand.
+# ZU MQTT: Bis 1.2.27 stand hier, das Plugin setze kein Retain. Das stimmte
+# seit 1.2.24 nicht mehr - elf Themen gingen zurueckbehalten hinaus
+# (spot_retain_liste(); Bestand-2026-09-18/klasse-E, Liste vom 19.09.2026).
+# Seit 1.2.28 leert dieses Skript die Themen der Linie unter dem eingestellten
+# Praefix und liest beim Broker nach (weiter unten). Themen unter einem
+# FRUEHER eingestellten Praefix bleiben stehen.
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="spotpreis"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# Findet sich nichts, wird GEWARNT statt vollzogen.
+#
+# Bis 1.2.27 stand hier als Rueckfall fest das Verzeichnis drei Ebenen
+# ueber dem eigenen Ablageort, ohne general.json. Aus einem Archiv drei
+# Ebenen unter einem fremden Baum und
+# aus einem fremden Baum heraus loeschte die Deinstallation dort die
+# Zweitschrift (in WSL gemessen,
+# Pruefung-Spotpreis-aWATTar-1.2.28, Faelle K1 und K4). general.json ist die
+# Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein LoxBerry hat die Datei
+# immer, ein Pruefstandsrest nie. Bauart Spotpreis-Tibber 0.9.18.
+sp_wurzel_suchen() {
+    sp_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    sp_i=0
+    while [ -n "$sp_v" ] && [ "$sp_v" != "/" ] && [ "$sp_i" -lt 8 ]; do
+        if [ -d "$sp_v/config/plugins" ] && [ -d "$sp_v/data/plugins" ] \
+           && [ -f "$sp_v/config/system/general.json" ]; then
+            echo "$sp_v"
+            return 0
+        fi
+        sp_v=$(dirname "$sp_v")
+        sp_i=$((sp_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(sp_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS geloescht."
+    exit 1
+fi
+
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen der
+# Zweitschrift (fehlt die Konfiguration schon, nennt die Zweitschrift das
+# Praefix). Bis 1.2.27 blieben sie nach dem Deinstallieren im Broker stehen,
+# und nach jedem Neustart von Broker oder Gateway bekam der Miniserver sie
+# wieder - von einem Plugin, das es nicht mehr gibt (in WSL gemessen,
+# Pruefung-Spotpreis-aWATTar-1.2.28, Faelle U1 bis U7). Geleert wird ueber den
+# Weg der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
+# (spot_mqtt_leeren() in webfrontend/html/spot_lib.php; Bauart
+# Spotpreis-Tibber 0.9.19). Als loxberry, nicht als root; stdin geschlossen,
+# damit su nie auf eine Eingabe wartet.
+SP_CRON="$BASE/bin/plugins/$PDIR/cron.php"
+if command -v php >/dev/null 2>&1 && [ -f "$SP_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 60 php "$SP_CRON" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 60 php "$SP_CRON" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
 
 BK="$BASE/config/plugins/$PDIR.backup.json"
@@ -83,8 +128,13 @@ if [ -d "$TMPD" ]; then
     rm -rf "$TMPD" && echo "<OK> Zwischenspeicher $TMPD entfernt."
 fi
 # Der alte, fest verdrahtete Ort aus Fassungen bis 1.2.19. Nur wenn er nicht
-# ohnehin schon der eigene war, sonst stuende die Meldung zweimal da.
-if [ "$PDIR" != "spotpreis" ] && [ -d "/tmp/spotpreis" ]; then
+# ohnehin schon der eigene war, sonst stuende die Meldung zweimal da - und nur,
+# wenn keine Installation "spotpreis" daneben lebt: seit 1.2.20 ist
+# /tmp/spotpreis deren Zwischenspeicher. Bis 1.2.27 raeumte die Deinstallation
+# einer Zweitinstallation ihn ab (in WSL gemessen,
+# Pruefung-Spotpreis-aWATTar-1.2.28, Fall U8).
+if [ "$PDIR" != "spotpreis" ] && [ -d "/tmp/spotpreis" ] \
+   && [ ! -d "$BASE/config/plugins/spotpreis" ]; then
     rm -rf "/tmp/spotpreis" && echo "<OK> Alter Zwischenspeicher /tmp/spotpreis entfernt."
 fi
 
@@ -94,7 +144,7 @@ if [ -d "$SICH" ]; then
     rm -rf "$SICH" && echo "<OK> Sicherung des Aktualisierens entfernt: $PDIR.upgrade_sicherung"
 fi
 
-echo "<INFO> Das Plugin sendet ohne Retain-Merker. Ob das Gateway die Themen"
-echo "<INFO> dennoch mit Retain weitergibt, ist nicht nachgemessen - falls ja,"
-echo "<INFO> bleiben sie im Broker stehen und muessen dort entfernt werden."
+echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem FRUEHER eingestellten Praefix"
+echo "<INFO> raeumt dieses Skript nicht ab. Nachsehen:"
+echo "<INFO> mosquitto_sub -t '<praefix>/#' --retained-only"
 exit 0

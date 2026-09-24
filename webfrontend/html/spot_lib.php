@@ -38,11 +38,19 @@ define('SPOT_REGELN', 4);
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung. Bis 1.2.27 genuegten
+ * config/plugins und webfrontend - genau diese Ordner hinterlaesst ein
+ * Pruefstand auf einem Arbeitsrechner, und am 05.09.2026 hat eine solche
+ * Suche dort das Laufwerk selbst als "LoxBerry" erkannt und Daten geloescht
+ * (Regeln/06). In WSL gemessen (Pruefung-Spotpreis-aWATTar-1.2.28, Faelle H1
+ * und H2): in einem fremden Baum ohne general.json nahm diese Bibliothek den
+ * Baum als Wurzel, und bin/cron.php schrieb dort.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -52,7 +60,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -88,13 +97,97 @@ function spot_regel_vorgabe() {
     ), plan_regel_vorgabe());
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und DANACH NICHTS MEHR, kein fest verdrahteter Systempfad (bis
+ * 1.2.27 stand einer als Rueckfall in spot_t()). Ein gesetztes LBHOMEDIR gilt
+ * mit config/plugins UND data/plugins darunter - general.json wird hier nicht
+ * verlangt, damit Attrappen ohne sie (Werkzeuge/lb) weiter tragen. Rueckgabe
+ * '' heisst "keine Wurzel"; jeder Aufrufer muss das abfangen. Bauart
+ * tb_lbhome() aus Spotpreis-Tibber 0.9.18. */
+function spot_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer bin/cron.php: ohne Wurzel, oder aus einem Archiv heraus, das nicht in
+ * der gefundenen Wurzel installiert liegt (Archivmodus in spot_paths()),
+ * nichts tun - eine Meldung auf stderr, Rueckgabewert 1. Der Aufruf steht
+ * VOR allem, was holt, sendet oder schreibt. Bauart
+ * tb_keine_wurzel_abbruch() aus Spotpreis-Tibber 0.9.19. */
+function spot_keine_wurzel_abbruch($programm)
+{
+    $p = spot_paths();
+    if ($p['lbhome'] !== '') {
+        return;
+    }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts geholt, nichts gesendet und in keine Konfiguration, keine' . "\n"
+            . 'Daten und kein Protokoll geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts geholt, nichts gesendet und in keine Konfiguration, keine' . "\n"
+        . 'Daten und kein Protokoll geschrieben.' . "\n");
+    exit(1);
+}
+
 function spot_paths() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    $plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-    if ($lbhomedir && is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
+    $lbhomedir = spot_lbhome();
+    /* Der Ordnername. LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und
+     * hat Vorrang; von ihm zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten nicht (Bauart VolkswagenID
+     * 0.9.24, Spotpreis-Tibber 0.9.19). Sonst der Ablageort dieser Datei; der
+     * feste Name 'spotpreis' greift nur, wo der abgeleitete kein Pluginordner
+     * sein KANN - aus dem ausgepackten Archiv heraus heisst er 'html'.
+     *
+     * Bis 1.2.27 fiel die Ermittlung auf 'spotpreis' zurueck, sobald
+     * config/plugins/<name> nicht existierte - aus einem Archiv unter einer
+     * echten Wurzel war das die Konfiguration der Anlage (Faelle B1, B2). */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    $plugindir = basename(__DIR__);
+    if ($lbp_gilt) {
+        $plugindir = $lbp;
+    } elseif (in_array($plugindir, array('', '.', '/', 'html', 'bin', 'plugins'), true)) {
         $plugindir = 'spotpreis';
     }
-    if ($lbhomedir) {
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit
+     * ihrer Attrappe, und so ruft die Deinstallation bin/cron.php). Sonst ist
+     * das ein ausgepacktes Archiv oder ein Pruefordner: alles bleibt in dessen
+     * eigenem Ordner, und bin/cron.php steigt aus
+     * (spot_keine_wurzel_abbruch()).
+     *
+     * Bis 1.2.27 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel
+     * und den festen Namen 'spotpreis' - Konfiguration, Daten und Protokoll
+     * der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in /etc/environment
+     * steht, ebenso, und bin/cron.php lief dort los (in WSL gemessen,
+     * Pruefung-Spotpreis-aWATTar-1.2.28, Faelle B1, B2, B6, B7). Bauart
+     * tb_paths() aus Spotpreis-Tibber 0.9.19. */
+    $gefunden = $lbhomedir;
+    if ($lbhomedir !== '') {
+        $soll = @realpath($lbhomedir . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $lbhomedir === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) {
+            $lbhomedir = '';
+        }
+    }
+    if ($lbhomedir !== '') {
         return array(
             'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/spot.json',
             'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
@@ -109,15 +202,28 @@ function spot_paths() {
              * REGELN_2. */
             'tmp' => '/tmp/' . $plugindir,
             'lbhome' => $lbhomedir,
+            'plugin' => $plugindir,
+            'archiv' => '',
         );
     }
+    /* Keine Wurzel (Entwicklung, ausgepacktes Archiv, fremder Baum): alles
+     * neben dem Plugin, nie an der Laufwerkswurzel und nie im Ordner einer
+     * Installation. Bis 1.2.27 lagen Zwischenspeicher, Daten und Protokoll
+     * hier unter sys_get_temp_dir()/spotpreis - auf einem LoxBerry derselbe
+     * Ordner /tmp/spotpreis, den die installierte Anlage 'spotpreis' benutzt
+     * (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Fall B10). */
+    $basis = dirname(dirname(__DIR__));
     return array(
-        'config' => dirname(dirname(__DIR__)) . '/config/spot.json',
-        'backup' => dirname(dirname(__DIR__)) . '/config/spot.backup.json',
-        'log' => sys_get_temp_dir() . '/spotpreis/spot.log',
-        'datadir' => sys_get_temp_dir() . '/spotpreis/data',
-        'tmp' => sys_get_temp_dir() . '/spotpreis',
+        'config' => $basis . '/config/spot.json',
+        'backup' => $basis . '/config/spot.backup.json',
+        'log' => $basis . '/log/spot.log',
+        'datadir' => $basis . '/data',
+        'tmp' => $basis . '/tmp',
         'lbhome' => '',
+        'plugin' => $plugindir,
+        // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+        // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+        'archiv' => $gefunden,
     );
 }
 
@@ -297,7 +403,16 @@ function spot_config($erzeugen = null) {
     }
     if ($sp_kaputt) {
         $sp_weg = $p['config'] . '.kaputt.' . date('YmdHis');
-        if (@rename($p['config'], $sp_weg) && function_exists('spot_log')) {
+        $sp_weg_ok = @rename($p['config'], $sp_weg);
+        /* Die beiseitegelegte Datei traegt, was die kaputte trug - oft noch
+         * den Aktionstoken. Sie bekommt die Rechte der Konfiguration (0600,
+         * Regeln/05). Bis 1.2.27 behielt sie per rename() die Rechte der
+         * kaputten Datei (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28,
+         * Fall N2b: 644). */
+        if ($sp_weg_ok) {
+            @chmod($sp_weg, 0600);
+        }
+        if ($sp_weg_ok && function_exists('spot_log')) {
             spot_log('Konfiguration war beschaedigt und wurde beiseitegelegt: '
                 . basename($sp_weg));
         }
@@ -2434,6 +2549,18 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
         return -1;
     }
     $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
+    /* Haelt der Broker noch Altwerte frueher zurueckbehaltener Themen
+     * (spot_mqtt_altlast()), geht dieser Lauf VOLL hinaus - die leere
+     * retain-Nutzlast steht dann unmittelbar vor dem gueltigen Wert, auch
+     * wenn sich an den Werten nichts geaendert hat. Bei unbekannter Lage
+     * nicht: sonst ginge ohne erreichbaren Broker jede Minute alles hinaus.
+     * In WSL gemessen (Pruefung-Spotpreis-aWATTar-1.2.28, Fall R9). */
+    if (!$erzwingen) {
+        $alt = spot_mqtt_altlast($prefix);
+        if ($alt['lage'] === 'belegt') {
+            $erzwingen = true;
+        }
+    }
     $msgs = array();
     foreach (spot_mqtt_themen($st) as $k => $v) {
         if (strpos((string) $k, 'status/') !== 0) {
@@ -2527,24 +2654,39 @@ function spot_mqtt_lebenszeichen($st = null) {
  *       plan/last, plan/pv_prognose, plan/soc, plan/spart - Messwerte mit
  *       Zeitbezug.
  *   ann und ptest - sie wechseln allein durch Zeitablauf.
+ *
+ * BERICHTIGT in 1.2.28 (Entscheidungen des Hausherrn vom 18./19.09.2026,
+ * Regeln/07 Abschnitt 3, und Hausstandard "Messwerte mit Zeitbezug nicht
+ * retained"): bis 1.2.27 standen hier auch
+ *   ok          "fuer HEUTE liegen Preise vor" - eine Aussage des Dienstes
+ *               aus dem eigenen Abruf, und sie wird um Mitternacht falsch;
+ *   morgen_ok   "fuer MORGEN liegen Preise vor" - um Mitternacht falsch;
+ *   dyn_monat, diff_monat, euro_monat - der LAUFENDE Monat aus der
+ *               Historie (spot_month_compare(1)), falsch zum Monatswechsel;
+ *   shift_jahr  aus den letzten sieben Tagen (spot_shift_saving(7)),
+ *               mit jedem Tag ein anderer Wert.
+ * Die Frage je Thema ist, ob der Wert OHNE neue Nachricht allein durch den
+ * Lauf der Uhr falsch wird. Stirbt der Minutenlauf, stuenden diese Werte
+ * weiter im Broker und kaemen nach jedem Neustart von Broker oder Gateway
+ * wieder. Sie gehen jetzt fluechtig hinaus; ihre Altwerte raeumt
+ * spot_mqtt_altlast() einmal ab (in WSL gemessen,
+ * Pruefung-Spotpreis-aWATTar-1.2.28, Faelle R1 bis R15). Preis: nach einem
+ * Neustart fehlen sie, bis sich ein Wert aendert oder der volle Satz
+ * (halbstuendlich, bin/cron.php) hinausgeht.
+ *
+ * Zurueckbehalten bleibt nur, was der Anwender EINGESTELLT hat - wahr, bis
+ * er es aendert, und dann aendert sich der Wert und er geht neu hinaus.
  */
 function spot_retain_liste() {
     return array(
-        /* Zustand der Datenlage. */
-        'ok' => 1,
-        'morgen_ok' => 1,
         /* Freigaben aus der Konfiguration. */
         'audio' => 1,
         'push' => 1,
         /* Einstellungen des Fahrplaners. */
         'plan/budget' => 1,
         'plan/budget2' => 1,
-        /* Kostenvergleich: entsteht einmal im Monat aus der Historie. */
+        /* Der eingetragene feste Arbeitspreis (fixed_price). */
         'fix' => 1,
-        'dyn_monat' => 1,
-        'diff_monat' => 1,
-        'euro_monat' => 1,
-        'shift_jahr' => 1,
     );
 }
 
@@ -2560,6 +2702,343 @@ function spot_retain_fuer($thema, $nutzlast = null) {
     return isset($l[(string) $thema]) ? 1 : 0;
 }
 
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht mehr
+ * tun: spot_retain_liste() der Archive 1.2.24 bis 1.2.27 (gelesen am
+ * 24.09.2026; 1.2.16 bis 1.2.23 sendeten nichts zurueckbehalten). Ihre
+ * Altwerte stehen auf bestehenden Anlagen im Broker, bis jemand sie loescht -
+ * ein spaeteres publish ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function spot_mqtt_frueher_behalten() {
+    return array('ok', 'morgen_ok', 'dyn_monat', 'diff_monat', 'euro_monat', 'shift_jahr');
+}
+
+/** Der UDP-Eingangsport des Gateways aus der general.json, 0 wenn keiner. */
+function spot_mqtt_udpport($lbhome) {
+    if ((string) $lbhome === '') {
+        return 0;
+    }
+    $gen = @json_decode((string) @file_get_contents($lbhome . '/config/system/general.json'), true);
+    $udpport = isset($gen['Mqtt']['Udpinport']) ? (int) $gen['Mqtt']['Udpinport'] : 0;
+    if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
+    return ($udpport >= 1 && $udpport <= 65535) ? $udpport : 0;
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat das Abonnement bestaetigt (oder einen Wert
+ * geschickt); was dann nicht unter 'belegt' steht, ist leer. 'unbekannt':
+ * er war nicht zu fragen (keine Wurzel, keine Verbindung, Anmeldung
+ * abgewiesen, keine Antwort).
+ *
+ * Warum ueberhaupt fragen: das Abraeumen laeuft ueber den UDP-Eingang des
+ * Gateways, und dort meldet sendto() auch fuer ein verworfenes Datagramm
+ * Erfolg; der Eingang verwirft unter Last (Regeln/07). Ein Merker nach einem
+ * blossen Senden waere kein Beleg. Ein MQTT-3.1.1-Abonnement ohne fremde
+ * Bibliothek; die Anmeldung nimmt Brokeruser/Brokerpass aus der general.json
+ * (Regeln/07, Abschnitt 2). Das Kennwort steht nur im CONNECT-Paket, nie in
+ * einem Protokoll und nie auf einer Kommandozeile. Bauart
+ * tb_mqtt_behalten_liste() aus Spotpreis-Tibber 0.9.19.
+ */
+function spot_mqtt_behalten_liste(array $themen) {
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = spot_paths();
+    if ($p['lbhome'] === '') { return $aus; }
+    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('sprueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt || $aus['belegt']) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus spot_mqtt_frueher_behalten() fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
+ *      Aufrufer sendet dann VOLL (spot_mqtt_publish()), damit die leere
+ *      retain-Nutzlast unmittelbar vor dem gueltigen Wert steht;
+ *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
+ *      ohnehin hinausgeht ('unbekannt'), kein Merker, einmal je Stunde ins
+ *      Protokoll.
+ * Der Merker liegt im Datenordner und traegt die Kennung
+ * "leer-bestaetigt <praefix>: <Themenliste>": ein anderer Inhalt - ein
+ * anderes Praefix, eine andere Liste, der Merker einer spaeteren Fassung mit
+ * laengerer Liste - gilt nicht. purge_installation raeumt ihn bei jedem
+ * Upgrade mit ab; dann wird genau einmal nachgefragt. Bauart
+ * tb_mqtt_altlast() aus Spotpreis-Tibber 0.9.19.
+ */
+function spot_mqtt_altlast($praefix) {
+    static $cache = array();
+    $praefix = (string) $praefix;
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $liste = spot_mqtt_frueher_behalten();
+    $merker = spot_datadir() . '/.mqtt_altlast_geraeumt';
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = spot_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            spot_log_if_changed('mqtt_merker', 'MQTT: der Merker ' . $merker . ' liess sich '
+                . 'nicht schreiben - der Broker wird im naechsten Lauf wieder gefragt.');
+        } else {
+            spot_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
+        }
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    spot_log_if_changed('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob '
+        . 'unter ' . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden '
+        . 'deshalb unmittelbar vor jedem Senden geloescht, bis der Broker antwortet ('
+        . date('Y-m-d H') . ' Uhr).');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat - fuer die
+ * Deinstallation: die heutige Retain-Tabelle (spot_retain_liste(), keine
+ * abgeschriebene Liste) und dazu, was frueher darin stand
+ * (spot_mqtt_frueher_behalten()).
+ */
+function spot_mqtt_leer_themen() {
+    $t = array();
+    foreach (spot_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(spot_retain_liste()) as $k) { $t[$k] = true; }
+    ksort($t);
+    return array_keys($t);
+}
+
+/**
+ * Aus der Deinstallation (bin/cron.php --mqtt-leeren): die zurueckbehaltenen
+ * Themen der Linie leeren.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (spot_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Steht nichts da, geht nichts hinaus. Ist der
+ * Broker nicht zu fragen, gehen alle Themen in jeder Runde hinaus, und die
+ * Ausgabe sagt, dass nicht nachgelesen wurde - der Eingang verwirft unter
+ * Last Datagramme (Regeln/07), ein blosses Senden ist kein Beleg. Bauart
+ * tb_mqtt_leeren() aus Spotpreis-Tibber 0.9.19.
+ *
+ * Bis 1.2.27 raeumte die Deinstallation nichts ab: die zurueckbehaltenen
+ * Themen blieben im Broker, und nach jedem Neustart von Broker oder Gateway
+ * bekam der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt
+ * (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Faelle U1, U3, U4, U6).
+ *
+ * Liest die Konfiguration ohne Selbstheilung (spot_nur_lesen()) und schreibt
+ * weder Protokoll noch Datei. Ausgabe im Format der Hakenskripte
+ * (<OK>/<INFO>/<WARNING>). Rueckgabe 0 geleert oder nicht nachpruefbar,
+ * 1 es steht noch etwas bzw. der Eingang war nicht erreichbar, 2 nicht
+ * moeglich.
+ */
+function spot_mqtt_leeren($runden = 3, $pause = 1.0) {
+    spot_nur_lesen(true);
+    $p = spot_paths();
+    if ($p['lbhome'] === '') {
+        echo "<WARNING> MQTT: keine LoxBerry-Wurzel - zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $cfg = spot_config();
+    $praefix = trim((string) $cfg['mqtt_topic'], '/ ');
+    if ($praefix === '' || preg_match('/[#+\s]/', $praefix)) {
+        echo "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
+           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $udpport = spot_mqtt_udpport($p['lbhome']);
+    if (!$udpport) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $alle = array();
+    foreach (spot_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
+    $n = count($alle);
+    $f = spot_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . $udpport, $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = spot_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . $udpport . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
+}
+
 function spot_mqtt_senden($prefix, $udpport, $msgs) {
     /* Rueckgabe: Zahl der abgesetzten Datagramme, -1 wenn keines. Das ist
      * KEINE Zustellbestaetigung - sendto() meldet auch fuer ein am Gateway
@@ -2569,6 +3048,13 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
     if ($udpport < 1 || $udpport > 65535 || !$msgs) {
         return -1;
     }
+    /* Altwerte frueher zurueckbehaltener Themen abraeumen, solange der
+     * Broker sie noch haelt: die leere retain-Nutzlast unmittelbar VOR dem
+     * gueltigen Wert (spot_mqtt_altlast() fragt den Broker vorher). Das ist
+     * die eine gewollte leere Nutzlast dieses Plugins;
+     * spot_mqtt_wert_saeubern() laesst sonst keine durch. */
+    $alt = spot_mqtt_altlast($prefix);
+    $raeumen = array_flip($alt['themen']);
     $n = 0;
     if (function_exists('socket_create')) {
         $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
@@ -2577,6 +3063,10 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
         }
         foreach ($msgs as $k => $v) {
             $wert = spot_mqtt_wert_saeubern($v);
+            if ($wert !== '' && isset($raeumen[$k])) {
+                $leer = 'retain ' . $prefix . '/' . $k . ' ';
+                @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $udpport);
+            }
             /* Das Befehlswort entscheidet die Tabelle, nicht der
              * Aufruf - sonst ginge das Lebenszeichen zurueckbehalten
              * hinaus oder die Zustaende fluechtig. */
@@ -2596,6 +3086,9 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
     }
     foreach ($msgs as $k => $v) {
         $wert = spot_mqtt_wert_saeubern($v);
+        if ($wert !== '' && isset($raeumen[$k])) {
+            @fwrite($strom, 'retain ' . $prefix . '/' . $k . ' ');
+        }
         $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
         if (@fwrite($strom, $verb . ' ' . $prefix . '/' . $k . ' ' . $wert) !== false) {
             $n++;
@@ -2846,9 +3339,14 @@ function spot_vorlage() {
     $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
+    /* Der Ordner, unter dem der Endpunkt erreichbar ist: installiert der
+     * eigene (spot_paths()['plugin']). Bis 1.2.27 stand hier
+     * getenv('LBPPLUGINDIR') mit dem festen Rueckfall 'spotpreis' - eine
+     * Zweitinstallation spotpreis_01 bekam die Adresse der ersten in ihre
+     * Vorlage (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Fall B11). */
     $ordner = basename(dirname(__DIR__, 2));
     if ($p['lbhome'] !== '') {
-        $ordner = getenv('LBPPLUGINDIR') ?: 'spotpreis';
+        $ordner = $p['plugin'];
     }
     $st = spot_state();
     $token = (string) spot_cfg_wert('token', '');
@@ -3286,15 +3784,19 @@ function spot_t($schluessel)
         // Installiert liegen die Dateien unter
         // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
         // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
+        //
+        // Die Wurzel kommt aus spot_paths(): ohne Wurzel NICHTS ab der
+        // Laufwerkswurzel und kein fest verdrahteter Systempfad. Bis 1.2.27
+        // stand hier als Rueckfall das Heimatverzeichnis des Benutzers
+        // loxberry, und ohne Wurzel hiess der Pfad
+        // '' . '/templates/plugins/html/lang' - was dort lag, galt vor den
+        // eigenen Sprachdateien (in WSL gemessen,
+        // Pruefung-Spotpreis-aWATTar-1.2.28, Faelle C1 und C2; dieselbe
+        // Stelle in tb_t() von Spotpreis-Tibber 0.9.19).
+        $home = spot_paths()['lbhome'];
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
@@ -3476,10 +3978,16 @@ function spot_fassung()
             return trim((string) $aus);
         }
     }
+    /* Nur zwei Orte: die Anlage (nur mit Wurzel) und das eigene Archiv.
+     * Bis 1.2.27 stand dazwischen dirname(__DIR__, 3)/plugin.cfg - aus einem
+     * Archiv unter /plugin heisst das /plugin.cfg, VOR der eigenen Datei -,
+     * und ohne Wurzel begann der erste Kandidat an der Laufwerkswurzel (in
+     * WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Fall C9: ein fremdes
+     * /plugin.cfg setzte die angezeigte Fassung). Installiert antwortet
+     * LBSystem oben; die plugin.cfg wird nicht mitinstalliert (Regeln/06). */
     $p = spot_paths();
     foreach (array(
-        $p['lbhome'] . '/config/plugins/' . basename(dirname($p['config'])) . '/plugin.cfg',
-        dirname(dirname(dirname(__DIR__))) . '/plugin.cfg',
+        $p['lbhome'] !== '' ? $p['lbhome'] . '/config/plugins/' . basename(dirname($p['config'])) . '/plugin.cfg' : '',
         dirname(dirname(__DIR__)) . '/plugin.cfg',
     ) as $kandidat) {
         if ($kandidat === '' || !is_file($kandidat)) { continue; }
@@ -3885,9 +4393,18 @@ function spot_oberflaeche_datei()
 {
     $p = spot_paths();
     $ordner = basename(dirname($p['config']));
+    /* Die Anlage nur mit Wurzel. Bis 1.2.27 begann der erste Kandidat ohne
+     * Wurzel an der Laufwerkswurzel (/webfrontend/htmlauth/plugins/...), vor
+     * der eigenen Datei (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28,
+     * Fall C10). */
     foreach (array(
-        $p['lbhome'] . '/webfrontend/htmlauth/plugins/' . $ordner . '/index.php',
-        dirname(dirname(__DIR__)) . '/htmlauth/index.php',
+        $p['lbhome'] !== '' ? $p['lbhome'] . '/webfrontend/htmlauth/plugins/' . $ordner . '/index.php' : '',
+        /* Im Archiv liegt die Oberflaeche neben html/, also unter
+         * <archiv>/webfrontend/htmlauth/. Bis 1.2.27 stand hier
+         * dirname(dirname(__DIR__)), das ist <archiv>/htmlauth/ - der Kandidat
+         * traf nie (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28,
+         * Nachtrag 2 zu Fall C10). */
+        dirname(__DIR__) . '/htmlauth/index.php',
     ) as $k) {
         if ($k !== '' && strpos($k, '/index.php') !== false && is_file($k)) {
             return $k;

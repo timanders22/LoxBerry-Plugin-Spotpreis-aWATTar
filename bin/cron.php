@@ -15,10 +15,18 @@
  * basename(__DIR__) ist der bin-Ordner des Plugins, also der Pluginordner
  * selbst. Die Bibliothek steht hier noch nicht bereit; spot_paths() ist
  * deshalb keine Wahl. */
-$spot_sperrdatei = sys_get_temp_dir() . '/' . basename(dirname(__DIR__)) . '_cron.lock';
-$spot_sperre = @fopen($spot_sperrdatei, 'c');
-if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
-    exit(0);
+/* Aus der Deinstallation (uninstall/uninstall) kommt ein Aufruf mit
+ * --mqtt-leeren: die zurueckbehaltenen Themen der Linie leeren und beim
+ * Broker nachlesen (spot_mqtt_leeren() in spot_lib.php) - ohne Sperre, ohne
+ * Abruf, ohne Protokoll. Haelt gerade ein Minutenlauf die Sperre, darf die
+ * Deinstallation nicht daran scheitern. */
+$spot_leeren = in_array('--mqtt-leeren', isset($argv) ? (array) $argv : array(), true);
+if (!$spot_leeren) {
+    $spot_sperrdatei = sys_get_temp_dir() . '/' . basename(dirname(__DIR__)) . '_cron.lock';
+    $spot_sperre = @fopen($spot_sperrdatei, 'c');
+    if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
+        exit(0);
+    }
 }
 
 /**
@@ -54,26 +62,39 @@ if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
  * definiert nur Funktionen - ein Aufruf ueber HTTP liefert nichts.
  */
 
-// Installiert liegt die Bibliothek unter
-// <home>/webfrontend/html/plugins/<ordner>/spot_lib.php, im ausgepackten
-// Archiv daneben. Beide Wege werden probiert, damit sich das Skript auch
-// vor der Installation von Hand starten laesst.
-$spot_lib = '';
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/'
-        . basename(__DIR__) . '/spot_lib.php',
-    dirname(__DIR__) . '/webfrontend/html/spot_lib.php',
-) as $spot_kandidat) {
-    if (is_readable($spot_kandidat)) {
-        $spot_lib = $spot_kandidat;
-        break;
-    }
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
+ * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin und <archiv>/webfrontend/html. Bis 1.2.27 standen zwei
+ * Kandidaten in Reihe, der gerechnete VOR dem eigenen: aus einem Archiv unter
+ * /<name> war das /webfrontend/html/plugins/bin/spot_lib.php ab der
+ * Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Spotpreis-aWATTar-1.2.28, Fall C8; Bauart Spotpreis-Tibber
+ * 0.9.19). */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $spot_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/'
+        . basename(__DIR__) . '/spot_lib.php';
+} else {
+    $spot_lib = dirname(__DIR__) . '/webfrontend/html/spot_lib.php';
 }
-if ($spot_lib === '') {
+if (!is_readable($spot_lib)) {
     fwrite(STDERR, "spot_lib.php nicht gefunden - Plugin neu installieren.\n");
     exit(1);
 }
 require_once $spot_lib;
+
+if ($spot_leeren) {
+    exit(spot_mqtt_leeren());
+}
+/* Ohne Wurzel, oder aus einem Archiv heraus, das nicht in der gefundenen
+ * Wurzel installiert liegt: nichts tun (spot_keine_wurzel_abbruch() in
+ * spot_lib.php). Bis 1.2.27 lief der Minutenlauf aus einem ausgepackten
+ * Archiv unterhalb einer echten Wurzel einfach los und schrieb in die Ordner
+ * der Anlage (config, data, log), in einem fremden Baum ohne general.json
+ * ebenso (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Faelle B6, B7,
+ * H2). */
+spot_keine_wurzel_abbruch('cron.php');
 
 $st = spot_state();
 

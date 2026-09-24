@@ -12,44 +12,51 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-$sp_lbhome = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-$sp_plugin = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-if ($sp_lbhome && is_dir($sp_lbhome . '/config/plugins/' . $sp_plugin) === false) {
-    $sp_plugin = basename(dirname(__DIR__));
-    if (is_dir($sp_lbhome . '/config/plugins/' . $sp_plugin) === false) {
-        $sp_plugin = 'spotpreis';
-    }
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Liegt diese Datei unter
+ * <Wurzel>/webfrontend/htmlauth/plugins/<ordner>, ist sie installiert, sonst
+ * liegt sie in einem ausgepackten Archiv. Bis 1.2.27 wurde der gerechnete
+ * Kandidat dirname(__DIR__, 3)/html/plugins/<name>/spot_lib.php VOR der
+ * eigenen Bibliothek probiert - aus einem Archiv unter / war das
+ * /html/plugins/<name>/spot_lib.php ab der Laufwerkswurzel, und was dort lag,
+ * lief als Bibliothek (in WSL gemessen, Pruefung-Spotpreis-aWATTar-1.2.28,
+ * Fall C5; Bauart Spotpreis-Tibber 0.9.19). */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $sp_libcand = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/spot_lib.php';
+} else {
+    $sp_libcand = dirname(__DIR__) . '/html/spot_lib.php';
 }
-if ($sp_lbhome) {
+if (!is_file($sp_libcand)) {
+    echo '<p><b>Fehler:</b> spot_lib.php wurde nicht gefunden. Bitte das Plugin neu installieren.</p>';
+    exit;
+}
+require_once $sp_libcand;
+
+/* Die Pfade aus spot_paths() - EINE Rechnung fuer Oberflaeche, Endpunkt und
+ * Minutenlauf. Bis 1.2.27 rechnete diese Datei sie selbst nach, mit eigener
+ * Wurzelsuche (ohne config/system/general.json) und festem Rueckfall
+ * 'spotpreis', und rief diese Suche auf, bevor sie definiert war: ohne
+ * LBHOMEDIR brach die Seite mit "Call to undefined function" ab (in WSL
+ * gemessen, Pruefung-Spotpreis-aWATTar-1.2.28, Fall C6).
+ *
+ * Die eigene Heilung, die hier bis 1.2.27 stand (Zweitschrift per @copy()
+ * zurueck, wenn spot.json fehlte oder leer war), ist entfallen: sie legte die
+ * Datei mit dem Aktionstoken mit den Rechten der umask an, 644 (Fall N2c), und
+ * spot_config() heilt ohnehin - mit 0600. */
+$sp_pfade = spot_paths();
+$sp_lbhome = $sp_pfade['lbhome'];
+$sp_plugin = $sp_pfade['plugin'];
+if ($sp_lbhome !== '') {
     $sp_sdk = $sp_lbhome . '/libs/phplib/loxberry_system.php';
     if (file_exists($sp_sdk)) {
         require_once $sp_sdk;
         require_once $sp_lbhome . '/libs/phplib/loxberry_web.php';
     }
-    $sp_cfgdir = $sp_lbhome . '/config/plugins/' . $sp_plugin;
-    $sp_bkfile = $sp_lbhome . '/config/plugins/' . $sp_plugin . '.backup.json';
-    $sp_logfile = $sp_lbhome . '/log/plugins/' . $sp_plugin . '/spot.log';
-} else {
-    $sp_cfgdir = dirname(dirname(__DIR__)) . '/config';
-    $sp_bkfile = $sp_cfgdir . '/spot.backup.json';
-    $sp_logfile = sys_get_temp_dir() . '/spotpreis/spot.log';
 }
-$sp_cfgfile = $sp_cfgdir . '/spot.json';
-
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $sp_plugin . '/spot_lib.php',
-    dirname(__DIR__) . '/html/spot_lib.php',
-) as $sp_libcand) {
-    if (is_file($sp_libcand)) {
-        require_once $sp_libcand;
-        break;
-    }
-}
-
-if ((!is_file($sp_cfgfile) || trim((string) @file_get_contents($sp_cfgfile)) === '' || trim((string) @file_get_contents($sp_cfgfile)) === '{}') && is_file($sp_bkfile)) {
-    @mkdir($sp_cfgdir, 0775, true);
-    @copy($sp_bkfile, $sp_cfgfile);
-}
+$sp_cfgdir = dirname($sp_pfade['config']);
+$sp_bkfile = $sp_pfade['backup'];
+$sp_logfile = $sp_pfade['log'];
+$sp_cfgfile = $sp_pfade['config'];
 
 $sp_saved = false;
 $sp_err = '';
@@ -558,33 +565,10 @@ if (is_file($sp_logfile)) {
 }
 
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
- *
- * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
- *
- * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
- * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
- */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
-}
+/* Hier stand bis 1.2.27 eine eigene Kopie der Wurzelsuche
+ * lb_wurzel_ermitteln - ohne config/system/general.json und erst NACH ihrem
+ * ersten Aufruf oben definiert. Die Pfade kommen jetzt aus spot_paths() der
+ * Bibliothek, die Suche aus spot_lib.php. */
 
 function sp_n($v, $d = 2) { return number_format((float) $v, $d, ',', '.'); }
 

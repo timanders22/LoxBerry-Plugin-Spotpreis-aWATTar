@@ -42,6 +42,43 @@ ARGV6=$6
 
 PFOLDER="${ARGV3:-spotpreis}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# Findet sich nichts, wird GEWARNT statt vollzogen.
+#
+# Bis 1.2.27 stand hier nur die Zeile darueber. Ohne beides war BASE
+# leer, und das Skript legte data/plugins/<ordner>.upgrade_sicherung ab
+# der LAUFWERKSWURZEL an (in WSL gemessen,
+# Pruefung-Spotpreis-aWATTar-1.2.28, Fall K7). general.json ist die
+# Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein LoxBerry hat die Datei
+# immer, ein Pruefstandsrest nie. Bauart Spotpreis-Tibber 0.9.18.
+sp_wurzel_suchen() {
+    sp_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    sp_i=0
+    while [ -n "$sp_v" ] && [ "$sp_v" != "/" ] && [ "$sp_i" -lt 8 ]; do
+        if [ -d "$sp_v/config/plugins" ] && [ -d "$sp_v/data/plugins" ] \
+           && [ -f "$sp_v/config/system/general.json" ]; then
+            echo "$sp_v"
+            return 0
+        fi
+        sp_v=$(dirname "$sp_v")
+        sp_i=$((sp_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(sp_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts gesichert."
+    exit 1
+fi
 
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/spotpreis_upgrade"
