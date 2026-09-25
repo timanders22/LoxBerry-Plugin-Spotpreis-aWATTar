@@ -8,6 +8,17 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.29 behebt
+
+Die Rückfrage beim Broker, ob früher zurückbehaltene Werte (`ok`, `morgen_ok`,
+Monatswerte) noch dastehen, liest jetzt die Antwort auf das Abonnement (SUBACK).
+Lehnt der Broker das Lesen ab (Rückgabe 0x80, etwa durch eine Zugriffsregel) oder
+antwortet er nicht zu jedem Thema, gilt er als „nicht zu fragen“: kein Merker „vom
+Broker bestätigt“, die Altwerte werden weiter unmittelbar vor dem gültigen Wert
+gelöscht, und die Deinstallation leert, statt „nichts zu leeren“ zu melden. Bis
+1.2.28 galt eine Ablehnung als „nichts belegt“ (gemessen in WSL,
+`Pruefung-Spotpreis-aWATTar-1.2.29`, Fälle S3, S4, S7, S9, S11).
+
 ## Was 1.2.28 behebt
 
 Nachlese vom 24.09.2026 nach den Entscheidungen des Hausherrn zu Retain (18. und 19.09.2026)
