@@ -67,7 +67,15 @@ spot_nur_lesen(true);
  * ausloesenden Adressen nicht ab, und die Knoepfe der Plugin-Oberflaeche
  * fuehren das Token ohnehin mit.
  */
-$spot_soll = (string) spot_cfg_wert('token', '');
+/* Klasse 12 (01.10.2026): das Soll gilt nur als nicht-leere Zeichenkette in
+ * der Form der eigenen Erzeugung. Bis 1.2.29 stand hier ein (string) - eine
+ * Liste in der Konfiguration wurde "Array", und ?token=Array kam durch.
+ * Steht ein kaputtes Token in der Datei (Liste, fremde Form), wird unten
+ * JEDER Aufruf mit 403 abgewiesen: fail closed, nie "offen". */
+$spot_soll_roh = spot_cfg_wert('token', '');
+$spot_soll_kaputt = !is_string($spot_soll_roh)
+    || ($spot_soll_roh !== '' && !spot_endpunkt_token_form_ok($spot_soll_roh));
+$spot_soll = $spot_soll_kaputt ? '' : $spot_soll_roh;
 
 /* is_string ZUERST, dann alles andere.
  *
@@ -117,6 +125,9 @@ function spot_abweisen($grund, $klartext) {
  *
  * Die Werte sind 1 (in Ordnung), 0 (Befund) und 2 (nicht beurteilt). PFEHL
  * zaehlt nur die Nullen. */
+if ($spot_soll_kaputt) {
+    spot_abweisen('TOKEN_KAPUTT', spot_t('ENDPUNKT.TOKEN_KAPUTT'));
+}
 if (isset($_GET['selftest'])) {
     header('Content-Type: text/plain; charset=utf-8');
     if ($spot_soll === '') {
@@ -124,7 +135,7 @@ if (isset($_GET['selftest'])) {
         echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n" . spot_t('ENDPUNKT.SELFTEST_KEIN_TOKEN') . "\n";
         exit;
     }
-    if (!hash_equals($spot_soll, $spot_ist)) {
+    if ($spot_ist === '' || !hash_equals($spot_soll, $spot_ist)) {
         spot_log('Endpunkt abgewiesen: GRUND=SELFTEST_TOKEN, Anrufer '
             . (isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '?'));
         http_response_code(403);
@@ -161,7 +172,7 @@ if ($spot_loest_aus && $spot_soll === '') {
 if ($spot_soll !== '') {
     // hash_equals statt ==: ein zeichenweiser Vergleich verraet ueber die
     // Antwortzeit, wie viele Zeichen schon stimmen.
-    if (!hash_equals($spot_soll, $spot_ist)) {
+    if ($spot_ist === '' || !hash_equals($spot_soll, $spot_ist)) {
         spot_abweisen('TOKEN', spot_t('ENDPUNKT.TOKEN_FALSCH'));
     }
 }

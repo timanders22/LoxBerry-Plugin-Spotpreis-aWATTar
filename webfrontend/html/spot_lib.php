@@ -272,6 +272,9 @@ function spot_vorgaben()
     'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
     'marstek_power' => 2500,     // Ladeleistung in W
     'marstek_neg' => 1,          // bei negativem Preis immer laden
+    // Aktionstoken des Marstek-Plugins (Energie-1 C2). Wie ein Kennwort:
+    // nie angezeigt, nie in Adresse, Protokoll oder Sicherung.
+    'marstek_token' => '',
     'token' => '',               // leer = Endpunkt ohne Token erreichbar
     // Schaltregeln (ab 1.1.0): je Regel EIN fertiges 0/1-Signal fuer Loxone.
     // Bis 1.0.3 lieferte das Plugin nur Zahlen - Startstunde, Stunden bis
@@ -517,6 +520,13 @@ function spot_config_normalisieren($cfg) {
     $cfg['fixed_price'] = max(0.0, min(200.0, (float) $cfg['fixed_price']));
     $cfg['window'] = max(1, min(12, (int) $cfg['window']));
     $cfg['co2_clean'] = max(0, min(2000, (int) $cfg['co2_clean']));
+    /* Marstek-Aktionstoken (Energie-1 C2): nur in der Form, die das
+     * Marstek-Plugin selbst annimmt. Was von Hand oder aus einer alten Datei
+     * anders dasteht (Liste, Leerzeichen, fremde Zeichen), gilt als "kein
+     * Token" - der Reiter Test zeigt das rot, und es geht nie als "Array"
+     * hinaus. */
+    $sp_mt = is_string($cfg['marstek_token']) ? trim($cfg['marstek_token']) : '';
+    $cfg['marstek_token'] = ($sp_mt !== '' && spot_marstek_token_form_ok($sp_mt)) ? $sp_mt : '';
     /* Das MQTT-Thema geht in den Gateway-Befehl "publish <thema> <wert>".
      * Ein Leerzeichen darin verschiebt den Wert. Die Oberflaeche saeubert
      * es beim Speichern (index.php); eine zurueckgespielte Sicherung geht
@@ -752,7 +762,7 @@ function spot_config_vervollstaendigen() {
     $p = spot_paths();
     $cfg = spot_config(true);
     $z = is_file($p['backup']) ? json_decode((string) @file_get_contents($p['backup']), true) : null;
-    if (is_array($z) && !empty($z['token']) && (string) $cfg['token'] === '') {
+    if (is_array($z) && !empty($z['token']) && (!is_string($cfg['token']) || $cfg['token'] === '')) {
         spot_log('Konfiguration NICHT vervollstaendigt: die Datei hat kein Token, die Zweitschrift schon.');
         return 0;
     }
@@ -2285,14 +2295,163 @@ function spot_marstek_default_url() {
     return 'http://' . spot_own_ip() . '/plugins/marstekvenus/marstek.php';
 }
 
-/* ---------------- Optionale Kopplung: Marstek-Speicher laden ---------------- */
+/* ---------------- Optionale Kopplung: Marstek-Speicher laden ----------------
+ *
+ * ENERGIE-1 TEIL C2 (Entscheidung Nr. 25, 01.10.2026). Bis 1.2.29 galt:
+ *
+ *   1. Die Kopplung schickte ihren Sollwert OHNE Token. Der Marstek-Endpunkt
+ *      weist ?p= ohne Token mit HTTP 403 ab (marstek.php, Token-Pruefung vor
+ *      dem Passiv-Sollwert). Die Kopplung war damit still wirkungslos - im
+ *      Protokoll stand nur "-> FEHLER", weil file_get_contents() bei 403
+ *      false liefert und den Code verschluckt.
+ *   2. In jeder Nicht-Guenstig-Stunde ging jede Minute p=0 hinaus. Mit Token
+ *      haette das den Ladesollwert aus Loxone im Minutentakt ueberschrieben.
+ *
+ * Jetzt:
+ *   - Das Aktionstoken des Marstek steht im eigenen Feld marstek_token und
+ *     geht als &token= nur in die Anfrage - nie ins Protokoll, nie in den
+ *     Reiter Test, nie in die Sicherung, nie in die Adresse im Formular.
+ *   - Gesendet wird NUR, wenn die Kopplung laden will (Rang <= X oder
+ *     negativer Preis). Ausserhalb davon gibt sie nichts vor; den zuletzt
+ *     gesetzten Ladesollwert beendet der Watchdog des Marstek (t=240) von
+ *     selbst, oder Loxone setzt seinen eigenen. Loxone bleibt die eine Hand.
+ *   - Jedes Senden wird mit HTTP-Code und Antwort festgehalten
+ *     (marstek_ergebnis.json im Zwischenspeicher, Protokollzeile bei jeder
+ *     Aenderung) und im Reiter Test gezeigt. Ein 403 ist rot, nie still.
+ *
+ * Was die Kopplung NICHT weiss: ob gerade PV-Ueberschuss ansteht. Das
+ * Plugin hat keinen Zaehlerwert (die PV-Prognose ist eine Prognose, kein
+ * Ueberschuss). Wer Netzladen nur ohne Ueberschuss will, baut das Spot-Laden
+ * in Loxone, wo der Zaehler liegt, und laesst die Kopplung aus.
+ * ------------------------------------------------------------------------- */
+
+/** Hat das Endpunkt-Token die Form der eigenen Erzeugung (spot_token_erzeugen,
+ *  24 Zeichen)? Zugelassen sind 8 bis 64 Zeichen aus Buchstaben, Ziffern,
+ *  Punkt, Bindestrich und Unterstrich - eine Liste oder "Array" nie (Klasse 12). */
+function spot_endpunkt_token_form_ok($t) {
+    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{8,64}$/', $t) === 1;
+}
+
+/** Hat ein Marstek-Aktionstoken die Form, die das Marstek-Plugin annimmt?
+ *  Dieselbe Regel wie dort (marstek_lib.php, Pruefung 'aktionstoken'). */
+function spot_marstek_token_form_ok($t) {
+    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $t) === 1;
+}
+
+/** Die Teile der Anfrage einer Adresse, ohne jeden token-Parameter.
+ *  Rueckgabe array(Adresse ohne Token, ob einer darin stand). */
+function spot_marstek_url_teilen($url) {
+    $url = (string) $url;
+    $frage = strpos($url, '?');
+    if ($frage === false) {
+        return array($url, false);
+    }
+    $anker = '';
+    $raute = strpos($url, '#', $frage);
+    if ($raute !== false) {
+        $anker = substr($url, $raute);
+        $url = substr($url, 0, $raute);
+    }
+    $behalten = array();
+    $hatte = false;
+    foreach (explode('&', substr($url, $frage + 1)) as $teil) {
+        if ($teil === '') {
+            continue;
+        }
+        $k = strtolower(rawurldecode((string) strstr($teil . '=', '=', true)));
+        if ($k === 'token' || strpos($k, 'token[') === 0) {
+            $hatte = true;
+            continue;
+        }
+        $behalten[] = $teil;
+    }
+    return array(substr($url, 0, $frage) . ($behalten ? '?' . implode('&', $behalten) : '') . $anker, $hatte);
+}
+
+/** Traegt eine Adresse einen token-Parameter? Er gehoert ins eigene Feld. */
+function spot_marstek_url_hat_token($url) {
+    $t = spot_marstek_url_teilen($url);
+    return $t[1];
+}
+
+/** Dieselbe Adresse ohne token-Parameter (fuer Protokoll und Sicherung). */
+function spot_marstek_url_ohne_token($url) {
+    $t = spot_marstek_url_teilen($url);
+    return $t[0];
+}
+
+/**
+ * Den Marstek-Endpunkt aufrufen. Rueckgabe array(HTTP-Code, Rumpf); Code 0
+ * heisst "keine Verbindung". Der Code kommt aus stream_get_meta_data() und
+ * dort aus der LETZTEN Statuszeile - die vordefinierte Kopfzeilen-Variable
+ * von PHP meldet 8.5 als ueberholt (Bauform oc_http_strom(), Octopus).
+ * Umleitungen werden NICHT verfolgt: das Token ginge sonst an die Adresse,
+ * die die Umleitung nennt.
+ */
+function spot_marstek_rufen($url, $timeout = 8) {
+    $ctx = stream_context_create(array('http' => array(
+        'timeout' => $timeout, 'ignore_errors' => true, 'follow_location' => 0,
+        'user_agent' => 'LoxBerry Spotpreis')));
+    $fh = @fopen($url, 'rb', false, $ctx);
+    if ($fh === false) {
+        return array(0, '');
+    }
+    $meta = @stream_get_meta_data($fh);
+    $rumpf = @stream_get_contents($fh, 65536);
+    @fclose($fh);
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    $code = 0;
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    return array($code, $rumpf === false ? '' : (string) $rumpf);
+}
+
+/** Die Antwort fuer Protokoll und Reiter Test: eine Zeile, nur druckbares
+ *  ASCII, hoechstens 160 Zeichen, und das Token - sollte eine Gegenstelle es
+ *  je zurueckgeben - durch *** ersetzt. */
+function spot_marstek_antwort_kurz($rumpf, $tok) {
+    $s = (string) $rumpf;
+    if ($tok !== '') {
+        $s = str_replace(array($tok, rawurlencode($tok)), '***', $s);
+    }
+    $s = trim((string) preg_replace('/ {2,}/', ' ', (string) preg_replace('/[^\x20-\x7E]+/', ' ', $s)));
+    if (strlen($s) > 160) {
+        $s = substr($s, 0, 160) . '...';
+    }
+    return $s;
+}
+
+/** Wo das Ergebnis des letzten Sendens liegt (Zwischenspeicher; nach einem
+ *  Neustart beginnt es von vorn). */
+function spot_marstek_ergebnis_datei() {
+    return spot_tmpdir() . '/marstek_ergebnis.json';
+}
+
+/** Das Ergebnis des letzten Sendens - oder null, wenn seit dem Neustart
+ *  noch nichts gesendet wurde. */
+function spot_marstek_ergebnis_lesen() {
+    $f = spot_marstek_ergebnis_datei();
+    if (!is_file($f)) {
+        return null;
+    }
+    $e = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($e) || !isset($e['ts'])) {
+        return null;
+    }
+    return $e + array('p' => 0, 'code' => 0, 'ok' => 0, 'antwort' => '', 'folge' => 0);
+}
 
 /**
  * Schickt dem Marstek-Plugin einen Ladebefehl, wenn die aktuelle Stunde zu den
- * X guenstigsten der naechsten 24 h gehoert (oder der Preis negativ ist).
- * STANDARD AUS - gedacht als Alternative fuer alle, die die Rang-Logik NICHT
- * in Loxone bauen wollen. Laeuft die Loxone-Logik parallel, bitte ausgeschaltet
- * lassen, sonst ueberschreiben sich beide Sollwerte gegenseitig.
+ * X guenstigsten der naechsten 24 h gehoert (oder der Preis negativ ist) - und
+ * SONST NICHTS. STANDARD AUS - gedacht als Alternative fuer alle, die das
+ * Spot-Laden NICHT in Loxone bauen wollen. Fuehrt Loxone den Marstek, ist die
+ * Kopplung eine zweite Hand: in den guenstigen Stunden ueberschreiben sich
+ * beide Sollwerte. Dann bitte ausgeschaltet lassen.
  */
 function spot_marstek_control($st = null) {
     $cfg = spot_config();
@@ -2307,7 +2466,7 @@ function spot_marstek_control($st = null) {
     }
     $laden = ($st['rank'] <= max(1, (int) $cfg['marstek_hours']))
           || (!empty($cfg['marstek_neg']) && $st['neg']);
-    $p = $laden ? max(0, (int) $cfg['marstek_power']) : 0;
+    $grund = '(Rang ' . $st['rank'] . ', neg=' . $st['neg'] . ')';
     $url = trim((string) $cfg['marstek_url']);
     if ($url === '') {
         $url = spot_marstek_default_url(); // leer = automatisch eigene LoxBerry-IP
@@ -2315,14 +2474,116 @@ function spot_marstek_control($st = null) {
         // Zweite Schranke hinter der Oberflaeche: eine Adresse, die aus einer
         // aelteren Fassung oder von Hand in der spot.json steht, wird hier
         // ebenfalls abgewiesen - und zwar benannt, nicht stillschweigend.
-        spot_log_if_changed('marstek', 'Adresse abgewiesen (nur http/https erlaubt): ' . $url);
+        // Ein Token darin kommt nicht mit ins Protokoll.
+        spot_log_if_changed('marstek', 'Adresse abgewiesen (nur http/https erlaubt): '
+            . spot_marstek_url_ohne_token($url));
         return;
     }
-    $url .= (strpos($url, '?') === false ? '?' : '&') . 'p=' . $p . '&t=240';
-    $ctx = stream_context_create(array('http' => array('timeout' => 8)));
-    $r = @file_get_contents($url, false, $ctx);
-    spot_log_if_changed('marstek', ($laden ? 'laden mit ' . $p . ' W' : 'kein Spot-Laden')
-        . ' (Rang ' . $st['rank'] . ', neg=' . $st['neg'] . ') -> ' . ($r !== false ? trim((string) $r) : 'FEHLER'));
+    if (!$laden) {
+        /* Ausserhalb der guenstigen Stunden geht NICHTS hinaus. Bis 1.2.29
+         * stand hier p=0 jede Minute - mit Token haette das den Sollwert aus
+         * Loxone im Minutentakt ueberschrieben (Energie-1, Konfliktfall K3). */
+        spot_log_if_changed('marstek', 'kein Spot-Laden ' . $grund
+            . ' -> nichts gesendet; Loxone fuehrt den Speicher (ein zuletzt gesetzter'
+            . ' Ladesollwert endet spaetestens nach 240 s)');
+        return;
+    }
+    $p = max(0, (int) $cfg['marstek_power']);
+    $tok = (string) $cfg['marstek_token'];
+    /* &von=awattar: die Kennung fuer die Schreiber-Wache des Marstek
+     * (Energie-1 C1). Aeltere Marstek-Fassungen ignorieren den Parameter. */
+    $ziel = $url . (strpos($url, '?') === false ? '?' : '&') . 'p=' . $p . '&t=240&von=awattar';
+    if ($tok !== '') {
+        $ziel .= '&token=' . rawurlencode($tok);
+    }
+    list($code, $rumpf) = spot_marstek_rufen($ziel, 8);
+    $kurz = spot_marstek_antwort_kurz($rumpf, $tok);
+    $ok = ($code === 200 && strpos(ltrim($rumpf), 'SET;OK=1') === 0);
+    $alt = spot_marstek_ergebnis_lesen();
+    $folge = $ok ? 0 : (($alt !== null && empty($alt['ok'])) ? (int) $alt['folge'] + 1 : 1);
+    spot_write_json_atomic(spot_marstek_ergebnis_datei(), array(
+        'ts' => time(), 'p' => $p, 'code' => $code, 'ok' => $ok ? 1 : 0,
+        'antwort' => $kurz, 'folge' => $folge));
+    $zeile = 'laden mit ' . $p . ' W ' . $grund . ' -> '
+        . ($code > 0 ? 'HTTP ' . $code : 'keine Verbindung');
+    if ($ok) {
+        // UNVERAENDERT=1 (Befehlsbremse des Marstek) wechselt von Minute zu
+        // Minute; es gehoert nicht in die Zeile, sonst schriebe sie jede Minute.
+        $zeile .= ', angenommen (' . str_replace(';UNVERAENDERT=1', '', $kurz) . ')';
+    } else {
+        $zeile .= ', NICHT angenommen' . ($kurz !== '' ? ': ' . $kurz : '');
+        if ($code === 403) {
+            $zeile .= ' - das Marstek-Token fehlt oder stimmt nicht (Einstellungen, Kopplung mit dem Marstek)';
+        }
+    }
+    spot_log_if_changed('marstek', $zeile);
+}
+
+/**
+ * Die Zeile der Selbstpruefung fuer die Kopplung. Rueckgabe array(0|1|2, Text).
+ *
+ * Ein Haken nur, wenn etwas GEMESSEN wurde: der Selbsttest des Marstek
+ * (?selftest=1, nur auf Knopfdruck; er prueft nur das Token und schaltet
+ * nichts) oder ein angenommener Sollwert. Sonst ein Strich. Kein Token, ein
+ * Token in der Adresse oder ein abgewiesener Sollwert sind ein Kreuz.
+ */
+function spot_marstek_pruefen($probe = false) {
+    $cfg = spot_config();
+    $url = trim((string) $cfg['marstek_url']);
+    if ($url === '') {
+        $url = spot_marstek_default_url();
+    } elseif (!spot_url_ok($url)) {
+        return array(0, spot_t('PRUEFTEXT.MARSTEK_ADRESSE'));
+    }
+    $tok = (string) $cfg['marstek_token'];
+    $url_tok = spot_marstek_url_hat_token($url);
+    $teile = array();
+    $note = 1;
+    $gemessen = false;
+    if ($tok === '' && !$url_tok) {
+        $teile[] = spot_t('PRUEFTEXT.MARSTEK_KEIN_TOKEN');
+        $note = 0;
+    }
+    if ($url_tok) {
+        $teile[] = spot_t('PRUEFTEXT.MARSTEK_TOKEN_IN_ADRESSE');
+        $note = 0;
+    }
+    if ($probe) {
+        $ziel = $url . (strpos($url, '?') === false ? '?' : '&') . 'selftest=1'
+              . ($tok !== '' ? '&token=' . rawurlencode($tok) : '');
+        list($code, $rumpf) = spot_marstek_rufen($ziel, 5);
+        $kurz = spot_marstek_antwort_kurz($rumpf, $tok);
+        if ($code === 200 && strpos(ltrim($rumpf), 'SELFTEST;OK=1') === 0) {
+            $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_PROBE_OK'), $code);
+            $gemessen = true;
+        } elseif ($code === 403) {
+            $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_PROBE_TOKEN'), $code, $kurz);
+            $note = 0;
+        } elseif ($code === 0) {
+            $teile[] = spot_t('PRUEFTEXT.MARSTEK_PROBE_WEG');
+        } else {
+            $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_PROBE_FALSCH'), $code, $kurz);
+            $note = 0;
+        }
+    } else {
+        $teile[] = spot_t('PRUEFTEXT.MARSTEK_PROBE_KNOPF');
+    }
+    $e = spot_marstek_ergebnis_lesen();
+    if ($e === null) {
+        $teile[] = spot_t('PRUEFTEXT.MARSTEK_NIE');
+    } elseif (!empty($e['ok'])) {
+        $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_LETZT_OK'), date('d.m. H:i', (int) $e['ts']),
+                           (int) $e['p'], (int) $e['code'], (string) $e['antwort']);
+        $gemessen = true;
+    } else {
+        $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_LETZT_FEHL'), date('d.m. H:i', (int) $e['ts']),
+                           (int) $e['p'], (int) $e['code'], (string) $e['antwort'], (int) $e['folge']);
+        $note = 0;
+    }
+    if ($note === 1 && !$gemessen) {
+        $note = 2;
+    }
+    return array($note, implode(' ', $teile));
 }
 
 /* ---------------- MQTT (LoxBerry MQTT Gateway, UDP-Relay) ---------------- */
@@ -3363,7 +3624,8 @@ function spot_vorlage() {
         $ordner = $p['plugin'];
     }
     $st = spot_state();
-    $token = (string) spot_cfg_wert('token', '');
+    $token = spot_cfg_wert('token', '');
+    $token = spot_endpunkt_token_form_ok($token) ? $token : '';
     $cmds = array();
     foreach (spot_felder() as $name => $d) {
         list($analog, $min, $max, $einheit, $text) = $d;
@@ -3857,6 +4119,7 @@ function spot_sicherung_lesen($roh)
     $neu = spot_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    $sp_tok_aus_datei = false;
     foreach ($daten as $k => $w) {
         /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
          *
@@ -3867,6 +4130,39 @@ function spot_sicherung_lesen($roh)
          * hinzufuegt, das keine Einstellung ist, ergaenzt im selben Zug die
          * Leseseite. */
         if ($k !== '' && $k[0] === '_') {
+            continue;
+        }
+        /* Das Marstek-Token kommt nie aus einer Datei (Energie-1 C2). Eine
+         * Sicherung dieses Plugins traegt es nicht. Ein LEERER Wert sagt
+         * nichts und wird uebergangen (wie das leere Formularfeld: das
+         * geltende bleibt). Traegt der Schluessel einen Wert - Text oder
+         * Liste -, ist die Datei fremd oder von Hand bearbeitet: abgewiesen
+         * wird die ganze Datei, ohne den Wert zu nennen. Ebenso ein Token in
+         * der Marstek-Adresse. */
+        /* Das Endpunkt-Token (Klasse 12). Bis 1.2.29 ging es ungeprueft
+         * durch: eine Liste wurde gespeichert, und danach war der Endpunkt
+         * mit ?token=Array offen (gemessen, HTTP 200 mit voller Zeile). Ein
+         * leerer Wert schaltete den Schutz still ab. Jetzt: nur eine
+         * Zeichenkette in der Form der eigenen Erzeugung; leer = das geltende
+         * Token bleibt; alles andere weist die ganze Datei ab. */
+        if ($k === 'token') {
+            if (!is_string($w) || ($w !== '' && !spot_endpunkt_token_form_ok($w))) {
+                $mangel[] = spot_t('TEXT.SICH_TOKEN_FORM');
+            } elseif ($w !== '') {
+                $neu['token'] = $w;
+                $sp_tok_aus_datei = true;
+                $anzahl++;
+            }
+            continue;
+        }
+        if ($k === 'marstek_token') {
+            if ($w !== '') {
+                $mangel[] = spot_t('TEXT.SICH_MARSTEK_TOKEN');
+            }
+            continue;
+        }
+        if ($k === 'marstek_url' && is_string($w) && spot_marstek_url_hat_token($w)) {
+            $mangel[] = spot_t('TEXT.SICH_MARSTEK_URL_TOKEN');
             continue;
         }
         if (!in_array($k, $bekannt, true)) {
@@ -3899,13 +4195,22 @@ function spot_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(spot_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        // marstek_token steht nie in einer Sicherung - sein Fehlen ist richtig.
+        if ($fk !== 'marstek_token' && !array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
     }
     if ($fehlend) {
         $mangel[] = sprintf(spot_t('TEXT.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+    }
+    /* Zurueckspielen behaelt das geltende Marstek-Token (Energie-1 C2): die
+     * Datei traegt keines, und die Vorgabe '' haette es sonst still geloescht. */
+    $sp_jetzt = spot_config();
+    $neu['marstek_token'] = isset($sp_jetzt['marstek_token']) ? (string) $sp_jetzt['marstek_token'] : '';
+    // Ein leeres Token in der Datei laesst das geltende stehen (Klasse 12).
+    if (!$sp_tok_aus_datei) {
+        $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
@@ -3948,8 +4253,25 @@ function spot_sicherung_schreiben()
         '_stand'   => date('Y-m-d H:i:s'),
         '_fassung' => spot_fassung(),
     );
+    /* Ein Token in der Marstek-Adresse - bis 1.2.29 der einzige Weg, die
+     * Kopplung zum Laufen zu bringen - kommt ebenfalls nicht mit: es wird aus
+     * der Adresse genommen, und der Kopf der Datei sagt es (X-3). Das
+     * Zurueckspielen wiese eine Adresse mit Token ab. */
+    $sp_mu = (isset($cfg['marstek_url']) && is_string($cfg['marstek_url'])) ? $cfg['marstek_url'] : '';
+    $sp_mu_tok = ($sp_mu !== '' && spot_marstek_url_hat_token($sp_mu));
+    if ($sp_mu_tok) {
+        $daten['_warnung'] = 'marstek_url trug ein Token. Es steht NICHT in dieser Datei;'
+            . ' bitte im Plugin in das Feld "Aktionstoken des Marstek-Plugins" eintragen.';
+    }
     foreach (spot_vorgaben() as $k => $v) {
+        // Das Marstek-Token gehoert nie in eine Sicherung (Energie-1 C2).
+        if ($k === 'marstek_token') {
+            continue;
+        }
         $daten[$k] = isset($cfg[$k]) ? $cfg[$k] : $v;
+    }
+    if ($sp_mu_tok) {
+        $daten['marstek_url'] = spot_marstek_url_ohne_token($sp_mu);
     }
     $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($js === false) {
@@ -4093,7 +4415,8 @@ function spot_endpunkt_probe($force = false)
         if (isset($g['Webserver']['Port'])) { $port = (int) $g['Webserver']['Port']; }
     }
     if ($port < 1 || $port > 65535) { $port = 80; }
-    $tok = (string) spot_cfg_wert('token', '');
+    $tok = spot_cfg_wert('token', '');
+    $tok = spot_endpunkt_token_form_ok($tok) ? $tok : '';
     $url = 'http://127.0.0.1:' . $port . '/plugins/' . rawurlencode($ordner) . '/spot.php'
          . ($tok !== '' ? '?token=' . rawurlencode($tok) : '');
     $ctx = stream_context_create(array('http' => array(
@@ -4394,6 +4717,13 @@ function spot_selbsttest($endpunkt_pruefen = false)
                               $fehlend ? implode(', ', array_unique($fehlend)) : '-',
                               $ueberzaehlig ? implode(', ', array_unique($ueberzaehlig)) : '-'));
         }
+    }
+    /* Marstek-Kopplung (Energie-1 C2). Nur, wenn sie eingeschaltet ist: eine
+     * ausgeschaltete Kopplung hat nichts zu pruefen. Hinten angehaengt, weil
+     * die PRUEF-Zeile des Endpunkts die Punkte der Reihe nach nennt. */
+    if (!empty($cfg['marstek_enabled'])) {
+        list($sp_mok, $sp_mtext) = spot_marstek_pruefen($endpunkt_pruefen);
+        $add('PRUEF.MARSTEK', $sp_mok, $sp_mtext);
     }
     return $z;
 }

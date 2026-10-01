@@ -8,6 +8,27 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.30 behebt
+
+Energie-1 Teil C2 und eine Sicherheitsberichtigung (Verbesserungsliste `Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 25).
+Gemessen mit einer Marstek-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Speicher.
+
+* **Sicherheit:** Eine zurückgespielte Sicherung mit dem Endpunkt-Token als Liste
+  oder in fremder Form wird abgewiesen; bisher öffnete sie den Endpunkt
+  (`?token=Array` lieferte die volle Zeile), ebenso ein leeres Token. Ein
+  kaputtes Token in der Konfiguration ergibt jetzt 403 `GRUND=TOKEN_KAPUTT`.
+* **Kopplung zum Marstek (ab Werk aus) berichtigt:** Das Marstek-Token steht in
+  einem eigenen Feld (wie ein Kennwort behandelt). Bis 1.2.29 ging der Sollwert
+  ohne Token hinaus und wurde still mit 403 abgewiesen. Außerhalb der günstigen
+  Stunden sendet die Kopplung nichts mehr (bisher jede Minute `p=0`, das den
+  Sollwert aus Loxone überschrieb). HTTP-Code und Antwort stehen im Protokoll und
+  im Reiter Test; der Knopf dort fragt nur den Selbsttest des Marstek.
+* Die Kopplung meldet sich beim Marstek als `von=awattar` (Schreiber-Wache ab
+  Marstek 1.1.19). Ein Hinweis „Zweite Hand“ erklärt: Wer den Marstek aus Loxone
+  führt, lässt die Kopplung aus.
+* Eingeschaltet ohne Token oder ein Token in der Adresse wird beim Speichern
+  beanstandet; die Sicherung enthält das Marstek-Token nie.
+
 ## Was 1.2.29 behebt
 
 Die Rückfrage beim Broker, ob früher zurückbehaltene Werte (`ok`, `morgen_ok`,
@@ -304,7 +325,25 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
 - **Ersparnis durch verschobenen Verbrauch**: Was hätte es gebracht, täglich
   X kWh in die günstigste Stunde zu verschieben (Woche und Jahreshochrechnung)
 - **Optionale Kopplung mit dem Marstek-Speicher-Plugin** (Standard aus): lädt den
-  Speicher in den X günstigsten Stunden bzw. bei negativem Preis
+  Speicher in den X günstigsten Stunden bzw. bei negativem Preis. Dazu gehört das
+  **Aktionstoken des Marstek** in das eigene Feld *Aktionstoken des Marstek-Plugins*
+  (Reiter Einstellungen). Es wird wie ein Kennwort behandelt: nie angezeigt, nie in
+  die Adresse, ins Protokoll oder in die Sicherung geschrieben; ein leeres Feld lässt
+  das gespeicherte stehen, der Haken löscht es. Ohne Token weist der Marstek jeden
+  Sollwert mit HTTP 403 ab – eingeschaltet ohne Token wird deshalb beim Speichern
+  beanstandet. Die Kopplung sendet **nur, wenn sie laden will** (jede Minute
+  `p=<Leistung>&t=240&von=awattar`); außerhalb der günstigen Stunden gibt sie nichts vor, und ein
+  zuletzt gesetzter Ladesollwert endet spätestens nach 240 s. Einen PV-Überschuss
+  kennt sie nicht. Das Ergebnis jedes Sendens (HTTP-Code, Antwort) steht im Protokoll
+  und im Reiter Test; dort prüft der Knopf *Eigenen Endpunkt jetzt aufrufen* auch den
+  Selbsttest des Marstek (`?selftest=1`, schaltet nichts).
+  **Zweite Hand:** Führt Loxone den Marstek (Sollwert über `?p=`), ist die Kopplung
+  ein zweiter Schreiber auf denselben Speicher – in den günstigen Stunden
+  überschreiben sich beide. Eine Marstek-Fassung mit Schreiber-Wache meldet zweite
+  Schreiber dort im Reiter Test; die Kopplung meldet sich dabei mit `von=awattar`
+  (ältere Marstek-Fassungen übergehen den Parameter). Empfehlung: das Spot-Laden in Loxone bauen
+  (`RANK` oder eine Schaltregel, dort mit der Überschussbedingung am Zähler) und die
+  Kopplung aus lassen.
 - **MQTT** über das LoxBerry MQTT Gateway, **JSON** inklusive aller Stundenwerte
 - **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
   Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte
@@ -422,7 +461,7 @@ Ausgehende Verbindungen — vollständig, am Quelltext nachgezählt:
 | `api.energy-charts.info` | **ab Werk eingeschaltet**, für die CO₂-Intensität | keine |
 | die eingetragene PV-Prognose | nur wenn eine Quelle eingerichtet ist | wie eingetragen |
 | der eingetragene eigene Lastgang | nur wenn eine Quelle eingerichtet ist | wie eingetragen |
-| Hausspeicher (Marstek) | nur wenn eingeschaltet, im eigenen Netz | — |
+| Hausspeicher (Marstek) | nur wenn eingeschaltet und nur in den Ladestunden, im eigenen Netz | Aktionstoken des Marstek (eigenes Feld) |
 | Music Server / Audioserver | nur für Ansagen, im eigenen Netz | — |
 | `127.0.0.1` | MQTT über das UDP-Relais des Gateways | — |
 

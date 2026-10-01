@@ -72,6 +72,11 @@ $sp_fehler = array();
  * Beanstandung, erfuhr aber nicht, dass darueber auch seine uebrigen
  * Eingaben liegengeblieben sind. */
 $sp_nichts_gespeichert = false;
+/* Energie-1 C2: welche Marstek-Felder beanstandet sind (fuer die Markierung)
+ * und ob "Token loeschen" angehakt war (X-2: nach einer Beanstandung steht
+ * der Haken wieder da). Das Token selbst kommt nie zurueck ins Formular. */
+$sp_mt_mangel = array();
+$sp_x2_mt_weg = false;
 /* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
  * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
 $sp_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
@@ -430,6 +435,53 @@ if ($sp_ist_post && isset($_POST['save'])) {
     $sp_new['marstek_hours'] = max(1, min(12, (int) (isset($_POST['marstek_hours']) ? $_POST['marstek_hours'] : 4)));
     $sp_new['marstek_power'] = max(100, min(10000, (int) (isset($_POST['marstek_power']) ? $_POST['marstek_power'] : 2500)));
     $sp_new['marstek_neg'] = isset($_POST['marstek_neg']) ? 1 : 0;
+    /* ---- Aktionstoken des Marstek (Energie-1 C2, Entscheidung Nr. 25) ----
+     *
+     * Wie ein Kennwort: ein leeres Feld heisst "unveraendert", der Haken
+     * loescht, beides zugleich ist ein Widerspruch. Leerraum am Rand wird
+     * still abgeschnitten (Nr. 19), alles andere, was nicht die Form des
+     * Marstek-Tokens hat, wird beanstandet - nichts gespeichert (Nr. 16).
+     * Eine Liste (marstek_token[]=...) ist eine Beanstandung, kein TypeError. */
+    $sp_mt_cfg = function_exists('spot_config') ? spot_config() : array();
+    $sp_mt = isset($sp_mt_cfg['marstek_token']) ? (string) $sp_mt_cfg['marstek_token'] : '';
+    $sp_mt_roh = isset($_POST['marstek_token']) ? $_POST['marstek_token'] : '';
+    $sp_x2_mt_weg = isset($_POST['marstek_token_weg']);
+    if (!is_string($sp_mt_roh)) {
+        $sp_fehler[] = spot_t('TEXT.MARSTEK_TOKEN_FORM');
+        $sp_mt_mangel[] = 'marstek_token';
+        $sp_mt_roh = '';
+    } else {
+        $sp_mt_roh = trim($sp_mt_roh);
+        if ($sp_mt_roh !== '' && $sp_x2_mt_weg) {
+            $sp_fehler[] = spot_t('TEXT.MARSTEK_TOKEN_BEIDES');
+            $sp_mt_mangel[] = 'marstek_token';
+        } elseif ($sp_mt_roh !== '' && !spot_marstek_token_form_ok($sp_mt_roh)) {
+            $sp_fehler[] = spot_t('TEXT.MARSTEK_TOKEN_FORM');
+            $sp_mt_mangel[] = 'marstek_token';
+        } elseif ($sp_mt_roh !== '') {
+            $sp_mt = $sp_mt_roh;
+        } elseif ($sp_x2_mt_weg) {
+            $sp_mt = '';
+        }
+    }
+    $sp_new['marstek_token'] = $sp_mt;
+    /* Ein Token in der Adresse gehoert ins eigene Feld - gemessen wird die
+     * EINGABE, nicht der Wert, der nach einer verworfenen Adresse stehen
+     * bliebe. */
+    $sp_murl_roh = isset($_POST['marstek_url']) && is_string($_POST['marstek_url'])
+        ? trim($_POST['marstek_url']) : '';
+    $sp_murl_tok = ($sp_murl_roh !== '' && spot_marstek_url_hat_token($sp_murl_roh));
+    if ($sp_murl_tok) {
+        $sp_fehler[] = spot_t('TEXT.MARSTEK_URL_TOKEN');
+        $sp_mt_mangel[] = 'marstek_url';
+    }
+    /* Eingeschaltet ohne Token waere still wirkungslos: der Marstek weist
+     * jeden Sollwert mit 403 ab. Das ist bis 1.2.29 so gewesen. */
+    if ($sp_new['marstek_enabled'] && $sp_new['marstek_token'] === '' && !$sp_murl_tok
+        && !in_array('marstek_token', $sp_mt_mangel, true)) {
+        $sp_fehler[] = spot_t('TEXT.MARSTEK_KEIN_TOKEN');
+        $sp_mt_mangel[] = 'marstek_token';
+    }
     // MQTT wohnt seit 1.2.5 im eigenen Reiter mit eigenem Formular - hier
     // aus dem Bestand uebernehmen (gleiches Muster wie beim Token unten).
     $sp_altmq = function_exists('spot_config') ? spot_config() : array();
@@ -465,8 +517,14 @@ if ($sp_ist_post && isset($_POST['save'])) {
     // im Reiter Loxone gesetzt. Ohne diese Zeile loeschte jedes Speichern
     // der Einstellungen das Token.
     $sp_alt2 = function_exists('spot_config') ? spot_config() : array();
-    $sp_new['token'] = isset($sp_alt2['token']) ? (string) $sp_alt2['token'] : '';
+    // Ohne (string): eine Liste bliebe sonst als "Array" stehen (Klasse 12).
+    $sp_new['token'] = isset($sp_alt2['token']) ? $sp_alt2['token'] : '';
 
+    // Ein eingetipptes Marstek-Token kommt nach einer Beanstandung nicht
+    // wieder ins Formular (Kennwortfeld) - das muss dastehen.
+    if ($sp_fehler && isset($sp_mt_roh) && $sp_mt_roh !== '') {
+        $sp_fehler[] = spot_t('TEXT.MARSTEK_TOKEN_NICHT_UEBERNOMMEN');
+    }
     // Unteilbar schreiben, Sicherungskopie anlegen, Zwischenspeicher leeren -
     // alles in spot_config_save().
     if ($sp_fehler) {
@@ -626,7 +684,7 @@ $sp_ownurl = function_exists('spot_marstek_default_url') ? spot_marstek_default_
 /* Freiwilliges Token fuer den unangemeldeten Endpunkt. $sp_tk haengt an jede
  * Adresse den passenden Zusatz - ohne Token bleibt er leer, dann sehen die
  * Knoepfe und die Beispieladressen aus wie bisher. */
-$sp_token = isset($sp_cfg['token']) ? (string) $sp_cfg['token'] : '';
+$sp_token = (isset($sp_cfg['token']) && spot_endpunkt_token_form_ok($sp_cfg['token'])) ? $sp_cfg['token'] : '';
 $sp_tk  = $sp_token !== '' ? '?token=' . rawurlencode($sp_token) : '';   // erster Parameter
 $sp_tk2 = $sp_token !== '' ? '&amp;token=' . rawurlencode($sp_token) : ''; // weiterer Parameter
 $sp_frame = class_exists('LBWeb', false);
@@ -1063,7 +1121,7 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
 <div class="sm-row" style="margin-top:6px;">
     <div>
         <label><?php echo spot_t('TEXT.ENDPUNKT_DES_MARSTEK_PLUGINS'); ?></label>
-        <input data-role="none" type="text" name="marstek_url" value="<?= sp_e($sp_cfg['marstek_url']) ?>" placeholder="<?= sp_e($sp_ownurl) ?>">
+        <input data-role="none" type="text" name="marstek_url" value="<?= sp_e($sp_cfg['marstek_url']) ?>" placeholder="<?= sp_e($sp_ownurl) ?>"<?= in_array('marstek_url', $sp_mt_mangel, true) ? ' aria-invalid="true" style="border:2px solid #c62828;"' : '' ?>>
         <div class="sm-small"><?php echo spot_t('TEXT.LEER_LASSEN_AUTOMATISCH'); ?> <span class="sm-mono"><?= sp_e($sp_ownurl) ?></span> <?php echo spot_t('TEXT.EIGENE_LOXBERRY_ADRESSE'); ?></div>
     </div>
     <div>
@@ -1081,6 +1139,23 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
         </label>
     </div>
 </div>
+
+<?php $sp_mt_gesetzt = isset($sp_cfg['marstek_token']) && (string) $sp_cfg['marstek_token'] !== ''; ?>
+<div class="sm-row" style="margin-top:6px;">
+    <div>
+        <label for="sp_marstek_token"><?= sp_e(spot_t('TEXT.MARSTEK_TOKEN_L')) ?></label>
+        <input data-role="none" type="password" id="sp_marstek_token" name="marstek_token" value="" autocomplete="new-password" placeholder="<?= sp_e(spot_t($sp_mt_gesetzt ? 'TEXT.MARSTEK_TOKEN_GESETZT' : 'TEXT.MARSTEK_TOKEN_LEER')) ?>"<?= in_array('marstek_token', $sp_mt_mangel, true) ? ' aria-invalid="true" style="border:2px solid #c62828;"' : '' ?>>
+        <div class="sm-small"><?= sp_e(spot_t('TEXT.MARSTEK_TOKEN_H')) ?></div>
+    </div>
+    <div>
+        <label style="min-height:2.6em;display:flex;align-items:flex-end;">&nbsp;</label>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
+            <input data-role="none" type="checkbox" name="marstek_token_weg" value="1" <?= !empty($sp_x2_mt_weg) ? 'checked' : '' ?>><?= sp_e(spot_t('TEXT.MARSTEK_TOKEN_WEG')) ?>
+        </label>
+    </div>
+</div>
+<div class="sm-small"><?= sp_e(spot_t('TEXT.MARSTEK_NUR_GUENSTIG')) ?></div>
+<div class="sm-alert sm-warn" style="margin-top:6px;"><?= sp_e(spot_t('TEXT.MARSTEK_FREMDSCHREIBER')) ?></div>
 
 <h2><?php echo spot_t('TEXT.SCHWELLEN_UND_FENSTER'); ?></h2>
 <div class="sm-row">
@@ -1856,6 +1931,7 @@ foreach ($sp_pruefungen as $sp_z) {
   </form>
 </div>
 <div class="sm-small"><?php echo spot_t('PRUEF.H_ENDPUNKT'); ?></div>
+<?php if (!empty($sp_cfg['marstek_enabled'])) { ?><div class="sm-small"><?= sp_e(spot_t('PRUEF.H_MARSTEK')) ?></div><?php } ?>
 
 <h3 class="sm-h3"><?php echo spot_t('PLAN.H_FAHRPLAN'); ?></h3>
 <p class="sm-small"><?php echo spot_t('PLAN.FAHRPLAN_TEXT'); ?></p>
