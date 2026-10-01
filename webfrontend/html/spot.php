@@ -30,7 +30,8 @@
  *
  *   Die folgenden Aufrufe LOESEN ETWAS AUS und verlangen deshalb seit
  *   1.2.13 IMMER ein Token (siehe unten):
- *   ?refresh=1       -> Marktdaten sofort neu abrufen
+ *   ?refresh=1       -> Marktdaten beim naechsten Minutenlauf neu abrufen (seit
+ *                       dem Durchgang 01.10.2026; der Endpunkt selbst ruft nie ab)
  *   ?say=1           -> Test: Ansage sofort abspielen
  *   ?saytomorrow=1   -> Test: Ansage "Preise fuer morgen" abspielen
  *   ?ptest=1         -> Test-Pushnachricht ausloesen (setzt PTEST fuer 5 Minuten)
@@ -41,6 +42,9 @@ require_once __DIR__ . '/spot_lib.php';
 /* Der unangemeldete Endpunkt legt nichts an (Regeln/05) - siehe
  * spot_nur_lesen(). Muss vor dem ersten Lesen der Konfiguration stehen. */
 spot_nur_lesen(true);
+/* P4 (Pruefbericht code, Befund 5): kein Abruf im Netz und kein Zwischenspeicher
+ * aus dem Endpunkt - er antwortet aus dem, was der Minutenlauf abgelegt hat. */
+spot_nur_zwischenspeicher(true);
 
 /* ---------------- Token ----------------
  *
@@ -177,10 +181,19 @@ if ($spot_soll !== '') {
     }
 }
 
+/* ---------- Abruf bestellen (P4) ----------
+ * Bis 1.2.31 rief ?refresh=1 hier selbst bei aWATTar ab, waehrend der Aufrufer
+ * wartete. Jetzt legt es einen Merker ab, den der naechste Minutenlauf abholt;
+ * geantwortet wird mit dem Stand des Zwischenspeichers wie bei jedem Lesen. */
+if (isset($_GET['refresh'])) {
+    @file_put_contents(spot_tmpdir() . '/abruf_bestellt', (string) time());
+    spot_log('Abruf am Endpunkt bestellt (?refresh=1) - der naechste Minutenlauf ruft neu ab.');
+}
+
 /* ---------- JSON ---------- */
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
-    $st = spot_state(isset($_GET['refresh']));
+    $st = spot_state();
     if (empty($st['ok'])) {
         // Regeln/07: faellt die Quelle ganz aus, 503 ohne Daten.
         http_response_code(503);
@@ -225,7 +238,7 @@ if (isset($_GET['ptest'])) {
 }
 
 /* ---------- Zustand ---------- */
-$st = spot_state(isset($_GET['refresh']));
+$st = spot_state();
 $cfg = spot_config();
 
 if (isset($_GET['debug'])) {

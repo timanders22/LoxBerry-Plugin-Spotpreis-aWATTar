@@ -67,6 +67,25 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde nichts angelegt und nichts zurueckgespielt."
     exit 1
 fi
+
+# Die Marke von preupgrade.sh (data/plugins/<ordner>.upgrade_laeuft) raeumt
+# dieses Skript ab - per trap, also auch, wenn es vorzeitig endet; der
+# Rueckgabewert bleibt der des Skripts. Bliebe sie liegen, hielte sich eine
+# spaetere Neuinstallation fuer eine Aktualisierung (Entscheidung 1 und Nr. 8:
+# ohne Altersgrenze). Anlass: Pruefbericht installer, I1; Bauform
+# Abfahrtsassistent 1.6.21.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+sp_marke_weg() {
+    sp_rc=$?
+    case "$MARKE" in
+        */data/plugins/?*.upgrade_laeuft) rm -f "${MARKE:?}" 2>/dev/null ;;
+    esac
+    if [ -e "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - bitte von Hand loeschen, sonst haelt sich eine spaetere Neuinstallation fuer eine Aktualisierung."
+    fi
+    exit "$sp_rc"
+}
+trap sp_marke_weg EXIT
 # Der Sicherungsort wird aus DEMSELBEN Argument gerechnet wie in
 # preupgrade.sh - siehe die ausfuehrliche Begruendung dort. Ein Merker
 # .upgrade_pfad im Konfigurationsordner stand hier bis 02.09.2026 an erster

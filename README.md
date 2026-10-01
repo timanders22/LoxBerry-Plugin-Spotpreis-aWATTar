@@ -8,6 +8,35 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.31 behebt
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/aWATTar_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 8, 16, 19, 25, 26 und 30).
+Gemessen mit Attrappen für aWATTar, Marstek, Broker, Gateway, Alexa NG und Chromecast 4 Lox NG unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand; nicht am Gerät.
+
+* **Rang nur mit genug Preisen (Entscheidung 30):** Sind weniger als 12 künftige
+  Stunden bekannt (z. B. abends, wenn die Morgenpreise fehlen), meldet der Rang `-1`,
+  die Regeln „günstigste Stunden“ und „Fenster“ schalten nicht, und die
+  Marstek-Kopplung lädt nicht. Bisher galt dann die teure Abendstunde als „Rang 1“.
+  **In Loxone:** Bedingungen auf den Rang als „≥ 1 und ≤ N“ schreiben, nicht nur „≤ N“.
+* **Kein 0 ct bei Ausfall:** Fällt der Abruf aus, gehen über MQTT keine Preise als 0 ct
+  mehr hinaus, nur `ok` und die Regelzustände. CO2-Werte veralten nach einer Stunde.
+* **Endpunkt** `spot.php` antwortet nur noch aus dem Zwischenspeicher (vorher bis 44 s
+  bei hängender Gegenstelle); `?refresh=1` bestellt einen Abruf beim nächsten Minutenlauf.
+* **Speichern:** PRG, bei einer Beanstandung wird nichts gespeichert, die Eingaben kommen
+  markiert zurück, nichts wird still geklemmt (auch nicht die Marstek-Stunden/-Leistung).
+  Zurückspielen prüft jeden Wert; „Einstellungen sichern“ warnt. Bei voller Platte wird
+  nicht mehr „gespeichert“ gemeldet.
+* **Oberfläche:** Die Reiter „Kostenvergleich“ und „Logdateien“ sind wieder sichtbar; der
+  Reiter Einbindung zeigt die Adressen mit Token.
+* **MQTT:** Präfixwechsel und „MQTT aus“ räumen die alten Themen ab; die Themenliste nennt
+  alle Themen mit Spalte „retained“; bei Altlasten werden nur die betroffenen Themen
+  erneut gesendet.
+* **Sprachausgabe:** neue Ausgabearten Alexa-NG und Google-Lautsprecher (Chromecast 4 Lox
+  NG), ab Werk nicht gewählt, je eigenes Sprechtoken.
+* **Installer:** Neuinstallation übernimmt keine liegengebliebenen Konfigurationen oder
+  Sicherungen mehr (`.alt`); ein Update kurz vor Mitternacht löscht die Preishistorie nicht
+  mehr; zwei Installationen sperren sich nicht mehr gegenseitig.
+
 ## Was 1.2.30 behebt
 
 Energie-1 Teil C2 und eine Sicherheitsberichtigung (Verbesserungsliste `Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 25).
@@ -302,14 +331,19 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
   Umlagen, Anbieter-Aufschlag und Umsatzsteuer sind einzeln einstellbar
   (Richtwerte 2026 vorbelegt, DE und AT)
 - Aktuelle Stunde, nächste Stunde, Börsenanteil, **Rang** der laufenden Stunde
-  in den nächsten 24 h, **Preisniveau** (günstig/normal/teuer über frei
+  in den nächsten 24 h (nur mit mindestens 12 bekannten künftigen Preisstunden,
+  sonst `RANK=-1`), **Preisniveau** (günstig/normal/teuer über frei
   wählbare Schwellen), Flag für negative Börsenpreise
 - Günstigste/teuerste Stunde und Tagesdurchschnitt für **heute und morgen**
 - **Günstigstes zusammenhängendes X-Stunden-Fenster** (Länge einstellbar) —
   ideal für Waschmaschine, Spülmaschine, E-Auto, Warmwasser
 - **Stündliche Ansage (TTS)**, je Stunde per Checkbox aktivierbar; optional nur
   unterhalb der Günstig-Schwelle, zusätzlich immer bei negativem Preis, und eine
-  Tagesvorschau-Ansage, sobald die Preise für morgen veröffentlicht sind
+  Tagesvorschau-Ansage, sobald die Preise für morgen veröffentlicht sind.
+  Ausgabe über den Loxone Music Server, AudioServer4Home, eine eigene Vorlage,
+  **Alexa-NG** oder **Google-Lautsprecher über Chromecast 4 Lox NG** (die beiden
+  letzten mit eigenem Sprechtoken, ab Werk nicht gewählt; Voraussetzung ist das
+  jeweilige Plugin auf demselben LoxBerry, Chromecast 4 Lox NG ab 1.3.15)
 - **Push-Auslöser** für Loxone (`ANN`) samt Test-Push-Funktion
 - **CO₂-Intensität** des Strommixes als zweite Kennzahl (Fraunhofer ISE
   Energy-Charts, kostenlos und ohne Konto): aktueller Wert, sauberste Stunde der
@@ -341,10 +375,16 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
   ein zweiter Schreiber auf denselben Speicher – in den günstigen Stunden
   überschreiben sich beide. Eine Marstek-Fassung mit Schreiber-Wache meldet zweite
   Schreiber dort im Reiter Test; die Kopplung meldet sich dabei mit `von=awattar`
-  (ältere Marstek-Fassungen übergehen den Parameter). Empfehlung: das Spot-Laden in Loxone bauen
+  (ältere Marstek-Fassungen übergehen den Parameter). Meldet der Marstek in seiner
+  Antwort mehrere Schreiber (`;SCHREIBER=n`), zeigt der Reiter Test das rot; mit dem
+  Haken *Fremde Schreiber am Marstek beanstanden* (ab Werk aus) wird eine eingeschaltete
+  Kopplung dann nicht gespeichert. Sind weniger als 12 künftige Preisstunden bekannt
+  (die Preise für morgen fehlen noch), sendet die Kopplung nichts. Empfehlung: das Spot-Laden in Loxone bauen
   (`RANK` oder eine Schaltregel, dort mit der Überschussbedingung am Zähler) und die
   Kopplung aus lassen.
-- **MQTT** über das LoxBerry MQTT Gateway, **JSON** inklusive aller Stundenwerte
+- **MQTT** über das LoxBerry MQTT Gateway (die vollständige Themenliste mit Spalte
+  „retained“ steht im Reiter MQTT; ohne Preise geht nur das Signal hinaus, keine
+  0-ct-Preise), **JSON** inklusive aller Stundenwerte
 - **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
   Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte
   Preis in Loxone, und in der App sieht alles normal aus
@@ -357,9 +397,11 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
 - Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
   kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
   Logdateien
-- Konfiguration, Preishistorie und Merker überleben Updates und
-  Neuinstallation. Das **Protokoll** nicht: `log/plugins` liegt auf dem
-  LoxBerry auf der Ramdisk und ist nach jedem Neustart ohnehin leer
+- Konfiguration, Preishistorie und Merker überleben Updates. Eine
+  **Neuinstallation fängt frisch an**: Reste einer früheren Installation
+  (Zweitschrift, Update-Sicherung) legt sie als `.alt` beiseite und meldet das;
+  die Deinstallation räumt sie ab. Das **Protokoll** überlebt keinen Neustart:
+  `log/plugins` liegt auf dem LoxBerry auf der Ramdisk
 
 ## Endpunkte
 
@@ -387,15 +429,15 @@ Drei Felder der Zeile sind neu oder haben ihre Bedeutung geschärft:
 
 | Aufruf | Zweck |
 |---|---|
-| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten sofort neu abrufen |
+| `/plugins/spotpreis/spot.php?refresh=1` | Marktdaten beim nächsten Minutenlauf neu abrufen (der Endpunkt selbst ruft nie ab, er antwortet aus dem Zwischenspeicher) |
 | `/plugins/spotpreis/spot.php?say=1` | Test-Ansage (aktueller Preis) |
 | `/plugins/spotpreis/spot.php?saytomorrow=1` | Test-Ansage (Preise für morgen) |
 | `/plugins/spotpreis/spot.php?ptest=1` | Test-Pushnachricht auslösen |
-| `/plugins/spotpreis/spot.php?selftest=1&token=…` | die Selbstprüfung: `SELFTEST;OK=1;TOKEN=OK`, dann `PRUEF;PANZ=14;PFEHL=0;…` und der Klartext je Punkt (seit 1.2.20, Token seit 1.2.26) |
+| `/plugins/spotpreis/spot.php?selftest=1&token=…` | die Selbstprüfung: `SELFTEST;OK=1;TOKEN=OK`, dann `PRUEF;PANZ=..;PFEHL=..;…` und der Klartext je Punkt (seit 1.2.20, Token seit 1.2.26) |
 
 Der Unterschied hat einen Grund: `?say=1` spricht über die Lautsprecher der
-Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` stößt einen Abruf bei
-einem fremden Dienst an. Bis 1.2.12 konnte das jedes Gerät im Netz, ohne jede
+Wohnung, `?ptest=1` legt eine Datei an, `?refresh=1` bestellt einen Abruf bei
+einem fremden Dienst (ausgeführt vom nächsten Minutenlauf). Bis 1.2.12 konnte das jedes Gerät im Netz, ohne jede
 Hürde. Das Lesen bleibt tokenfrei, damit kein bestehender Aufbau abreißt —
 Loxone ruft die auslösenden Adressen ohnehin nicht ab, und die Knöpfe auf der
 Plugin-Seite führen das Token automatisch mit.
@@ -463,6 +505,7 @@ Ausgehende Verbindungen — vollständig, am Quelltext nachgezählt:
 | der eingetragene eigene Lastgang | nur wenn eine Quelle eingerichtet ist | wie eingetragen |
 | Hausspeicher (Marstek) | nur wenn eingeschaltet und nur in den Ladestunden, im eigenen Netz | Aktionstoken des Marstek (eigenes Feld) |
 | Music Server / Audioserver | nur für Ansagen, im eigenen Netz | — |
+| Alexa-NG bzw. Chromecast 4 Lox NG auf `127.0.0.1` | nur mit dieser Ausgabeart, für Ansagen | Sprechtoken (eigenes Feld, nur im Körper der Anfrage) |
 | `127.0.0.1` | MQTT über das UDP-Relais des Gateways | — |
 
 Bis 1.2.19 stand hier, es gebe Verbindungen „ausschließlich zur

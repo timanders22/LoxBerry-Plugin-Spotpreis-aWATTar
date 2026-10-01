@@ -48,6 +48,14 @@ if [ ! -f "$BASE/config/plugins/$PFOLDER/spot.json" ]; then
 fi
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/spot.json"
+# Aktualisierung oder Neuinstallation - das sagt allein die Marke von
+# preupgrade.sh (kein Altersvergleich, Entscheidung 1 und Nr. 8). Bisher
+# entschied das Vorhandensein von Zweitschrift und Update-Sicherung, und eine
+# Neuinstallation spielte Token, Tarifwerte, Historie und Merker einer
+# frueheren Installation ein (Pruefbericht installer, Faelle D und D4).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+SP_MARKE=0
+[ -f "$MARKE" ] && SP_MARKE=1
 # Traegt eine spot.json INHALT? Klasse C (Bestand-2026-09-18/klasse-C):
 # bis 1.2.27 wurde hier nur zurueckgespielt, wenn spot.json LEER oder "{}"
 # war ([ ! -s ]), und die Zweitschrift wurde gar nicht angesehen. Eine
@@ -101,7 +109,11 @@ sp_zurueckspielen() {
         echo "<WARNING> (php oder spot_lib.php fehlt) - nichts zurueckgespielt."
     fi
 }
-if [ -f "$BK" ]; then
+# Nur bei einer Aktualisierung. Bei einer Neuinstallation hat preinstall.sh
+# eine Zweitschrift einer frueheren Installation schon nach .alt gelegt;
+# liegt trotzdem eine da (preinstall.sh konnte sie nicht verschieben), bleibt
+# sie hier unberuehrt.
+if [ "$SP_MARKE" = "1" ] && [ -f "$BK" ]; then
     sp_zurueckspielen "<OK> Konfiguration aus Sicherung wiederhergestellt."
 fi
 
@@ -114,34 +126,123 @@ chmod 600 "$CF" 2>/dev/null
 if [ -f "$BK" ]; then
     chmod 600 "$BK" 2>/dev/null
 fi
+
+# Merkmal "frisch installiert" (Pruefbericht installer, Zusatz zu I1): Bei
+# einer Neuinstallation liegt danach data/plugins/<ordner>/marke_frisch mit
+# dem Zeitpunkt. Solange es liegt, heilt die Bibliothek nicht aus einer
+# Zweitschrift; spot_config_save() loescht es nach dem ersten erfolgreichen
+# Speichern. Es heisst marke_*, damit preupgrade.sh und der Abschnitt unten es
+# wie die uebrigen Merker ueber ein Update tragen. Bei einer Aktualisierung
+# wird es hier nicht angelegt. Rechte wie die Merker aus spot_merker_setzen():
+# die der Umgebung (umask), wie dort beim Anlegen.
+if [ "$SP_MARKE" = "0" ]; then
+    SP_FRISCH="$BASE/data/plugins/$PFOLDER/marke_frisch"
+    if [ ! -s "$SP_FRISCH" ]; then
+        { date -Iseconds > "$SP_FRISCH"; } 2>/dev/null
+        if ! grep -q '^[0-9]' "$SP_FRISCH" 2>/dev/null; then
+            echo "<WARNING> Das Merkmal $SP_FRISCH liess sich nicht anlegen."
+        fi
+    fi
+fi
 echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und Preisbestandteile pruefen."
 
 # ---------- Langzeitwerte zurueckholen ----------
 # Gegenstueck zu preupgrade.sh. Zwischen beiden Skripten hat der Installer
 # data/plugins/<x>/ vollstaendig geloescht; der Nachbar mit dem Punkt hat es
-# ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
-# findet nichts vor und faengt sauber bei null an.
+# ueberstanden.
+#
+# Nur bei einer Aktualisierung (Marke). Bisher entschied das Vorhandensein
+# der Sicherung: eine Neuinstallation holte Preishistorie, Laufzaehler und
+# Merker einer frueheren Installation zurueck und meldete "ueber das Update
+# gerettet" (Pruefbericht installer, Fall D4). Eine liegengebliebene
+# Sicherung hat preinstall.sh nach .alt gelegt.
+#
+# Uebernommen heisst (Pruefbericht installer, Fall K): zurueckkopiert und mit
+# cmp bestaetigt; bei history.csv, die schon im Datenordner liegt,
+# zusammengefuehrt; bei laufzaehler, mqtt_praefixe.json und marke_* eine schon
+# vorhandene, nicht leere Zieldatei (sie gewinnt). Der Minutentakt kann
+# zwischen dem Kopieren und diesem Skript laufen und schreibt ab 23:50 eine
+# Tageszeile in history.csv (spot_history_add()). Bisher wurde die gesicherte
+# Historie dann uebergangen und die Sicherung trotzdem weggeraeumt - die ganze
+# Preishistorie war weg (gemessen: 4 Zeilen vorher, 1 danach). Die Sicherung
+# wird nie weggeraeumt, solange eine gesicherte Datei nicht uebernommen ist.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+LANG_ZIEL="$BASE/data/plugins/$PFOLDER"
+# Historie vereinigen: Schluessel ist die erste Spalte (JJJJMMTT vor dem ;),
+# jedes Datum einmal, bei gleichem Datum gilt die NEUE Zeile, nach Datum
+# sortiert; Zeilen ohne Datum (etwa ein Kopf) bleiben oben. Geschrieben wird
+# in eine Datei daneben mit den Rechten der bisherigen; erst nach der Pruefung
+# kommt sie per mv an ihren Platz (unteilbar im selben Verzeichnis).
+# Rueckgabe 0 = zusammengefuehrt und geprueft, sonst 1 (nichts veraendert).
+sp_historie_vereinen() {
+    sp_alt="$1"
+    sp_neu="$2"
+    sp_tmp="$2.vereint.$$"
+    sp_d='^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$'
+    rm -f "${sp_tmp:?}" 2>/dev/null
+    # Aeussere Klammer: sonst schreibt die Schale ihre eigene Meldung
+    # ("Permission denied") am 2>/dev/null vorbei ins Protokoll (gemessen,
+    # Fall K3 des Installer-Teilbaus).
+    { {
+        awk -F';' -v d="$sp_d" '$0 != "" && $1 !~ d && !($0 in s) { s[$0] = 1; print }' "$sp_neu" "$sp_alt"
+        awk -F';' -v d="$sp_d" '$1 ~ d && !($1 in s) { s[$1] = 1; print }' "$sp_neu" "$sp_alt" \
+            | LC_ALL=C sort -t';' -k1,1
+    } > "$sp_tmp"; } 2>/dev/null
+    # Die Wirkung pruefen: jede Zeile der neuen Datei steht unveraendert darin,
+    # jedes Datum der gesicherten ebenfalls.
+    sp_fehlt=$(awk -F';' -v d="$sp_d" '
+        FNR == NR { z[$0] = 1; if ($1 ~ d) k[$1] = 1; next }
+        FILENAME == ARGV[2] && $0 != "" && !($0 in z) { n++ }
+        FILENAME == ARGV[3] && $1 ~ d && !($1 in k) { n++ }
+        END { print n + 0 }' "$sp_tmp" "$sp_neu" "$sp_alt" 2>/dev/null)
+    if [ "$sp_fehlt" != "0" ] || [ ! -s "$sp_tmp" ]; then
+        rm -f "${sp_tmp:?}" 2>/dev/null
+        return 1
+    fi
+    chmod --reference="$sp_neu" "$sp_tmp" 2>/dev/null
+    if [ "$(stat -c %a "$sp_tmp" 2>/dev/null)" != "$(stat -c %a "$sp_neu" 2>/dev/null)" ]; then
+        rm -f "${sp_tmp:?}" 2>/dev/null
+        return 1
+    fi
+    sp_summe=$(cksum < "$sp_tmp")
+    if ! mv -f "$sp_tmp" "$sp_neu" 2>/dev/null \
+       || [ "$(cksum < "$sp_neu" 2>/dev/null)" != "$sp_summe" ]; then
+        rm -f "${sp_tmp:?}" 2>/dev/null
+        return 1
+    fi
+    SP_HIST_ZEILEN=$(grep -c . "$sp_neu" 2>/dev/null)
+    return 0
+}
 GERETTET=1
-if [ -d "$LANG_SICHER" ]; then
-    # Dieselbe Menge wie in preupgrade.sh: Historie, Laufzaehler und die
-    # Merker. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
-    # findet nichts vor und faengt sauber bei null an.
+if [ "$SP_MARKE" = "1" ] && [ -d "$LANG_SICHER" ]; then
+    # Dieselbe Menge wie in preupgrade.sh: Historie, Laufzaehler, die Liste
+    # der MQTT-Praefixe und die Merker.
     MERKER=$(cd "$LANG_SICHER" 2>/dev/null && ls marke_* 2>/dev/null)
-    for LANG_F in history.csv laufzaehler $MERKER; do
-        if [ -f "$LANG_SICHER/$LANG_F" ] \
-           && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
-            mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
-            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" 2>/dev/null
-            # Die WIRKUNG pruefen, nicht den Rueckgabewert - genau so,
-            # wie es preupgrade.sh drei Zeilen vor seinem exit vormacht.
-            if [ -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
-                echo "<OK> $LANG_F ueber das Update gerettet."
-            else
-                echo "<WARNING> $LANG_F konnte nicht zurueckgeholt werden."
-                echo "<WARNING> Die Sicherung bleibt liegen: $LANG_SICHER"
-                GERETTET=0
+    for LANG_F in history.csv laufzaehler mqtt_praefixe.json $MERKER; do
+        [ -f "$LANG_SICHER/$LANG_F" ] || continue
+        if [ -s "$LANG_ZIEL/$LANG_F" ]; then
+            if [ "$LANG_F" = "history.csv" ]; then
+                if sp_historie_vereinen "$LANG_SICHER/$LANG_F" "$LANG_ZIEL/$LANG_F"; then
+                    echo "<OK> history.csv ueber das Update gerettet und mit den inzwischen geschriebenen Zeilen zusammengefuehrt ($SP_HIST_ZEILEN Zeilen)."
+                else
+                    echo "<WARNING> history.csv liess sich nicht mit den inzwischen geschriebenen Zeilen zusammenfuehren."
+                    echo "<WARNING> Die Sicherung bleibt liegen: $LANG_SICHER"
+                    GERETTET=0
+                fi
             fi
+            # laufzaehler, mqtt_praefixe.json, marke_*: die vorhandene Datei gewinnt.
+            continue
+        fi
+        mkdir -p "$LANG_ZIEL" 2>/dev/null
+        cp -p "$LANG_SICHER/$LANG_F" "$LANG_ZIEL/$LANG_F" 2>/dev/null
+        # Die WIRKUNG pruefen, nicht den Rueckgabewert: liegt die Datei
+        # byteweise gleich da?
+        if [ -f "$LANG_ZIEL/$LANG_F" ] && cmp -s "$LANG_SICHER/$LANG_F" "$LANG_ZIEL/$LANG_F"; then
+            echo "<OK> $LANG_F ueber das Update gerettet."
+        else
+            echo "<WARNING> $LANG_F konnte nicht zurueckgeholt werden."
+            echo "<WARNING> Die Sicherung bleibt liegen: $LANG_SICHER"
+            GERETTET=0
         fi
     done
     # Erst wegraeumen, wenn wirklich alles angekommen ist. Bis 1.2.18
@@ -151,7 +252,9 @@ if [ -d "$LANG_SICHER" ]; then
     # die einzige Kopie der Preishistorie weg. Sie ist die eine Datei,
     # die preupgrade.sh als nicht nachladbar bezeichnet.
     if [ "$GERETTET" = "1" ]; then
-        rm -rf "$LANG_SICHER" 2>/dev/null
+        case "$LANG_SICHER" in
+            */data/plugins/?*.upgrade_sicherung) rm -rf "${LANG_SICHER:?}" 2>/dev/null ;;
+        esac
     fi
 fi
 exit 0

@@ -80,6 +80,35 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# ---------- Marke "Aktualisierung laeuft" - als Erstes ----------
+# Entscheidung 1 (29.09.2026, ohne Altersgrenze nach Nr. 8): preinstall.sh
+# und postinstall.sh erkennen eine Aktualisierung allein an dieser Marke;
+# postupgrade.sh raeumt sie ab. Sie liegt NEBEN dem Datenordner, weil
+# purge_installation den Ordner selbst loescht. Laesst sie sich nicht
+# anlegen, hielte preinstall.sh das Update fuer eine Neuinstallation und
+# legte die Zweitschrift beiseite - deshalb Rueckgabewert 2, vor jedem
+# Aufraeumen (Bauform Abfahrtsassistent 1.6.21). Vorher festhalten, ob schon
+# eine Marke lag: dann ist ein frueherer Versuch DIESES Updates abgebrochen
+# (siehe unten bei der Update-Sicherung). Anlass: Pruefbericht installer,
+# Faelle D, D2, D4 und E.
+case "$PFOLDER" in
+    ''|*/*|*..*)
+        echo "<FAIL> Unzulaessiger Ordnername '$PFOLDER' - dieses Skript endet mit Rueckgabewert 2."
+        exit 2 ;;
+esac
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+SP_MARKE_VORHER=0
+[ -f "$MARKE" ] && SP_MARKE_VORHER=1
+# In geschweiften Klammern: sonst schreibt die Schale ihre eigene Meldung
+# ("cannot create ...") am 2>/dev/null vorbei ins Protokoll.
+{ date +%s > "$MARKE"; } 2>/dev/null
+if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<FAIL> Ohne sie hielte die Installation dieses Update fuer eine Neuinstallation und legte"
+    echo "<FAIL> die Einstellungen beiseite. Dieses Skript endet mit Rueckgabewert 2."
+    exit 2
+fi
+
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/spotpreis_upgrade"
 else
@@ -125,6 +154,25 @@ fi
 # Deshalb NEBEN den Ordner: "rm -rf .../<x>/" trifft den Nachbarn mit dem
 # Punkt nicht. postinstall.sh holt ihn zurueck und raeumt ihn weg.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+# Eine Update-Sicherung aus einem FRUEHEREN Vorgang zuerst wegraeumen
+# (Entscheidung 1: bei einem Upgrade wird nie ein Bestand aus einem frueheren
+# Vorgang eingespielt). Bisher legte dieses Skript mit mkdir -p darueber an,
+# und postinstall.sh holte Historie und Merker des frueheren Vorgangs in die
+# laufende Anlage (in WSL gemessen, Pruefbericht installer, Fall E).
+# Ausnahme: lag die Marke schon vor diesem Lauf, ist ein Versuch DIESES
+# Updates abgebrochen, womoeglich nach dem Abraeumen des Datenordners - dann
+# ist die alte Sicherung der einzige Stand und bleibt.
+if [ "$SP_MARKE_VORHER" = "0" ] && { [ -e "$LANG_SICHER" ] || [ -L "$LANG_SICHER" ]; }; then
+    case "$LANG_SICHER" in
+        */data/plugins/?*.upgrade_sicherung) rm -rf "${LANG_SICHER:?}" 2>/dev/null ;;
+    esac
+    if [ -e "$LANG_SICHER" ] || [ -L "$LANG_SICHER" ]; then
+        echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $LANG_SICHER"
+        echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        exit 2
+    fi
+    echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $LANG_SICHER"
+fi
 mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
 # Nicht nur die Historie: auch die MERKER. Sie verhindern, dass der
@@ -135,7 +183,11 @@ chmod 0700 "$LANG_SICHER" 2>/dev/null
 # zweites Mal - genau das Fehlerbild, das der Ablageort vermeiden soll.
 # Der Preis-Zwischenspeicher (markt_*.json) bleibt absichtlich
 # draussen: er laesst sich nachladen.
-for LANG_F in history.csv laufzaehler; do
+# mqtt_praefixe.json (die Liste frueher benutzter MQTT-Praefixe, die die
+# Oberflaeche schreibt) gehoert dazu: ohne sie raeumten Abraeumen und
+# Deinstallation nach einem Update nur noch das aktuelle Praefix ab
+# (Bauliste M1).
+for LANG_F in history.csv laufzaehler mqtt_praefixe.json; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
 done

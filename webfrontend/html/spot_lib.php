@@ -27,6 +27,37 @@ require_once __DIR__ . '/planer.php';
  *  Waermepumpe ab - mehr macht die Oberflaeche unuebersichtlich. */
 define('SPOT_REGELN', 4);
 
+/** P1 (Durchgang 01.10.2026, Entscheidung Nr. 30 zu Frage 28, wie empfohlen): Rang und
+ *  "guenstigste Stunden" gelten nur, wenn mindestens so viele kuenftige
+ *  Preisstunden bekannt sind - die laufende mitgezaehlt, hoechstens die naechsten
+ *  24. Gemessen (Pruefbericht code, Befund 4): um 20:15 ohne die Preise fuer
+ *  morgen kannte das Plugin nur noch 4 Stunden; die teure Abendstunde war "Rang 1
+ *  von 4", die Marstek-Kopplung lud mit 2500 W aus dem Netz, und die Schaltregeln
+ *  "guenstigste Stunden"/"Fenster" schalteten ein. 12 passt zur Hoechstzahl der
+ *  Ladestunden. Eine andere Entscheidung ist diese eine Zeile. */
+define('SPOT_RANG_MIN_STUNDEN', 12);
+
+/**
+ * P4 (Pruefbericht code, Befund 5): Betrieb nur aus dem Zwischenspeicher.
+ *
+ * spot.php schaltet ihn als Erstes ein, neben spot_nur_lesen(). Solange er an
+ * ist, ruft keine Funktion dieser Bibliothek eine fremde Adresse ab (aWATTar,
+ * energy-charts, PV-Prognose, Speicherstand, Lastgang), und es wird kein
+ * Zwischenspeicher geschrieben (state.json, laufend.json, umwelt.json,
+ * co2.json, Merkdateien). Gerechnet wird aus dem, was der Minutenlauf abgelegt
+ * hat. Bis 1.2.31 rief der unangemeldete Endpunkt bei kaltem Zwischenspeicher
+ * selbst ab - gemessen mit einer Gegenstelle, die jeden Verbindungsaufbau
+ * verschluckt: 43,9 s bis zur Antwort, und er schrieb dabei die Dateien des
+ * Minutenlaufs.
+ */
+function spot_nur_zwischenspeicher($an = null) {
+    static $wert = false;
+    if ($an !== null) {
+        $wert = (bool) $an;
+    }
+    return $wert;
+}
+
 /**
  * Vorgabe einer Schaltregel.
  *
@@ -272,6 +303,9 @@ function spot_vorgaben()
     'marstek_hours' => 4,        // in den X guenstigsten Stunden laden
     'marstek_power' => 2500,     // Ladeleistung in W
     'marstek_neg' => 1,          // bei negativem Preis immer laden
+    // P6 (aWATTar-c2b, Durchgang 01.10.2026): beim Speichern beanstanden, wenn
+    // der Marstek fremde Schreiber meldet. Ab Werk aus - gemeldet wird immer.
+    'marstek_fremd_beanstanden' => 0,
     // Aktionstoken des Marstek-Plugins (Energie-1 C2). Wie ein Kennwort:
     // nie angezeigt, nie in Adresse, Protokoll oder Sicherung.
     'marstek_token' => '',
@@ -392,15 +426,16 @@ function spot_config($erzeugen = null) {
     $sp_roh = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
     $sp_leer = (trim($sp_roh) === '' || trim($sp_roh) === '{}');
     $sp_kaputt = (!$sp_leer && !is_array(json_decode($sp_roh, true)));
+    /* C2 (Pruefbericht code, Befund 2) und I1: aus der Zweitschrift wird nur
+     * geheilt, wenn sie BRAUCHBAR ist - lesbares JSON-Objekt mit Inhalt - und
+     * keine Neuinstallation sie fremd macht (spot_zweitschrift_brauchbar()). */
+    $sp_bk = spot_zweitschrift_brauchbar();
     if (!$erzeugen) {
         /* Nur lesen: die Zweitschrift wird im Speicher benutzt, auf der
          * Platte bleibt alles, wie es war. */
         $cfg = $sp_kaputt ? array() : (json_decode($sp_roh, true) ?: array());
-        if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && is_file($p['backup'])) {
-            $z = json_decode((string) @file_get_contents($p['backup']), true);
-            if (is_array($z)) {
-                $cfg = $z;
-            }
+        if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && $sp_bk !== null) {
+            $cfg = $sp_bk;
         }
         return spot_config_normalisieren(is_array($cfg) ? $cfg : array());
     }
@@ -420,22 +455,60 @@ function spot_config($erzeugen = null) {
                 . basename($sp_weg));
         }
     }
-    if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && is_file($p['backup'])) {
+    if ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && $sp_bk !== null) {
         @mkdir(dirname($p['config']), 0775, true);
-        if (@copy($p['backup'], $p['config'])) {
-            // Die Zweitschrift traegt dasselbe Geheimnis - und bekommt
-            // deshalb dieselben Rechte wie das Original.
-            @chmod($p['config'], 0600);
+        /* Ueber dieselbe Nebendatei wie spot_config_save() (0600 vor dem
+         * Inhalt, Laenge geprueft, dann rename) und nur mit dem Inhalt, der
+         * oben als brauchbar gelesen wurde. Bis 1.2.31 kopierte copy() die
+         * Zweitschrift ungeprueft zurueck - auch eine kaputte, und dann bei
+         * JEDEM Aufruf aufs Neue: gemessen nach drei Minutenlaeufen 4 Dateien
+         * spot.json.kaputt.* und 35 Zeilenpaare "beiseitegelegt / zurueckgeholt". */
+        $sp_bk_roh = (string) @file_get_contents($p['backup']);
+        if (spot_geheim_schreiben($p['config'], $sp_bk_roh)) {
             if ($sp_kaputt && function_exists('spot_log')) {
                 spot_log('Konfiguration aus der Sicherung zurueckgeholt.');
             }
         }
+    } elseif ((!is_file($p['config']) || $sp_leer || $sp_kaputt) && is_file($p['backup'])
+              && !spot_frisch_installiert() && function_exists('spot_log_if_changed')) {
+        /* Konfiguration UND Zweitschrift unbrauchbar: nichts zurueckholen,
+         * EINMAL melden (die Zeile aendert sich nicht, also schreibt
+         * spot_log_if_changed() sie nur einmal). Der Reiter Test zeigt es rot. */
+        spot_log_if_changed('konfig_zweitschrift', 'Konfiguration fehlt oder war beschaedigt, und auch die '
+            . 'Zweitschrift ' . basename($p['backup']) . ' ist unbrauchbar - es gelten die Vorgaben. '
+            . 'Bitte die Einstellungen speichern oder eine Sicherung zurueckspielen.');
     }
     $cfg = is_file($p['config']) ? (json_decode((string) file_get_contents($p['config']), true) ?: array()) : array();
     if (!is_array($cfg)) {
         $cfg = array();
     }
     return spot_config_normalisieren($cfg);
+}
+
+/**
+ * Ist die Zweitschrift brauchbar? Rueckgabe ihr Inhalt (Feld) oder null.
+ *
+ * C2: lesbares JSON-Objekt mit mindestens einem Schluessel. Eine kaputte wird
+ * nie zurueckkopiert. I1 (Entscheidung 1): liegt data/plugins/<ordner>/
+ * marke_frisch - postinstall.sh legt sie bei einer NEUINSTALLATION an,
+ * spot_config_save() raeumt sie nach dem ersten Speichern ab -, stammt jede
+ * Zweitschrift aus einer frueheren Installation und gilt nicht. preinstall.sh
+ * legt eine solche ohnehin nach .alt; die Marke deckt den Fall, dass sie sich
+ * dort nicht verschieben liess.
+ */
+function spot_zweitschrift_brauchbar() {
+    $p = spot_paths();
+    if (!is_file($p['backup']) || spot_frisch_installiert()) {
+        return null;
+    }
+    $z = json_decode((string) @file_get_contents($p['backup']), true);
+    return (is_array($z) && $z) ? $z : null;
+}
+
+/** I1: Liegt die Marke einer frischen Installation (noch nie gespeichert)? */
+function spot_frisch_installiert() {
+    $p = spot_paths();
+    return is_file($p['datadir'] . '/marke_frisch');
 }
 
 /**
@@ -525,6 +598,7 @@ function spot_config_normalisieren($cfg) {
      * anders dasteht (Liste, Leerzeichen, fremde Zeichen), gilt als "kein
      * Token" - der Reiter Test zeigt das rot, und es geht nie als "Array"
      * hinaus. */
+    $cfg['marstek_fremd_beanstanden'] = empty($cfg['marstek_fremd_beanstanden']) ? 0 : 1;
     $sp_mt = is_string($cfg['marstek_token']) ? trim($cfg['marstek_token']) : '';
     $cfg['marstek_token'] = ($sp_mt !== '' && spot_marstek_token_form_ok($sp_mt)) ? $sp_mt : '';
     /* Das MQTT-Thema geht in den Gateway-Befehl "publish <thema> <wert>".
@@ -574,6 +648,22 @@ function spot_config_normalisieren($cfg) {
     }
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
                          'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+    /* S1 (Ansage-2/Ansage-3, 01.10.2026): je Ausgabeart ein eigenes Sprechtoken,
+     * Geraet (leer = Standardgeraet des anderen Plugins) und fuer Chromecast 4 Lox
+     * NG eine Lautstaerke (-1 = dessen Ansagelautstaerke). Ein Token in fremder
+     * Form gilt als "keines" (es ginge sonst nie als "Array" hinaus), eine
+     * Lautstaerke ausserhalb 0 bis 100 als -1 - abgewiesen wird beim Speichern
+     * und beim Zurueckspielen (spot_wert_mangel()). */
+    $cfg['tts'] += array('alexa_token' => '', 'alexa_geraet' => '',
+                         'google_token' => '', 'google_geraet' => '', 'google_laut' => -1);
+    foreach (array('alexa_token', 'google_token') as $sp_k) {
+        $cfg['tts'][$sp_k] = spot_sprech_token_ok($cfg['tts'][$sp_k]) ? $cfg['tts'][$sp_k] : '';
+    }
+    foreach (array('alexa_geraet', 'google_geraet') as $sp_k) {
+        if (!is_string($cfg['tts'][$sp_k])) { $cfg['tts'][$sp_k] = ''; }
+    }
+    $sp_l = $cfg['tts']['google_laut'];
+    $cfg['tts']['google_laut'] = (is_int($sp_l) && $sp_l >= 0 && $sp_l <= 100) ? $sp_l : -1;
     return $cfg;
 }
 
@@ -776,12 +866,19 @@ function spot_config_vervollstaendigen() {
 
 function spot_konfig_lage_jetzt() {
     $p = spot_paths();
+    /* C2: eine Zweitschrift, die nicht zu gebrauchen ist, ist keine
+     * "Wiederherstellung" - dann gilt die Lage 'zweit_kaputt' (Kreuz). Eine aus
+     * einer frueheren Installation (I1) zaehlt gar nicht. */
+    $zweit = 'vorgabe';
+    if (is_file($p['backup']) && !spot_frisch_installiert()) {
+        $zweit = spot_zweitschrift_brauchbar() !== null ? 'zweitschrift' : 'zweit_kaputt';
+    }
     if (!is_file($p['config'])) {
-        return is_file($p['backup']) ? 'zweitschrift' : 'vorgabe';
+        return $zweit;
     }
     $roh = trim((string) @file_get_contents($p['config']));
     if ($roh === '' || $roh === '{}') {
-        return is_file($p['backup']) ? 'zweitschrift' : 'vorgabe';
+        return $zweit;
     }
     $d = json_decode($roh, true);
     if (!is_array($d)) {
@@ -942,7 +1039,10 @@ function spot_day($startTs, $force = false) {
      * Ueberlegung wie in plan_frist_ende() im Fahrplaner. */
     $end = strtotime(date('Y-m-d', $startTs) . ' +1 day 00:00:00') * 1000;
     $js = false;
-    if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
+    if (spot_nur_zwischenspeicher()) {
+        // P4: nur lesen, was der Minutenlauf abgelegt hat - gleich welchen Alters.
+        $js = is_file($cache) ? (string) @file_get_contents($cache) : false;
+    } elseif (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $js = file_get_contents($cache);
     } else {
         $url = "https://api.awattar.$tld/v1/marketdata?start=$start&end=$end";
@@ -999,8 +1099,13 @@ function spot_day($startTs, $force = false) {
             $out[$stunde] = round($s / max(1, $zahl[$stunde]), 6);
         }
         ksort($out);
-        spot_log_if_changed('aufloesung', 'aWATTar liefert ' . $schritt . '-Sekunden-Werte ('
-            . count($roh) . ' Datensaetze) - zu ' . count($out) . ' Stundenmitteln zusammengefasst.');
+        if (!spot_nur_zwischenspeicher()) {
+            spot_log_if_changed('aufloesung', 'aWATTar liefert ' . $schritt . '-Sekunden-Werte ('
+                . count($roh) . ' Datensaetze) - zu ' . count($out) . ' Stundenmitteln zusammengefasst.');
+        }
+    }
+    if (spot_nur_zwischenspeicher()) {
+        return $out;    // P4: der Endpunkt schreibt nichts
     }
     @file_put_contents(spot_tmpdir() . '/aufloesung', (int) $schritt);
     // Alte Cache-Dateien aufraeumen
@@ -1149,6 +1254,11 @@ function spot_umwelt($force = false) {
     $leer = array('pv' => null, 'pv_summe' => null, 'soc' => null,
                   'pv_meldung' => '', 'soc_meldung' => '', 'ts' => 0);
     $cache = spot_tmpdir() . '/umwelt.json';
+    if (spot_nur_zwischenspeicher()) {
+        // P4: der Stand des Minutenlaufs, gleich welchen Alters - oder nichts.
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        return is_array($c) ? $c + $leer : $leer;
+    }
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c)) { return $c + $leer; }
@@ -1217,6 +1327,10 @@ function spot_lastgang($force = false)
         return $leer;
     }
     $cache = spot_tmpdir() . '/lastgang.json';
+    if (spot_nur_zwischenspeicher()) {
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        return (is_array($c) && isset($c['werte'])) ? $c + $leer : $leer;
+    }
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c) && isset($c['werte'])) { return $c + $leer; }
@@ -1397,10 +1511,39 @@ function spot_regeln($all, $st) {
         $w['name'] = (isset($r['name']) && $r['name'] !== '') ? $r['name'] : ('Regel ' . ($i + 1));
         $w['art'] = isset($r['art']) ? $r['art'] : 'fenster';
         $w['ein'] = empty($r['aktiv']) ? 0 : 1;
+        $w = spot_regel_horizont($w, $r, $st);
         unset($w['slots']);   // die Liste selbst braucht Loxone nicht
         $out[] = $w;
     }
     return $out;
+}
+
+/**
+ * P1: Eine Regel der Art "stunden" (guenstigste Einzelstunden) oder "fenster"
+ * (guenstigstes Fenster) urteilt ueber einen RANG. Sind weniger als
+ * SPOT_RANG_MIN_STUNDEN kuenftige Preisstunden bekannt, ist das kein Rang - die
+ * Regel geht auf 0, mit dem Grund "horizont". Schwelle und Tagesmittel sind
+ * keine Rangfrage und bleiben, wie sie sind. planer.php bleibt unberuehrt (gemeinsame
+ * Datei); geaendert wird nur, was dieses Plugin aus seinem Ergebnis macht.
+ */
+function spot_regel_horizont($w, $r, $st) {
+    $art = isset($r['art']) ? (string) $r['art'] : 'fenster';
+    if (!in_array($art, array('stunden', 'fenster'), true) || empty($r['aktiv'])) {
+        return $w;
+    }
+    if (!isset($st['rang_ok']) || !empty($st['rang_ok'])) {
+        return $w;
+    }
+    $w['aktiv'] = 0;
+    $w['grund'] = 'horizont';
+    $w['in'] = -1;
+    $w['rest'] = 0;
+    $w['ct'] = 0.0;
+    $w['start'] = -1;
+    $w['anzahl'] = 0;
+    $w['verdraengt'] = 0;
+    $w['slots'] = array();
+    return $w;
 }
 
 /**
@@ -1464,6 +1607,9 @@ function spot_fahrplan($st = null) {
     foreach ($plan as $i => $p) {
         $plan[$i]['name'] = (isset($cfg['regeln'][$i]['name']) && $cfg['regeln'][$i]['name'] !== '')
             ? $cfg['regeln'][$i]['name'] : ('Regel ' . ($i + 1));
+        // P1: dieselbe Entscheidung wie fuer Loxone (spot_regeln()).
+        $plan[$i] = spot_regel_horizont($plan[$i],
+            isset($cfg['regeln'][$i]) ? $cfg['regeln'][$i] : array(), $st);
     }
     return array('plan' => $plan, 'belegung' => plan_belegung($plan),
                  'slotlen' => 3600, 'preise' => $all);
@@ -1473,7 +1619,16 @@ function spot_fahrplan($st = null) {
 function spot_state($force = false) {
     $cfg = spot_config();
     $cache = spot_tmpdir() . '/state.json';
-    if (!$force && is_file($cache) && time() - filemtime($cache) < 300) {
+    /* P4: der Endpunkt nimmt den Zustand des Minutenlaufs, solange er zur
+     * laufenden Stunde gehoert - gleich wie alt (RECHNE in der Zeile nennt das
+     * Alter). Gehoert er zu einer frueheren Stunde, wird aus den abgelegten
+     * Marktdaten gerechnet, ohne Abruf und ohne etwas zu schreiben. Ein
+     * ?refresh=1 erzwingt hier nichts mehr (siehe spot.php). */
+    $nur = spot_nur_zwischenspeicher();
+    if ($nur) {
+        $force = false;
+    }
+    if (!$force && is_file($cache) && ($nur || time() - filemtime($cache) < 300)) {
         $c = json_decode((string) file_get_contents($cache), true);
         if (is_array($c) && isset($c['hstart']) && $c['hstart'] === (time() - time() % 3600)) {
             return $c;
@@ -1548,6 +1703,11 @@ function spot_state($force = false) {
     foreach ($vals as $v) {
         if ($v < $cur) { $rank++; }
     }
+    /* P1: ein Rang braucht einen gedeckten Horizont (SPOT_RANG_MIN_STUNDEN).
+     * Sonst ist RANK/RANKD -1 ("keine Aussage") und n 0; wie viele Stunden
+     * bekannt sind, steht in n_bekannt. */
+    $n_bekannt = count($vals);
+    $rang_ok = ($n_bekannt >= SPOT_RANG_MIN_STUNDEN) ? 1 : 0;
     /* Preisniveau relativ zu den Schwellen.
      *
      * OHNE GUELTIGE PREISE IST ES NICHT BEKANNT. Bis 1.2.23 wurde es
@@ -1586,9 +1746,11 @@ function spot_state($force = false) {
          * Gegengeprueft, dass der Ersatzwert nichts ausloest:
          * spot_marstek_control() kehrt bei !$st['ok'] vorher um, und
          * die Ansage haengt an === 1 bzw. === 3. */
-        'rank' => count($vals) ? $rank : -1,
-        'rankd' => count($vals) ? count($vals) + 1 - $rank : -1,
-        'n' => count($vals),
+        'rank' => $rang_ok ? $rank : -1,
+        'rankd' => $rang_ok ? count($vals) + 1 - $rank : -1,
+        'n' => $rang_ok ? count($vals) : 0,
+        'n_bekannt' => $n_bekannt,
+        'rang_ok' => $rang_ok,
         'level' => $level,
         'heute' => $sh ? $sh : array('minh' => 0, 'minp' => 0, 'maxh' => 0, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
         'morgen' => $sm ? $sm : array('minh' => 0, 'minp' => 0, 'maxh' => 0, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
@@ -1707,6 +1869,11 @@ function spot_state($force = false) {
         $st['spart_eur'] += isset($r['spart_eur']) ? (float) $r['spart_eur'] : 0.0;
     }
     $st['spart_eur'] = round($st['spart_eur'], 2);
+    /* P4: aus dem Endpunkt heraus nichts fortschreiben - die Hysterese und den
+     * Zwischenspeicher fuehrt allein der Minutenlauf (und die Oberflaeche). */
+    if ($nur) {
+        return $st;
+    }
     /* Die Hysterese fortschreiben - ERST nach der Rechnung, damit der
      * naechste Lauf sie vorfindet. */
     spot_laufend_fortschreiben($st['regeln'], (int) $st['hstart']);
@@ -1730,24 +1897,32 @@ function spot_co2($force = false) {
         return $off;
     }
     $cache = spot_tmpdir() . '/co2.json';
-    if (!$force && is_file($cache) && time() - filemtime($cache) < 1800) {
-        $c = json_decode((string) file_get_contents($cache), true);
-        if (is_array($c) && isset($c['ok'])) {
-            return $c;
-        }
+    /* P3 (Pruefbericht mqtt, B5): der Zwischenspeicher gilt hoechstens eine
+     * Stunde, und seine Werte werden fuer die LAUFENDE Stunde neu gebildet
+     * (spot_co2_aus_speicher()). Bis 1.2.31 lieferte er nach einem
+     * gescheiterten Abruf beliebig lange den Stand von vor Stunden - gemessen:
+     * um 20:10 "CO2=180;CO2MINH=15;CO2CLEAN=1" aus einem Abruf von 14:10, und
+     * auch ein frischer behielt ueber den Stundenwechsel das "jetzt" der
+     * Vorstunde. Ohne gueltigen Stand gilt die sichere Richtung $off
+     * (CO2CLEAN=0, CO2MINH=-1). */
+    $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+    $gilt = spot_co2_aus_speicher($c);
+    if (!$force && $gilt !== null && time() - (int) @filemtime($cache) < 1800) {
+        return $gilt;
+    }
+    if (spot_nur_zwischenspeicher()) {
+        return $gilt !== null ? $gilt : $off;     // P4: kein Abruf aus dem Endpunkt
     }
     $land = $cfg['market'] === 'at' ? 'at' : 'de';
     $ctx = stream_context_create(array('http' => array('timeout' => 15, 'user_agent' => 'LoxBerry Spotpreis')));
     $js = @file_get_contents('https://api.energy-charts.info/co2eq?country=' . $land, false, $ctx);
     $d = @json_decode((string) $js, true);
     if (!isset($d['unix_seconds']) || !is_array($d['unix_seconds'])) {
-        if (is_file($cache)) {
-            $c = json_decode((string) file_get_contents($cache), true);
-            if (is_array($c)) {
-                return $c;
-            }
+        if ($gilt !== null) {
+            return $gilt;
         }
-        spot_log_if_changed('co2', 'Abruf fehlgeschlagen (api.energy-charts.info)');
+        spot_log_if_changed('co2', 'Abruf fehlgeschlagen (api.energy-charts.info)'
+            . (is_array($c) ? ' - der letzte Stand ist aelter als eine Stunde und gilt nicht mehr' : ''));
         return $off;
     }
     // Messwerte und Prognose zu Stundenmittelwerten zusammenfassen
@@ -1788,10 +1963,61 @@ function spot_co2($force = false) {
         return $off;
     }
     $out = array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => $min[0],
-                 'max' => $max[1], 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => time());
+                 'max' => $max[1], 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => time(),
+                 'hstart' => $hstart);
     spot_write_json_atomic($cache, $out);
     spot_log_if_changed('co2', 'jetzt ' . $out['now'] . ' g/kWh, sauberste Stunde ' . $out['minh'] . ' Uhr mit ' . $out['min'] . ' g');
     return $out;
+}
+
+/**
+ * P3: Einen abgelegten CO2-Stand fuer die LAUFENDE Stunde nehmen - oder null.
+ *
+ * Null heisst "gilt nicht": kein lesbarer Stand, aelter als eine Stunde (ts),
+ * oder fuer die laufende Stunde liegt kein Wert vor. Ist seit dem Abruf eine
+ * Stunde angebrochen, werden jetzt, Minimum, Maximum und Schnitt aus den
+ * Stundenwerten ab der laufenden Stunde neu gebildet; die abgelaufene faellt
+ * heraus. Die Stundenwerte liegen nach Stundenzahl (date('G')) und decken die
+ * 24 Stunden ab der Stunde des Abrufs.
+ */
+function spot_co2_aus_speicher($c) {
+    if (!is_array($c) || empty($c['ok']) || !isset($c['hours']) || !is_array($c['hours'])) {
+        return null;
+    }
+    $ts = isset($c['ts']) ? (int) $c['ts'] : 0;
+    $jetzt = time();
+    if ($ts <= 0 || $jetzt - $ts > 3600 || $ts > $jetzt + 300) {
+        return null;
+    }
+    $hstart = $jetzt - ($jetzt % 3600);
+    $c_h = isset($c['hstart']) ? (int) $c['hstart'] : ($ts - ($ts % 3600));
+    if ($c_h === $hstart) {
+        return $c;
+    }
+    $hours = array(); $min = null; $max = null; $sum = 0; $n = 0; $cur = null;
+    for ($k = 0; $k < 24; $k++) {
+        $hts = $c_h + $k * 3600;
+        if ($hts < $hstart) {
+            continue;
+        }
+        $h = (int) date('G', $hts);
+        if (!isset($c['hours'][$h]) || !is_numeric($c['hours'][$h])) {
+            continue;
+        }
+        $g = (float) $c['hours'][$h];
+        if ($hts === $hstart) {
+            $cur = $g;
+        }
+        $hours[$h] = $g;
+        $sum += $g; $n++;
+        if ($min === null || $g < $min[1]) { $min = array($h, $g); }
+        if ($max === null || $g > $max[1]) { $max = array($h, $g); }
+    }
+    if ($cur === null || !$n) {
+        return null;
+    }
+    return array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => $min[0], 'max' => $max[1],
+                 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => $ts, 'hstart' => $hstart);
 }
 
 /* ---------------- Tarifvergleich fest <-> dynamisch ---------------- */
@@ -2117,38 +2343,64 @@ function spot_config_save($cfg) {
     if ($json === false) {
         return false;
     }
-    /* RECHTE VOR INHALT. In dieser Datei steht der Aktionstoken. "Schreiben,
-     * dann chmod" liesse sie fuer die Dauer des Schreibens mit den Vorgaben
-     * der umask stehen - bei einem Geheimnis ist das der Unterschied
-     * zwischen "kurz lesbar" und "nie lesbar". Deshalb: leer anlegen,
-     * schuetzen, dann fuellen. Die Nebendatei traegt die Prozessnummer,
-     * sonst zerlegen zwei gleichzeitige Schreiber einander. REGELN_2. */
-    $tmp = $p['config'] . '.tmp.' . getmypid();
-    $fh = @fopen($tmp, 'c');
-    if ($fh === false) {
+    /* C1 (Pruefbericht code, Befund 1): erst die Konfiguration ueber eine
+     * Nebendatei (spot_geheim_schreiben(): 0600 vor dem Inhalt, geschriebene
+     * Laenge gegen strlen() geprueft, dann rename), dann ZURUECKLESEN, und erst
+     * wenn sie wortgleich und gueltiges JSON ist, die Zweitschrift - auf
+     * demselben Weg. Bis 1.2.31 galt jede Rueckgabe von fwrite ausser false als Erfolg: mit einer
+     * Dateigroessengrenze von 1 kB (wie bei voller Platte) meldete die
+     * Funktion true, und spot.json UND Zweitschrift waren abgeschnitten -
+     * Token und alle Einstellungen weg. */
+    if (!spot_geheim_schreiben($p['config'], $json)) {
         return false;
     }
-    @chmod($tmp, 0600);
-    if (!@ftruncate($fh, 0) || @fwrite($fh, $json) === false) {
-        @fclose($fh);
-        @unlink($tmp);
-        return false;
-    }
-    @fclose($fh);
-    if (!@rename($tmp, $p['config'])) {
-        @unlink($tmp);
+    clearstatcache(true, $p['config']);
+    $sp_zurueck = @file_get_contents($p['config']);
+    if ($sp_zurueck !== $json || !is_array(json_decode((string) $sp_zurueck, true))) {
+        spot_log('Konfiguration geschrieben, aber nicht wortgleich zurueckgelesen - die Zweitschrift bleibt, wie sie war.');
         return false;
     }
     /* Die Zweitschrift bekommt DIESELBEN RECHTE wie das Original - sie
-     * enthaelt dasselbe Geheimnis. Genau diese Stelle nennt REGELN_2 als
-     * Beispiel: dort fehlte das chmod an der Zweitschrift, waehrend
-     * preupgrade.sh es setzte. */
-    if (@copy($p['config'], $p['backup'])) {
-        @chmod($p['backup'], 0600);
+     * enthaelt dasselbe Geheimnis (REGELN_2). */
+    if (!spot_geheim_schreiben($p['backup'], $json)) {
+        spot_log('Die Zweitschrift ' . basename($p['backup']) . ' liess sich nicht schreiben - die Konfiguration '
+            . 'selbst ist gespeichert; die alte Zweitschrift bleibt liegen.');
+    } elseif (spot_frisch_installiert()) {
+        /* I1: ab jetzt gibt es eine Zweitschrift DIESER Installation. */
+        @unlink(spot_paths()['datadir'] . '/marke_frisch');
     }
     // Zwischenspeicher verwerfen: die Preise werden mit den neuen
     // Aufschlaegen neu gerechnet.
     @unlink(spot_tmpdir() . '/state.json');
+    return true;
+}
+
+/**
+ * Eine Datei mit Geheimnis unteilbar schreiben (C1): Nebendatei mit PID und
+ * Zufallszahl, 0600 VOR dem Inhalt, geschriebene Laenge gegen strlen()
+ * geprueft, dann rename(). Eine kurze Schreibung (volle Platte) laesst die
+ * alte Datei stehen. Rueckgabe true nur nach dem rename().
+ */
+function spot_geheim_schreiben($datei, $inhalt) {
+    $inhalt = (string) $inhalt;
+    $tmp = $datei . '.tmp.' . getmypid() . '.' . mt_rand(1000, 9999);
+    $fh = @fopen($tmp, 'x');
+    if ($fh === false) {
+        return false;
+    }
+    @chmod($tmp, 0600);
+    $n = @fwrite($fh, $inhalt);
+    $ok = ($n === strlen($inhalt)) && @fflush($fh);
+    @fclose($fh);
+    clearstatcache(true, $tmp);
+    if (!$ok || @filesize($tmp) !== strlen($inhalt)) {
+        @unlink($tmp);
+        return false;
+    }
+    if (!@rename($tmp, $datei)) {
+        @unlink($tmp);
+        return false;
+    }
     return true;
 }
 
@@ -2329,13 +2581,16 @@ function spot_marstek_default_url() {
  *  24 Zeichen)? Zugelassen sind 8 bis 64 Zeichen aus Buchstaben, Ziffern,
  *  Punkt, Bindestrich und Unterstrich - eine Liste oder "Array" nie (Klasse 12). */
 function spot_endpunkt_token_form_ok($t) {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{8,64}$/', $t) === 1;
+    /* C5 (Pruefbericht oberflaeche, Befund 9): verankert mit \z. "$" liess ein
+     * angehaengtes Zeilenende durch - eine Sicherung mit "abcdefghjk\n" wurde
+     * angenommen, und der Endpunkt nahm ?token=abcdefghjk%0A an. */
+    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{8,64}\z/', $t) === 1;
 }
 
 /** Hat ein Marstek-Aktionstoken die Form, die das Marstek-Plugin annimmt?
  *  Dieselbe Regel wie dort (marstek_lib.php, Pruefung 'aktionstoken'). */
 function spot_marstek_token_form_ok($t) {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $t) === 1;
+    return is_string($t) && preg_match('/^[A-Za-z0-9_.\-]{1,64}\z/', $t) === 1;   // C5: \z
 }
 
 /** Die Teile der Anfrage einer Adresse, ohne jeden token-Parameter.
@@ -2442,7 +2697,7 @@ function spot_marstek_ergebnis_lesen() {
     if (!is_array($e) || !isset($e['ts'])) {
         return null;
     }
-    return $e + array('p' => 0, 'code' => 0, 'ok' => 0, 'antwort' => '', 'folge' => 0);
+    return $e + array('p' => 0, 'code' => 0, 'ok' => 0, 'antwort' => '', 'folge' => 0, 'schreiber' => -1);
 }
 
 /**
@@ -2462,6 +2717,14 @@ function spot_marstek_control($st = null) {
         $st = spot_state();
     }
     if (!$st['ok']) {
+        return;
+    }
+    /* P1: ohne gedeckten Horizont kein Rang - und damit kein Spot-Laden, auch
+     * nicht bei negativem Preis (Entscheidung Nr. 30: "sonst laedt die Kopplung nicht"). */
+    if (isset($st['rang_ok']) && !$st['rang_ok']) {
+        spot_log_if_changed('marstek', 'kein Spot-Laden: nur ' . (int) $st['n_bekannt']
+            . ' kuenftige Preisstunden bekannt (mindestens ' . SPOT_RANG_MIN_STUNDEN
+            . ') - ohne sie gibt es keinen Rang -> nichts gesendet');
         return;
     }
     $laden = ($st['rank'] <= max(1, (int) $cfg['marstek_hours']))
@@ -2501,9 +2764,13 @@ function spot_marstek_control($st = null) {
     $ok = ($code === 200 && strpos(ltrim($rumpf), 'SET;OK=1') === 0);
     $alt = spot_marstek_ergebnis_lesen();
     $folge = $ok ? 0 : (($alt !== null && empty($alt['ok'])) ? (int) $alt['folge'] + 1 : 1);
+    /* P6 (aWATTar-c2b): die Schreiber-Wache des Marstek (ab 1.1.19) haengt
+     * ;SCHREIBER=n an, sobald in ihrem Fenster mehr als ein Schreiber war. -1
+     * heisst "nicht gemeldet" - eine aeltere Fassung oder nur dieser eine. */
+    $schreiber = preg_match('/;SCHREIBER=([0-9]{1,3})(;|\s|$)/', (string) $rumpf, $sm) ? (int) $sm[1] : -1;
     spot_write_json_atomic(spot_marstek_ergebnis_datei(), array(
         'ts' => time(), 'p' => $p, 'code' => $code, 'ok' => $ok ? 1 : 0,
-        'antwort' => $kurz, 'folge' => $folge));
+        'antwort' => $kurz, 'folge' => $folge, 'schreiber' => $schreiber));
     $zeile = 'laden mit ' . $p . ' W ' . $grund . ' -> '
         . ($code > 0 ? 'HTTP ' . $code : 'keine Verbindung');
     if ($ok) {
@@ -2579,6 +2846,18 @@ function spot_marstek_pruefen($probe = false) {
         $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_LETZT_FEHL'), date('d.m. H:i', (int) $e['ts']),
                            (int) $e['p'], (int) $e['code'], (string) $e['antwort'], (int) $e['folge']);
         $note = 0;
+    }
+    /* P6: fremde Schreiber am Marstek melden (Entscheidung Nr. 25: melden ab
+     * Werk an). Ein Kreuz: zwei Haende auf einem Speicher ist der Konflikt,
+     * vor dem der Kasten in den Einstellungen warnt. */
+    if ($e !== null && (int) $e['schreiber'] >= 2) {
+        $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_SCHREIBER'), (int) $e['schreiber']);
+        $note = 0;
+    }
+    /* P1: warum die Kopplung gerade nichts sendet. */
+    $sp_st = spot_state();
+    if (isset($sp_st['rang_ok']) && !$sp_st['rang_ok'] && !empty($sp_st['ok'])) {
+        $teile[] = sprintf(spot_t('PRUEFTEXT.MARSTEK_HORIZONT'), (int) $sp_st['n_bekannt'], SPOT_RANG_MIN_STUNDEN);
     }
     if ($note === 1 && !$gemessen) {
         $note = 2;
@@ -2694,7 +2973,11 @@ function spot_mqtt_themen($st = null) {
         $st = spot_state();
     }
     $msgs = array(
-        'ok' => $st['ok'], 'cur' => $st['cur'], 'cur_boerse' => $st['cur_boerse'], 'next' => $st['next'],
+        'ok' => $st['ok'], 'cur' => $st['cur'],
+        /* O9 (Pruefbericht mqtt, B6): das Gegenstueck zu CURX der Loxone-Zeile -
+         * 1, wenn fuer die laufende Stunde ein Ersatzwert steht. Fluechtig. */
+        'curx' => isset($st['cur_fehlt']) ? (int) $st['cur_fehlt'] : 0,
+        'cur_boerse' => $st['cur_boerse'], 'next' => $st['next'],
         'neg' => $st['neg'], 'rank' => $st['rank'], 'rankd' => $st['rankd'], 'level' => $st['level'],
         'avg_heute' => $st['heute']['avg'], 'min_heute' => $st['heute']['minp'], 'minh_heute' => $st['heute']['minh'],
         'max_heute' => $st['heute']['maxp'], 'maxh_heute' => $st['heute']['maxh'],
@@ -2747,6 +3030,117 @@ function spot_mqtt_themen($st = null) {
         $msgs['plan/soc'] = (float) $st['soc'];
     }
     return $msgs;
+}
+
+/**
+ * M2 (Pruefbericht mqtt, B3): das Themenpraefix an EINER Stelle - fuer Senden,
+ * Lebenszeichen, Altlast und Deinstallation. Bis 1.2.31 kuerzte nur die
+ * Deinstallation einen Schraegstrich am Rand ("haus/spot/" -> "haus/spot"),
+ * gesendet wurde aber nach "haus/spot//fix": die Deinstallation leerte andere
+ * Themen als die, die im Broker standen. Gilt jetzt ueberall wie beim Senden
+ * (nur Leerraum am Rand weg) - auf einer bestehenden Anlage aendert sich damit
+ * kein gesendetes Thema. Ein Praefix mit / am Rand nimmt das Formular nicht mehr
+ * an, und "Einstellungen sichern" warnt davor (X-3).
+ */
+function spot_mqtt_praefix($cfg = null) {
+    if ($cfg === null) {
+        $cfg = spot_config();
+    }
+    $p = (isset($cfg['mqtt_topic']) && is_string($cfg['mqtt_topic'])) ? trim($cfg['mqtt_topic']) : '';
+    return $p !== '' ? $p : 'spot_awattar';
+}
+
+/** P2: die Themen, die bei einem Ausfall (ok=0) hinausgehen - nur das Signal. */
+function spot_mqtt_ausfall_themen(array $msgs) {
+    $aus = array();
+    foreach ($msgs as $k => $v) {
+        if ($k === 'ok' || preg_match('#^regel/[0-9]+/aktiv$#', (string) $k)) {
+            $aus[$k] = $v;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * O9 (Pruefbericht mqtt, B6): jedes Thema, das hinausgeht, mit seiner
+ * Bedeutung - EINE Liste fuer die Tabelle im Reiter MQTT und fuer die
+ * Pruefzeile PRUEF.MQTT_LISTE, die sie in beide Richtungen gegen
+ * spot_mqtt_themen() haelt. Der Text steht in der Sprachdatei (Abschnitt
+ * MQTTTHEMA, Schluessel aus spot_mqtt_text_schluessel()). Bis 1.2.31 nannte die
+ * Oberflaeche 35 von 89 Themen, und keine Pruefung merkte es.
+ * Wert: 1 = nur, wenn die Quelle etwas liefert (PV-Prognose, Speicherstand).
+ */
+function spot_mqtt_beschreibung() {
+    $l = array();
+    foreach (array('OK', 'CUR', 'CURX', 'CUR_BOERSE', 'NEXT', 'NEG', 'RANK', 'RANKD', 'LEVEL',
+                   'AVG_HEUTE', 'MIN_HEUTE', 'MINH_HEUTE', 'MAX_HEUTE', 'MAXH_HEUTE', 'MORGEN_OK',
+                   'AVG_MORGEN', 'MIN_MORGEN', 'MINH_MORGEN', 'MAX_MORGEN', 'MAXH_MORGEN',
+                   'FENSTER_START', 'FENSTER_IN', 'FENSTER_CT', 'CO2', 'CO2_MIN', 'CO2_MINH', 'CO2_CLEAN',
+                   'WP_CUR', 'WP_NEXT', 'FIX', 'DYN_MONAT', 'DIFF_MONAT', 'EURO_MONAT', 'SHIFT_JAHR',
+                   'ANN', 'AUDIO', 'PUSH', 'PTEST', 'STATUS_TS', 'STATUS_RECHNE', 'STATUS_ZAEHLER', 'STATUS_OK',
+                   'REGEL_AKTIV', 'REGEL_IN', 'REGEL_REST', 'REGEL_CT', 'REGEL_EIN', 'REGEL_VERDRAENGT',
+                   'REGEL_SPERRE', 'REGEL_RANG', 'REGEL_FEHLT', 'REGEL_SPART', 'REGEL_SPART_EUR',
+                   'PLAN_BUDGET', 'PLAN_BUDGET2', 'PLAN_SPART', 'PLAN_LAST') as $k) {
+        $l[$k] = 0;
+    }
+    $l['PLAN_PV_PROGNOSE'] = 1;
+    $l['PLAN_SOC'] = 1;
+    return $l;
+}
+
+/** O9: der Sprachschluessel eines Themas - regel/3/aktiv -> REGEL_AKTIV, status/ts -> STATUS_TS. */
+function spot_mqtt_text_schluessel($thema) {
+    $t = preg_replace('#^regel/[0-9]+/#', 'regel/', (string) $thema);
+    return strtoupper(str_replace('/', '_', $t));
+}
+
+/**
+ * O9: die Themenliste fuer den Reiter MQTT - jedes gesendete Thema (samt
+ * Lebenszeichen), dazu die nur bei Daten gesendeten. Rueckgabe Liste von
+ * array(thema, retained 0|1, Sprachschluessel).
+ */
+function spot_mqtt_themenliste($st = null) {
+    $themen = array_keys(spot_mqtt_themen($st));
+    foreach (array('plan/pv_prognose', 'plan/soc') as $t) {
+        if (!in_array($t, $themen, true)) {
+            $themen[] = $t;
+        }
+    }
+    $aus = array();
+    foreach ($themen as $t) {
+        $aus[] = array($t, spot_retain_fuer($t, 'x'), spot_mqtt_text_schluessel($t));
+    }
+    return $aus;
+}
+
+/** O9: Liste gegen Sendemenge in beide Richtungen. Rueckgabe array(0|1, Klartext). */
+function spot_mqtt_liste_pruefen($st = null) {
+    $beschr = spot_mqtt_beschreibung();
+    $gesendet = array_keys(spot_mqtt_themen($st));
+    $ohne_text = array();
+    $gesehen = array();
+    foreach ($gesendet as $t) {
+        $k = spot_mqtt_text_schluessel($t);
+        $gesehen[$k] = true;
+        if (!isset($beschr[$k]) || spot_t('MQTTTHEMA.' . $k) === 'MQTTTHEMA.' . $k) {
+            $ohne_text[] = $t;
+        }
+    }
+    $nie = array();
+    foreach ($beschr as $k => $optional) {
+        if (!$optional && !isset($gesehen[$k])) {
+            $nie[] = $k;
+        }
+    }
+    if (!$gesendet) {
+        return array(2, spot_t('PRUEFTEXT.MQTT_LISTE_LEER'));
+    }
+    if ($ohne_text || $nie) {
+        return array(0, sprintf(spot_t('PRUEFTEXT.MQTT_LISTE_FEHLT'),
+            $ohne_text ? implode(', ', array_slice($ohne_text, 0, 8)) : '-',
+            $nie ? implode(', ', array_slice($nie, 0, 8)) : '-'));
+    }
+    return array(1, sprintf(spot_t('PRUEFTEXT.MQTT_LISTE_OK'), count($gesendet), count($beschr)));
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt. */
@@ -2809,19 +3203,17 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
     if (!$udpport) {
         return -1;
     }
-    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
-    /* Haelt der Broker noch Altwerte frueher zurueckbehaltener Themen
-     * (spot_mqtt_altlast()), geht dieser Lauf VOLL hinaus - die leere
-     * retain-Nutzlast steht dann unmittelbar vor dem gueltigen Wert, auch
-     * wenn sich an den Werten nichts geaendert hat. Bei unbekannter Lage
-     * nicht: sonst ginge ohne erreichbaren Broker jede Minute alles hinaus.
-     * In WSL gemessen (Pruefung-Spotpreis-aWATTar-1.2.28, Fall R9). */
-    if (!$erzwingen) {
-        $alt = spot_mqtt_altlast($prefix);
-        if ($alt['lage'] === 'belegt') {
-            $erzwingen = true;
-        }
-    }
+    $prefix = spot_mqtt_praefix($cfg);
+    /* M3 (Pruefbericht mqtt, B4): haelt der Broker noch Altwerte frueher
+     * zurueckbehaltener Themen (spot_mqtt_altlast()), gehen GENAU DIESE Themen
+     * mit - die leere retain-Nutzlast unmittelbar vor dem gueltigen Wert
+     * (spot_mqtt_senden()). Bis 1.2.31 ging dann jeder Lauf VOLL hinaus:
+     * gemessen 90 Datagramme je Minute, solange eine Loeschung am Eingang
+     * verloren ging - genau dann, wenn der Eingang ohnehin ueberlastet ist.
+     * Bei unbekannter Lage nichts zusaetzlich (sonst ginge ohne erreichbaren
+     * Broker jede Minute alles hinaus; Pruefung-Spotpreis-aWATTar-1.2.28, R9). */
+    $alt = spot_mqtt_altlast($prefix);
+    $belegt = ($alt['lage'] === 'belegt') ? $alt['themen'] : array();
     $msgs = array();
     foreach (spot_mqtt_themen($st) as $k => $v) {
         if (strpos((string) $k, 'status/') !== 0) {
@@ -2830,11 +3222,29 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
     }
     $vorher = array();
     $merker = spot_mqtt_merker();
-    if (!$erzwingen && is_file($merker)) {
+    if (is_file($merker)) {
         $d = json_decode((string) @file_get_contents($merker), true);
         if (is_array($d)) { $vorher = $d; }
     }
-    $neu = spot_mqtt_diff($msgs, $vorher);
+    /* P2 (Pruefbericht mqtt, B1; Entscheidungen Nr. 8 und 26): ohne Preise
+     * (ok=0) geht nur das Signal hinaus - ok und die Schaltsignale
+     * regel/N/aktiv (ein Schaltsignal darf nicht auf 1 stehen bleiben) -, und
+     * zwar in JEDEM Lauf, nicht nur beim Wechsel. Bis 1.2.31 gingen cur, next,
+     * avg_heute ... als 0 hinaus und ueberschrieben in Loxone den letzten
+     * Preis; eine 0 sieht aus wie die guenstigste Stunde. Der Merker der
+     * uebrigen Themen bleibt, wie er war: nach dem Ausfall gehen sie nur bei
+     * einer Aenderung erneut hinaus. Der HTTP-Endpunkt antwortet wie bisher 503. */
+    $ausfall = empty($st['ok']);
+    if ($ausfall) {
+        $neu = spot_mqtt_ausfall_themen($msgs);
+    } else {
+        $neu = spot_mqtt_diff($msgs, $erzwingen ? array() : $vorher);
+        foreach ($belegt as $t) {
+            if (array_key_exists($t, $msgs)) {
+                $neu[$t] = $msgs[$t];
+            }
+        }
+    }
     if (!$neu) {
         return 0;
     }
@@ -2842,7 +3252,7 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
     if ($n < 1) {
         return -1;      // nichts hinausgegangen - Merker NICHT fortschreiben
     }
-    spot_write_atomic($merker, json_encode($msgs));
+    spot_write_atomic($merker, json_encode($ausfall ? array_merge($vorher, $neu) : $msgs));
     return $n;
 }
 
@@ -2871,7 +3281,7 @@ function spot_mqtt_lebenszeichen($st = null) {
     if (!$udpport) {
         return;
     }
-    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'spot_awattar';
+    $prefix = spot_mqtt_praefix($cfg);    // M2
     spot_mqtt_senden($prefix, $udpport, array(
         'status/ts' => spot_cron_puls(),
         'status/rechne' => ($st !== null && isset($st['ts'])) ? (int) $st['ts'] : time(),
@@ -3090,7 +3500,10 @@ function spot_mqtt_behalten_liste(array $themen) {
         $nutz .= $zk($benutzer);
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
-    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+    /* Geschrieben ist erst, was ganz geschrieben ist (Bauart B, Regeln/03):
+     * bis 1.2.31 galt jede Rueckgabe von fwrite ausser false als Erfolg. */
+    $sp_connect = chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz;
+    if (@fwrite($s, $sp_connect) === strlen($sp_connect)) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
             $sub = pack('n', 1);
@@ -3244,18 +3657,51 @@ function spot_mqtt_leeren($runden = 3, $pause = 1.0) {
         echo "<WARNING> MQTT: keine LoxBerry-Wurzel - zurueckbehaltene Themen wurden nicht geleert.\n";
         return 2;
     }
-    $cfg = spot_config();
-    $praefix = trim((string) $cfg['mqtt_topic'], '/ ');
-    if ($praefix === '' || preg_match('/[#+\s]/', $praefix)) {
-        echo "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
-           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.\n";
-        return 2;
+    /* M1 (Pruefbericht mqtt, B2; Entscheidung Nr. 26): unter dem eingestellten
+     * Praefix UND unter jedem frueher eingestellten (mqtt_praefixe.json, fuehrt
+     * die Oberflaeche beim Praefixwechsel und beim Ausschalten). Bis 1.2.31
+     * blieben Themen unter einem frueheren Praefix fuer immer im Broker. */
+    $liste = array(spot_mqtt_praefix(spot_config()));
+    foreach (spot_mqtt_praefixe_gemerkt() as $sp_pf) {
+        if (!in_array($sp_pf, $liste, true)) {
+            $liste[] = $sp_pf;
+        }
+    }
+    $rc = 0;
+    foreach ($liste as $sp_pf) {
+        $e = spot_mqtt_praefix_leeren($sp_pf, $runden, $pause);
+        foreach ($e['zeilen'] as $z) {
+            echo $z . "\n";
+        }
+        $rc = max($rc, (int) $e['rc']);
+    }
+    return $rc;
+}
+
+/**
+ * Die zurueckbehaltenen Themen der Linie unter EINEM Praefix leeren (M1).
+ * Derselbe Weg wie bisher die Deinstallation: UDP-Eingang des Gateways, "retain
+ * <thema> " mit leerer Nutzlast, vorher und nach jeder Runde beim Broker
+ * nachgelesen, hoechstens $runden Runden. Schreibt weder Protokoll noch Datei.
+ * Rueckgabe array('rc' => 0|1|2, 'zeilen' => Ausgabezeilen <OK>/<INFO>/<WARNING>,
+ * 'offen' => Liste, 'nachgelesen' => bool).
+ */
+function spot_mqtt_praefix_leeren($praefix, $runden = 3, $pause = 1.0) {
+    $erg = array('rc' => 0, 'zeilen' => array(), 'offen' => array(), 'nachgelesen' => false);
+    $p = spot_paths();
+    $praefix = trim((string) $praefix);
+    if ($p['lbhome'] === '' || $praefix === '' || preg_match('/[#+\s]/', $praefix)) {
+        $erg['rc'] = 2;
+        $erg['zeilen'][] = "<WARNING> MQTT: das Themenpraefix ist leer oder enthaelt einen Platzhalter oder "
+           . "Leerraum - zurueckbehaltene Themen wurden nicht geleert.";
+        return $erg;
     }
     $udpport = spot_mqtt_udpport($p['lbhome']);
     if (!$udpport) {
-        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 2;
+        $erg['rc'] = 2;
+        $erg['zeilen'][] = "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.";
+        return $erg;
     }
     $alle = array();
     foreach (spot_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
@@ -3264,15 +3710,18 @@ function spot_mqtt_leeren($runden = 3, $pause = 1.0) {
     $nachgelesen = ($f['lage'] === 'ok');
     $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
     if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
-           . "/ steht zurueckbehalten - nichts zu leeren.\n";
-        return 0;
+        $erg['nachgelesen'] = true;
+        $erg['zeilen'][] = "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht zurueckbehalten - nichts zu leeren.";
+        return $erg;
     }
     $strom = @stream_socket_client('udp://127.0.0.1:' . $udpport, $errno, $errstr, 2);
     if (!$strom) {
-        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 1;
+        $erg['rc'] = 1;
+        $erg['offen'] = $offen;
+        $erg['zeilen'][] = "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.";
+        return $erg;
     }
     $zu_leeren = count($offen);
     $datagramme = 0;
@@ -3294,24 +3743,62 @@ function spot_mqtt_leeren($runden = 3, $pause = 1.0) {
         }
     }
     fclose($strom);
-    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
+    $erg['nachgelesen'] = $nachgelesen;
+    $erg['offen'] = $offen;
+    $erg['zeilen'][] = "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
        . "Nutzlast an den UDP-Eingang " . $udpport . " des Gateways gesendet ("
-       . $datagramme . " Datagramme).\n";
+       . $datagramme . " Datagramme).";
     if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
-           . "zurueckbehalten.\n";
-        return 0;
+        $erg['zeilen'][] = "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.";
+        return $erg;
     }
     if ($nachgelesen) {
-        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+        $erg['rc'] = 1;
+        $erg['zeilen'][] = "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
-        return 1;
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>";
+        return $erg;
     }
-    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+    $erg['zeilen'][] = "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
        . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
-       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
-    return 0;
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.";
+    return $erg;
+}
+
+/** M1: wo die frueher benutzten Praefixe liegen (Datenordner; preupgrade.sh traegt die Datei ueber ein Update). */
+function spot_mqtt_praefixe_datei() {
+    return spot_paths()['datadir'] . '/mqtt_praefixe.json';
+}
+
+/** M1: die frueher eingestellten Praefixe - nur solche in der Form eines Themas. */
+function spot_mqtt_praefixe_gemerkt() {
+    $f = spot_mqtt_praefixe_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $aus = array();
+    foreach (is_array($d) ? $d : array() as $pf) {
+        if (is_string($pf) && $pf !== '' && strlen($pf) <= 64 && !preg_match('/[#+\s]/', $pf)
+            && preg_match('#^[A-Za-z0-9_/-]+\z#', $pf)) {
+            $aus[$pf] = true;
+        }
+    }
+    return array_keys($aus);
+}
+
+/** M1: ein Praefix vormerken (hoechstens die letzten 20). Rueckgabe true, wenn es danach in der Liste steht. */
+function spot_mqtt_praefix_merken($praefix) {
+    $praefix = trim((string) $praefix);
+    if ($praefix === '' || strlen($praefix) > 64 || preg_match('/[#+\s]/', $praefix)
+        || !preg_match('#^[A-Za-z0-9_/-]+\z#', $praefix)) {
+        return false;
+    }
+    $l = spot_mqtt_praefixe_gemerkt();
+    if (in_array($praefix, $l, true)) {
+        return true;
+    }
+    $l[] = $praefix;
+    spot_datadir();
+    return spot_write_atomic(spot_mqtt_praefixe_datei(), json_encode(array_values(array_slice($l, -20))));
 }
 
 function spot_mqtt_senden($prefix, $udpport, $msgs) {
@@ -3365,7 +3852,8 @@ function spot_mqtt_senden($prefix, $udpport, $msgs) {
             @fwrite($strom, 'retain ' . $prefix . '/' . $k . ' ');
         }
         $verb = spot_retain_fuer($k, $wert) ? 'retain' : 'publish';
-        if (@fwrite($strom, $verb . ' ' . $prefix . '/' . $k . ' ' . $wert) !== false) {
+        $sp_dg = $verb . ' ' . $prefix . '/' . $k . ' ' . $wert;
+        if (@fwrite($strom, $sp_dg) === strlen($sp_dg)) {    // Bauart B: ganz geschrieben
             $n++;
         }
     }
@@ -3695,6 +4183,11 @@ function spot_tts_url($text) {
     if ($mode === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
     }
+    if ($mode === 'alexang' || $mode === 'cc4lox') {
+        /* S1: die feste Adresse ohne Token; '' heisst "kein Sprechtoken hinterlegt". */
+        $z = spot_sprech_ziel($mode, $cfg);
+        return $z['token'] === '' ? '' : $z['adresse'];
+    }
     if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
         return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
     }
@@ -3743,19 +4236,211 @@ function spot_tts_url($text) {
 }
 
 function spot_say($text) {
+    $cfg = spot_config();
+    $sp_mode = (string) $cfg['tts']['mode'];
+    if ($sp_mode === 'alexang' || $sp_mode === 'cc4lox') {
+        // S1: ueber den gemeinsamen Ruf-Teil; vom Text nur die Laenge ins Protokoll.
+        return spot_sprechen_an(spot_sprech_ziel($sp_mode, $cfg), $text);
+    }
     $url = spot_tts_url($text);
     if ($url === null) {
+        spot_ansage_letzte('AUDIOSERVER');
         spot_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
         return false;
     }
     if ($url === '') {
+        spot_ansage_letzte('KEINE_IP');
         spot_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
         return false;
     }
     $ctx = stream_context_create(array('http' => array('timeout' => 10)));
     $r = @file_get_contents($url, false, $ctx);
+    spot_ansage_letzte($r !== false ? 'OK' : 'FEHLER');
     spot_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
     return $r !== false;
+}
+
+/* ---- Ausgabearten Alexa-NG und Google-Lautsprecher (S1, 01.10.2026) ----
+ *
+ * Alexa-NG (https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG) und
+ * Chromecast 4 Lox NG (https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox,
+ * ab der Fassung mit "Sprachausgabe fuer andere Plugins") nehmen Ansagen mit
+ * DERSELBEN Schnittstelle an: POST aktion=sprechen, token, geraet, laut, text;
+ * Antwort eine Zeile SPRECHEN;OK=1;...;GRUND=... Verschieden sind nur der
+ * Ordner, die Geraetenamen und das Sprechtoken (je eines, im jeweiligen Plugin
+ * festgelegt). Beide Wege gehen an 127.0.0.1 mit dem Webport dieses LoxBerry,
+ * ohne Proxy und ohne einer Umleitung zu folgen; das Token steht nur im
+ * Koerper - nie in einer Adresse, im Protokoll, in der Antwort an Loxone, in der
+ * Einmalmeldung oder in der Sicherung. Vom Ansagetext steht nur die Laenge im
+ * Protokoll. Ab Werk ist keine der beiden Arten gewaehlt. */
+
+/** Form eines Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (Chromecast 4 Lox NG verlangt selbst 16). */
+function spot_sprech_token_ok($t) {
+    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+}
+
+/** Port des Webservers dieses LoxBerry (general.json Webserver/WEBSERVER -> Port), sonst 80. */
+function spot_webport() {
+    $p = spot_paths();
+    $port = 80;
+    if ($p['lbhome'] !== '') {
+        $g = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+        foreach (array('Webserver', 'WEBSERVER') as $ab) {
+            if (isset($g[$ab]['Port']) && is_scalar($g[$ab]['Port'])
+                && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
+                $port = (int) $g[$ab]['Port'];
+                break;
+            }
+        }
+    }
+    return $port;
+}
+
+/** Die Angaben des gemeinsamen Ruf-Teils fuer eine der beiden Arten. */
+function spot_sprech_ziel($art, $cfg = null) {
+    if ($cfg === null) {
+        $cfg = spot_config();
+    }
+    $t = $cfg['tts'];
+    if ($art === 'cc4lox') {
+        return array('name' => 'Chromecast 4 Lox NG',
+                     'adresse' => 'http://127.0.0.1:' . spot_webport() . '/plugins/chromecast-4lox-ng/index.php',
+                     'token' => (string) $t['google_token'], 'geraet' => (string) $t['google_geraet'],
+                     'laut' => (int) $t['google_laut'], 'fehlt' => 'TEXT.SPRECH_GOOGLE_FEHLT');
+    }
+    return array('name' => 'Alexa-NG',
+                 'adresse' => 'http://127.0.0.1:' . spot_webport() . '/plugins/alexang/index.php',
+                 'token' => (string) $t['alexa_token'], 'geraet' => (string) $t['alexa_geraet'],
+                 'laut' => -1, 'fehlt' => 'TEXT.SPRECH_ALEXA_FEHLT');
+}
+
+/** Ergebnis der letzten Ansage dieses Aufrufs (fuer die Testansage) - nie mit Token oder Text. */
+function spot_ansage_letzte($setzen = null) {
+    static $letzte = '';
+    if ($setzen !== null) {
+        $letzte = (string) $setzen;
+    }
+    return $letzte;
+}
+
+/**
+ * POST an einen Endpunkt auf DIESEM LoxBerry: ohne Proxy, ohne Umleitung,
+ * 3 s Verbindungsfrist, $zeit s gesamt. Rueckgabe array('code' => HTTP-Code oder
+ * 0, 'body' => Rumpf, 'fehler' => '' | ZEIT | VERBINDUNG).
+ */
+function spot_http_lokal($url, array $felder, $zeit = 10) {
+    $rumpf = http_build_query($felder, '', '&');
+    $erg = array('code' => 0, 'body' => '', 'fehler' => '');
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $rumpf);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/x-www-form-urlencoded'));
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+        curl_setopt($ch, CURLOPT_TIMEOUT, (int) $zeit);
+        curl_setopt($ch, CURLOPT_NOPROXY, '127.0.0.1');
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+        $b = curl_exec($ch);
+        $nr = curl_errno($ch);
+        $erg['code'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+        if ($b === false) {
+            $erg['fehler'] = ($nr === 28) ? 'ZEIT' : 'VERBINDUNG';
+            $erg['code'] = 0;
+            return $erg;
+        }
+        $erg['body'] = (string) $b;
+        return $erg;
+    }
+    $ctx = stream_context_create(array('http' => array(
+        'method' => 'POST', 'header' => 'Content-Type: application/x-www-form-urlencoded',
+        'content' => $rumpf, 'timeout' => (int) $zeit, 'ignore_errors' => true, 'follow_location' => 0)));
+    $t0 = microtime(true);
+    $fh = @fopen($url, 'rb', false, $ctx);
+    if ($fh === false) {
+        $erg['fehler'] = (microtime(true) - $t0 >= (int) $zeit - 0.5) ? 'ZEIT' : 'VERBINDUNG';
+        return $erg;
+    }
+    $meta = @stream_get_meta_data($fh);
+    $b = @stream_get_contents($fh, 65536);
+    @fclose($fh);
+    foreach ((is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) ? $meta['wrapper_data'] : array() as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $erg['code'] = (int) $m[1];
+        }
+    }
+    $erg['body'] = $b === false ? '' : (string) $b;
+    return $erg;
+}
+
+/**
+ * Antwort eines Sprech-Endpunkts bewerten: array(ok, Text fuer Protokoll und
+ * Anzeige). Gesendet ist nur HTTP 200 UND eine Zeile, die mit "<KOPF>;OK=1"
+ * beginnt (UNVERAENDERT und TEXT_NULL zaehlen als gesendet). 404 ohne GRUND
+ * kommt vom Webserver selbst: das andere Plugin fehlt oder ist zu alt.
+ */
+function spot_sprechen_bewerten(array $r, $tok, $kopf, array $z) {
+    $rumpf = trim(str_replace((string) $tok, '***', (string) $r['body']));
+    $zeile = (string) strtok($rumpf, "\n");
+    $grund = preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})/', $zeile, $m) ? $m[1] : '';
+    if ((int) $r['code'] === 200 && strpos($zeile, $kopf . ';OK=1') === 0) {
+        return array(true, 'HTTP 200' . ($grund !== '' ? ', GRUND=' . $grund : ''));
+    }
+    if ((int) $r['code'] === 0) {
+        return array(false, spot_t($r['fehler'] === 'ZEIT' ? 'TEXT.SPRECH_ZEIT' : 'TEXT.SPRECH_VERBINDUNG'));
+    }
+    $was = 'HTTP ' . (int) $r['code'] . ($grund !== '' ? ', GRUND=' . $grund : '');
+    if ($grund === '' && (int) $r['code'] === 404) {
+        return array(false, spot_t($z['fehlt']) . ' (' . $was . ')');
+    }
+    return array(false, $was);
+}
+
+/** Eine Ansage ueber Alexa-NG oder Chromecast 4 Lox NG. Rueckgabe true nur bei Erfolg. */
+function spot_sprechen_an(array $z, $text) {
+    $tok = (string) $z['token'];
+    if ($tok === '') {
+        spot_ansage_letzte(spot_t('TEXT.SPRECH_KEIN_TOKEN'));
+        spot_log('Ansage uebersprungen: Ausgabeart ' . $z['name'] . ', aber kein Sprechtoken hinterlegt');
+        return false;
+    }
+    $f = array('aktion' => 'sprechen', 'token' => $tok);
+    if ((string) $z['geraet'] !== '') {
+        $f['geraet'] = (string) $z['geraet'];
+    }
+    if ((int) $z['laut'] >= 0 && (int) $z['laut'] <= 100) {
+        $f['laut'] = (int) $z['laut'];
+    }
+    $f['text'] = (string) $text;
+    list($ok, $was) = spot_sprechen_bewerten(spot_http_lokal($z['adresse'], $f, 10), $tok, 'SPRECHEN', $z);
+    spot_ansage_letzte($was);
+    $wo = array();
+    if (isset($f['geraet'])) { $wo[] = 'Geraet ' . $f['geraet']; }
+    if (isset($f['laut'])) { $wo[] = 'Lautstaerke ' . $f['laut']; }
+    $laenge = preg_match_all('/./us', (string) $text);
+    spot_log('Ansage an ' . $z['name'] . ($wo ? ' (' . implode(', ', $wo) . ')' : '') . ': '
+        . (int) $laenge . ' Zeichen -> ' . ($ok ? 'OK, ' : 'FEHLER, ') . $was);
+    return $ok;
+}
+
+/** Selbsttest gegen Alexa-NG / Chromecast 4 Lox NG: POST selftest=1 - prueft nur das Token, spricht nichts. */
+function spot_sprech_selbsttest($art) {
+    $z = spot_sprech_ziel($art);
+    if ($z['token'] === '') {
+        return array(0, sprintf(spot_t('PRUEFTEXT.SPRECH_KEIN_TOKEN'), $z['name']));
+    }
+    $r = spot_http_lokal($z['adresse'], array('selftest' => '1', 'token' => $z['token']), 10);
+    list($ok, $was) = spot_sprechen_bewerten($r, $z['token'], 'SELFTEST', $z);
+    if (!$ok) {
+        return array(0, sprintf(spot_t('PRUEFTEXT.SPRECH_NEIN'), $z['name'], $was));
+    }
+    $zeile = (string) strtok(trim((string) $r['body']), "\n");
+    $hinweis = array();
+    if (preg_match('/;SPRECHEN=0(;|$)/', $zeile)) { $hinweis[] = spot_t('PRUEFTEXT.SPRECH_AUS'); }
+    if (preg_match('/;DIENST=0(;|$)/', $zeile)) { $hinweis[] = spot_t('PRUEFTEXT.SPRECH_DIENST'); }
+    return array($hinweis ? 0 : 1, sprintf(spot_t('PRUEFTEXT.SPRECH_JA'), $z['name'], $was)
+        . ($hinweis ? ' ' . implode(' ', $hinweis) : ''));
 }
 
 /**
@@ -4096,6 +4781,218 @@ function spot_t($schluessel)
 }
 
 
+/* ==================================================================
+ * Wertpruefung - EINE Stelle fuer Formular, Zurueckspielen und Sichern
+ * (C4, Durchgang 01.10.2026; Regeln/04 "Eine Grenze steht genau einmal",
+ * Regeln/05 "Jeder Wert der Sicherungsdatei wird geprueft")
+ *
+ * Bis 1.2.31 standen die Grenzen nur in index.php - dort wurden sie beim
+ * Speichern STILL geklemmt (Nr. 19 verlangt seit 01.10.2026: beanstanden) -,
+ * und das Zurueckspielen pruefte gar nichts. spot_config_normalisieren()
+ * kappt weiterhin, was schon in einer Datei steht, damit das Plugin daran
+ * nicht stirbt; geprueft wird HIER.
+ *
+ * Arten: zahl (int/float, endlich), ganz (int oder ganzzahliger float),
+ * schalter (0/1), wahl (eine der Moeglichkeiten), text (Laenge in Zeichen,
+ * keine Steuerzeichen, kein Leerraum am Rand, wahlweise verbotene Zeichen),
+ * adresse ('' oder http/https), thema (MQTT-Praefix), monate, stunden.
+ * ================================================================== */
+
+/** Die Schranken je Schluessel; Unterschluessel als 'regel.<k>', 'tts.<k>', 'notify.<k>'. */
+function spot_schranken() {
+    $text_feld = array('text', 0, 200, '/["\']/');
+    return array(
+        'market' => array('wahl', array('de', 'at')),
+        'netz' => array('zahl', 0, 50), 'steuer' => array('zahl', 0, 20),
+        'konzession' => array('zahl', 0, 20), 'umlagen' => array('zahl', 0, 20),
+        'aufschlag' => array('zahl', -10, 30), 'grundpreis' => array('zahl', 0, 100),
+        'vat' => array('zahl', 0, 30), 'cheap' => array('zahl', 0, 200), 'expensive' => array('zahl', 0, 400),
+        'window' => array('ganz', 1, 12),
+        'wp_enabled' => array('schalter'), 'wp_name' => array('text', 1, 100, ''),
+        'wp_netz' => array('zahl', 0, 50), 'wp_konzession' => array('zahl', 0, 20),
+        'co2_enabled' => array('schalter'), 'co2_clean' => array('zahl', 0, 1000),
+        'fixed_price' => array('zahl', 0, 200), 'fix_grund' => array('zahl', 0, 500),
+        'fix_sofortbonus' => array('zahl', 0, 5000), 'fix_neubonus' => array('zahl', 0, 5000),
+        'fix_neubonus_pct' => array('zahl', 0, 100), 'fix_rabatt' => array('zahl', 0, 100),
+        // Mit gepflegten Monaten ist der Jahresverbrauch deren Summe (hoechstens 12 x 20000).
+        'consumption' => array('ganz', 100, 240000), 'months' => array('monate', 0, 20000),
+        'shift_kwh' => array('zahl', 0, 100),
+        'marstek_enabled' => array('schalter'), 'marstek_url' => array('adresse'),
+        'marstek_hours' => array('ganz', 1, 12), 'marstek_power' => array('ganz', 100, 10000),
+        'marstek_neg' => array('schalter'), 'marstek_fremd_beanstanden' => array('schalter'),
+        'profil_ein' => array('wahl', array('aus', 'absolut', 'relativ', 'beides')),
+        'mqtt_enabled' => array('schalter'), 'mqtt_topic' => array('thema'),
+        'pv_quelle' => array('wahl', array('', 'forecast_solar', 'objekt', 'liste')),
+        'pv_url' => array('adresse'), 'pv_pfad' => $text_feld, 'pv_zeitfeld' => $text_feld,
+        'pv_wertfeld' => $text_feld, 'pv_einheit' => array('wahl', array('wh', 'w', 'kw')),
+        'soc_url' => array('adresse'), 'soc_pfad' => $text_feld,
+        'last_quelle' => array('wahl', array('', 'objekt', 'liste')), 'last_url' => array('adresse'),
+        'last_pfad' => $text_feld, 'last_zeitfeld' => $text_feld, 'last_wertfeld' => $text_feld,
+        'last_einheit' => array('wahl', array('kwh', 'wh', 'w', 'kw')),
+        'hysterese' => array('schalter'),
+        'budget_kw' => array('zahl', 0, 200), 'pv_bonus' => array('zahl', 0, 100),
+        'pv_schwelle' => array('ganz', 1, 100000), 'budget2_kw' => array('zahl', 0, 200),
+        'budget2_von' => array('ganz', 0, 23), 'budget2_bis' => array('ganz', 0, 23),
+        // Schaltregeln (je Regel)
+        'regel.aktiv' => array('schalter'), 'regel.name' => array('text', 0, 100, '/"/'),
+        'regel.art' => array('wahl', array('fenster', 'stunden', 'schwelle', 'mittel')),
+        'regel.n' => array('ganz', 1, 12), 'regel.von' => array('ganz', 0, 23), 'regel.bis' => array('ganz', 0, 23),
+        'regel.horizont' => array('ganz', 1, 48), 'regel.schwelle' => array('zahl', -100, 200),
+        'regel.prozent' => array('ganz', 0, 90), 'regel.neg' => array('schalter'),
+        'regel.rang' => array('ganz', 1, 99), 'regel.leistung' => array('zahl', 0, 100),
+        'regel.energie' => array('zahl', 0, 500), 'regel.frist' => array('ganz', -1, 23),
+        'regel.pv_sperre' => array('zahl', 0, 500), 'regel.soc_min' => array('ganz', 0, 100),
+        'regel.soc_max' => array('ganz', 0, 100), 'regel.min_lauf' => array('ganz', 0, 720),
+        'regel.min_pause' => array('ganz', 0, 720),
+        // Meldungen
+        'notify.audio' => array('schalter'), 'notify.push' => array('schalter'),
+        'notify.only_cheap' => array('schalter'), 'notify.negative' => array('schalter'),
+        'notify.tomorrow' => array('schalter'), 'notify.hours' => array('stunden'),
+        // Sprachausgabe
+        'tts.mode' => array('wahl', array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox')),
+        'tts.ip' => array('text', 0, 253, '/[^A-Za-z0-9.:\[\]\-]/'), 'tts.port' => array('ganz', 1, 65535),
+        'tts.zones' => array('text', 0, 100, '/[^0-9~, ]/'), 'tts.volume' => array('ganz', 1, 100),
+        'tts.lang' => array('text', 2, 2, '/[^a-z]/'), 'tts.template' => array('text', 0, 1000, ''),
+        'tts.alexa_geraet' => array('text', 0, 200, ''), 'tts.google_geraet' => array('text', 0, 200, ''),
+        'tts.google_laut' => array('ganz', -1, 100),
+    );
+}
+
+/** Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt (aeltere Sicherungen tragen sie nicht). */
+function spot_sicherung_neue_schluessel() {
+    return array('marstek_fremd_beanstanden');
+}
+
+/** Ein Wert gegen seine Schranke. Rueckgabe null (in Ordnung) oder array(Kennwort[, a, b]). */
+function spot_wert_gegen($w, $s) {
+    switch ($s[0]) {
+        case 'zahl':
+            if (!(is_int($w) || is_float($w)) || !is_finite((float) $w)) { return array('ZAHL'); }
+            return ((float) $w < $s[1] || (float) $w > $s[2]) ? array('BEREICH', $s[1], $s[2]) : null;
+        case 'ganz':
+            if (is_float($w) && is_finite($w) && floor($w) == $w && abs($w) < 1e9) { $w = (int) $w; }
+            if (!is_int($w)) { return array('GANZ'); }
+            return ($w < $s[1] || $w > $s[2]) ? array('BEREICH', $s[1], $s[2]) : null;
+        case 'schalter':
+            return in_array($w, array(0, 1, true, false), true) ? null : array('SCHALTER');
+        case 'wahl':
+            return (is_string($w) && in_array($w, $s[1], true)) ? null
+                : array('WAHL', implode(', ', array_map(function ($x) { return $x === '' ? '-' : $x; }, $s[1])));
+        case 'text':
+            if (!is_string($w)) { return array('TYP'); }
+            if (preg_match('//u', $w) !== 1) { return array('UTF8'); }
+            if (preg_match('/[\x00-\x1F\x7F]/', $w)) { return array('STEUERZEICHEN'); }
+            if ($w !== trim($w)) { return array('RAND'); }
+            $l = preg_match_all('/./us', $w);
+            if ($l === 0 && $s[1] > 0) { return array('LEER'); }
+            if ($l < $s[1] || $l > $s[2]) { return array('LAENGE', $s[1], $s[2]); }
+            if (isset($s[3]) && $s[3] !== '' && preg_match($s[3], $w)) { return array('ZEICHEN'); }
+            return null;
+        case 'adresse':
+            if (!is_string($w)) { return array('TYP'); }
+            if ($w === '') { return null; }
+            return (preg_match('/[\x00-\x20\x7F"\']/', $w) || !spot_url_ok($w)) ? array('ADRESSE') : null;
+        case 'thema':
+            if (!is_string($w)) { return array('TYP'); }
+            if ($w === '') { return array('LEER'); }
+            return (strlen($w) > 64 || !preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*\z#', $w)) ? array('THEMA') : null;
+        case 'monate':
+            if (!is_array($w) || count($w) > 12 || ($w && array_keys($w) !== range(0, count($w) - 1))) {
+                return array('MONATE');
+            }
+            foreach ($w as $m) {
+                $x = spot_wert_gegen($m, array('zahl', $s[1], $s[2]));
+                if ($x !== null) { return $x; }
+            }
+            return null;
+        case 'stunden':
+            if (!is_array($w) || count($w) > 24 || ($w && array_keys($w) !== range(0, count($w) - 1))) {
+                return array('STUNDEN');
+            }
+            foreach ($w as $h) {
+                if (!is_int($h) || $h < 0 || $h > 23) { return array('STUNDEN'); }
+            }
+            return count(array_unique($w)) !== count($w) ? array('DOPPELT') : null;
+    }
+    return array('TYP');
+}
+
+/**
+ * Einen Schluessel der Konfiguration pruefen - mit seinen Unterschluesseln
+ * (regeln, notify, tts). Rueckgabe: Liste array(Name, Mangel), leer = in Ordnung.
+ * Die Token-Schluessel prueft der Aufrufer (spot_sicherung_lesen()); die
+ * Sprechtoken in tts duerfen nur leer dastehen.
+ */
+function spot_wert_mangel($k, $w) {
+    $s = spot_schranken();
+    $aus = array();
+    if ($k === 'regeln') {
+        if (!is_array($w) || count($w) > SPOT_REGELN || ($w && array_keys($w) !== range(0, count($w) - 1))) {
+            return array(array('regeln', array('TYP')));
+        }
+        $bekannt = array_keys(spot_regel_vorgabe());
+        foreach ($w as $i => $r) {
+            if (!is_array($r)) { $aus[] = array('regeln.' . $i, array('TYP')); continue; }
+            foreach ($r as $rk => $rw) {
+                $rk = (string) $rk;
+                if (!in_array($rk, $bekannt, true)) { $aus[] = array('regeln.' . $i . '.' . $rk, array('FREMD')); continue; }
+                $m = spot_wert_gegen($rw, $s['regel.' . $rk]);
+                if ($m !== null) { $aus[] = array('regeln.' . $i . '.' . $rk, $m); }
+            }
+        }
+        return $aus;
+    }
+    if ($k === 'notify' || $k === 'tts') {
+        if (!is_array($w) || ($w && array_keys($w) === range(0, count($w) - 1))) {
+            return array(array($k, array('TYP')));
+        }
+        foreach ($w as $uk => $uw) {
+            $uk = (string) $uk;
+            if ($k === 'tts' && in_array($uk, array('alexa_token', 'google_token'), true)) {
+                if ($uw !== '') { $aus[] = array('tts.' . $uk, array('SPRECHTOKEN')); }
+                continue;
+            }
+            if (!isset($s[$k . '.' . $uk])) { $aus[] = array($k . '.' . $uk, array('FREMD')); continue; }
+            $m = spot_wert_gegen($uw, $s[$k . '.' . $uk]);
+            if ($m !== null) { $aus[] = array($k . '.' . $uk, $m); }
+        }
+        return $aus;
+    }
+    if (!isset($s[$k])) {
+        return array();
+    }
+    $m = spot_wert_gegen($w, $s[$k]);
+    return $m === null ? array() : array(array($k, $m));
+}
+
+/** Alle Maengel einer ganzen Konfiguration (X-3) - nur die Namen. */
+function spot_konfig_mangel(array $daten) {
+    $namen = array();
+    foreach ($daten as $k => $w) {
+        if ($k === '' || $k[0] === '_' || in_array($k, array('token', 'marstek_token'), true)) {
+            continue;
+        }
+        foreach (spot_wert_mangel((string) $k, $w) as $x) {
+            $namen[] = $x[0];
+        }
+    }
+    return $namen;
+}
+
+/** Der Grund eines Mangels als Satzteil (Sprachdatei, Abschnitt WERT). */
+function spot_wert_text($m) {
+    $k = isset($m[0]) ? (string) $m[0] : 'TYP';
+    $t = spot_t('WERT.' . $k);
+    if ($k === 'BEREICH' || $k === 'LAENGE') {
+        $f = function ($z) { return rtrim(rtrim(sprintf('%.3f', (float) $z), '0'), '.'); };
+        return sprintf($t, $f($m[1]), $f($m[2]));
+    }
+    if ($k === 'WAHL') {
+        return sprintf($t, $m[1]);
+    }
+    return $t;
+}
+
 /**
  * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
  *
@@ -4166,8 +5063,23 @@ function spot_sicherung_lesen($roh)
             continue;
         }
         if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(spot_t('TEXT.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            /* O7: hier NICHT maskieren - die Oberflaeche gibt die Meldung mit
+             * sp_e() aus. Bis 1.2.31 stand hier htmlspecialchars(), und der
+             * Anwender las "x&lt;b&gt;&amp;y" statt "x<b>&y". */
+            $mangel[] = sprintf(spot_t('TEXT.SICH_FREMD'), (string) $k);
+            continue;
+        }
+        /* C4 (Pruefbericht code, Befund 7; oberflaeche, Befund 8): JEDER Wert
+         * mit derselben Pruefung wie das Formular - Typ, Bereich, Liste. Bis
+         * 1.2.31 ging hier alles ausser dem Token ungeprueft durch: mqtt_topic
+         * als Liste machte das Praefix zu "Array", marstek_hours 99 liess die
+         * Kopplung in jeder Stunde laden. Genannt wird nur der Name und der
+         * Grund, nie der Wert. */
+        $sp_wm = spot_wert_mangel((string) $k, $w);
+        if ($sp_wm) {
+            foreach ($sp_wm as $sp_x) {
+                $mangel[] = sprintf(spot_t('TEXT.SICH_WERT'), $sp_x[0], spot_wert_text($sp_x[1]));
+            }
             continue;
         }
         $neu[$k] = $w;
@@ -4196,18 +5108,29 @@ function spot_sicherung_lesen($roh)
     $fehlend = array();
     foreach (array_keys(spot_vorgaben()) as $fk) {
         // marstek_token steht nie in einer Sicherung - sein Fehlen ist richtig.
-        if ($fk !== 'marstek_token' && !array_key_exists($fk, $daten)) {
+        // Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt, fehlen in
+        // jeder aelteren Sicherung; sie sind ab Werk aus und gelten dann so.
+        if ($fk !== 'marstek_token' && !in_array($fk, spot_sicherung_neue_schluessel(), true)
+            && !array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
     }
     if ($fehlend) {
-        $mangel[] = sprintf(spot_t('TEXT.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+        // O7: ohne htmlspecialchars - die Ausgabe maskiert (sp_e()).
+        $mangel[] = sprintf(spot_t('TEXT.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
     }
     /* Zurueckspielen behaelt das geltende Marstek-Token (Energie-1 C2): die
      * Datei traegt keines, und die Vorgabe '' haette es sonst still geloescht. */
     $sp_jetzt = spot_config();
     $neu['marstek_token'] = isset($sp_jetzt['marstek_token']) ? (string) $sp_jetzt['marstek_token'] : '';
+    /* S1: ebenso die beiden Sprechtoken (Alexa-NG, Chromecast 4 Lox NG). Eine
+     * Datei MIT Token hat spot_wert_mangel() schon abgewiesen. */
+    if (isset($neu['tts']) && is_array($neu['tts'])) {
+        foreach (array('alexa_token', 'google_token') as $sp_tk) {
+            $neu['tts'][$sp_tk] = (isset($sp_jetzt['tts'][$sp_tk]) && is_string($sp_jetzt['tts'][$sp_tk]))
+                ? $sp_jetzt['tts'][$sp_tk] : '';
+        }
+    }
     // Ein leeres Token in der Datei laesst das geltende stehen (Klasse 12).
     if (!$sp_tok_aus_datei) {
         $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
@@ -4249,7 +5172,9 @@ function spot_sicherung_schreiben()
         '_hinweis' => 'Spotpreis aWATTar - gesicherte Einstellungen.'
                     . ' ENTHAELT DEN AKTIONSTOKEN DES ENDPUNKTS -'
                     . ' wie ein Passwort behandeln, nicht in ein Forum haengen'
-                    . ' und nicht an einen Fehlerbericht heften.',
+                    . ' und nicht an einen Fehlerbericht heften.'
+                    . ' Nicht darin: das Marstek-Token und die Sprechtoken fuer Alexa-NG'
+                    . ' und Chromecast 4 Lox NG - sie bleiben beim Zurueckspielen, wie sie sind.',
         '_stand'   => date('Y-m-d H:i:s'),
         '_fassung' => spot_fassung(),
     );
@@ -4272,6 +5197,24 @@ function spot_sicherung_schreiben()
     }
     if ($sp_mu_tok) {
         $daten['marstek_url'] = spot_marstek_url_ohne_token($sp_mu);
+    }
+    /* S1: die Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG kommen nie in
+     * die Datei - wie das Marstek-Token. Sie werden beim Umzug im jeweiligen
+     * Plugin abgelesen. */
+    if (isset($daten['tts']) && is_array($daten['tts'])) {
+        unset($daten['tts']['alexa_token'], $daten['tts']['google_token']);
+    }
+    /* X-3 (Pruefbericht oberflaeche, Befund 11): was das Zurueckspielen
+     * abweisen wuerde, sagt die Datei schon beim Sichern - nur mit Namen, nie
+     * mit Werten. Bis 1.2.31 warnte nur die Marstek-Adresse. */
+    $sp_x3 = spot_konfig_mangel($daten);
+    if (isset($cfg['token']) && $cfg['token'] !== '' && !spot_endpunkt_token_form_ok($cfg['token'])) {
+        array_unshift($sp_x3, 'token');
+    }
+    if ($sp_x3) {
+        $daten['_warnung'] = (isset($daten['_warnung']) ? $daten['_warnung'] . ' ' : '')
+            . 'Diese Werte wuerde das Zurueckspielen abweisen: ' . implode(', ', $sp_x3)
+            . '. Bitte in den Einstellungen berichtigen und neu sichern.';
     }
     $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($js === false) {
@@ -4464,7 +5407,7 @@ function spot_selbsttest($endpunkt_pruefen = false)
     if ($sk !== null && $sk[1]) {
         $sp_text .= ' ' . sprintf(spot_t('PRUEFTEXT.KONFIG_FREMD'), count($sk[1]), implode(', ', $sk[1]));
     }
-    $add('PRUEF.KONFIG', $lage === 'kaputt' ? 0 : ($lage === 'ok' ? 1 : 2), $sp_text);
+    $add('PRUEF.KONFIG', in_array($lage, array('kaputt', 'zweit_kaputt'), true) ? 0 : ($lage === 'ok' ? 1 : 2), $sp_text);
 
     // Marktdaten. Ohne sie ist jede Zahl darunter eine Null, und das hat
     // dann nichts mit der Einrichtung zu tun.
@@ -4570,6 +5513,10 @@ function spot_selbsttest($endpunkt_pruefen = false)
     $add('PRUEF.FELDER', $fehlt ? 0 : 1,
         $fehlt ? sprintf(spot_t('PRUEFTEXT.FELDER_FEHLT'), implode(', ', array_slice($fehlt, 0, 8)))
                : sprintf(spot_t('PRUEFTEXT.FELDER_OK'), count(spot_felder())));
+    /* O9: die Themenliste des Reiters MQTT gegen die Sendemenge, in beide
+     * Richtungen (spot_mqtt_liste_pruefen()). */
+    list($sp_ml_ok, $sp_ml_text) = spot_mqtt_liste_pruefen($st);
+    $add('PRUEF.MQTT_LISTE', $sp_ml_ok, $sp_ml_text);
 
     // Ist die Loxone-Vorlage wohlgeformt? Eine kaputte Vorlage merkt der
     // Anwender sonst erst in Loxone Config - und sucht den Fehler bei sich.
@@ -4725,6 +5672,19 @@ function spot_selbsttest($endpunkt_pruefen = false)
         list($sp_mok, $sp_mtext) = spot_marstek_pruefen($endpunkt_pruefen);
         $add('PRUEF.MARSTEK', $sp_mok, $sp_mtext);
     }
+    /* S1: Antwortet Alexa-NG bzw. Chromecast 4 Lox NG, passt das Sprechtoken? Nur
+     * mit einer dieser Ausgabearten, und gefragt wird nur auf den Knopf (wie der
+     * eigene Endpunkt) - sonst kostete ein haengender Dienst jeden Seitenaufbau. */
+    $sp_tm = (string) $cfg['tts']['mode'];
+    if ($sp_tm === 'alexang' || $sp_tm === 'cc4lox') {
+        if ($endpunkt_pruefen) {
+            list($sp_sok, $sp_stext) = spot_sprech_selbsttest($sp_tm);
+        } else {
+            $sp_sok = 2;
+            $sp_stext = sprintf(spot_t('PRUEFTEXT.SPRECH_KNOPF'), spot_sprech_ziel($sp_tm, $cfg)['name']);
+        }
+        $add('PRUEF.SPRECHEN', $sp_sok, $sp_stext);
+    }
     return $z;
 }
 
@@ -4755,6 +5715,284 @@ function spot_oberflaeche_datei()
         }
     }
     return '';
+}
+
+/* ==================================================================
+ * Einmalmeldung (O2, PRG) - Bauform oc_meldung_ablegen() (Octopus 1.1.16)
+ *
+ * Jeder POST der Oberflaeche endet mit einer Umleitung (303). Das Ergebnis
+ * reist in dieser Datei (Datenordner, 0600, 120 s gueltig) und wird nur beim
+ * GET gelesen - und dabei geloescht. Aktionstoken, Marstek-Token, die
+ * Sprechtoken und das Formularmerkmal stehen darin nie im Klartext. Bis 1.2.31
+ * lieferte jeder POST die Seite direkt (Pruefbericht oberflaeche, Befunde 2/3):
+ * F5 wiederholte das Speichern und wuerfelte das Token neu.
+ * ================================================================== */
+function spot_meldung_datei() {
+    return spot_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function spot_meldung_ablegen(array $daten) {
+    $daten['zeit'] = time();
+    $c = spot_config(false);
+    $geheim = array();
+    foreach (array($c['token'], $c['marstek_token'], $c['tts']['alexa_token'], $c['tts']['google_token'],
+                   spot_formtoken()) as $g) {
+        if (is_string($g) && $g !== '') {
+            $geheim[] = $g;
+        }
+    }
+    array_walk_recursive($daten, function (&$w) use ($geheim) {
+        if (is_string($w)) {
+            foreach ($geheim as $g) {
+                $w = str_replace($g, '***', $w);
+            }
+        }
+    });
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    spot_datadir();
+    return is_string($js) && spot_geheim_schreiben(spot_meldung_datei(), $js);
+}
+
+function spot_meldung_abholen() {
+    $f = spot_meldung_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);                         // loeschen VOR der Anzeige
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    return $d;
+}
+
+/* ==================================================================
+ * Eingaben nach einer Beanstandung (X-2, Regeln/04) - Bauform
+ * oc_eingaben_*() (Octopus 1.1.18), hier zusaetzlich mit <textarea>.
+ *
+ * Nach der Umleitung zeigte der GET sonst die GESPEICHERTEN Werte: wer zehn
+ * Felder richtig und eines falsch eingab, tippte alle elf neu (Pruefbericht
+ * oberflaeche, Befund 4). Die Eingaben DIESES Formulars reisen mit der
+ * Einmalmeldung; nie ein Token (die Kennwortfelder bleiben leer) und nie
+ * Formularmerkmal oder Reiter. Eingesetzt wird am fertigen HTML des Formulars.
+ * ================================================================== */
+
+/** Die Formulare (Name des versteckten Merkmalfeldes) und was in ihnen NIE zurueckreist. */
+function spot_eingaben_formulare() {
+    return array(
+        'save'      => array('marstek_token', 'marstek_token_weg', 'tts_alexa_token', 'tts_alexa_token_weg',
+                             'tts_google_token', 'tts_google_token_weg'),
+        'mqtt_save' => array(),
+    );
+}
+
+/** Felder, die als Liste name[] abgeschickt werden (Stundenhaken). */
+function spot_eingaben_listen() {
+    return array('hours');
+}
+
+/** Taugt der Name als Feldname? name, name[3] oder name[] - sonst nichts. */
+function spot_eingaben_name_ok($k) {
+    return is_string($k) && preg_match('/^[a-z][a-z0-9_]{0,40}(\[[0-9]{1,2}\]|\[\])?$/', $k) === 1;
+}
+
+/** Die Eingaben eines abgewiesenen POST fuer die Einmalmeldung. */
+function spot_eingaben_sammeln($formular, $beanstandet) {
+    $liste = spot_eingaben_formulare();
+    if (!isset($liste[$formular])) {
+        return array();
+    }
+    $nie = array_merge($liste[$formular], array('fmt', 'activetab', 'tab', $formular));
+    $werte = array();
+    foreach ($_POST as $k => $v) {
+        if (!is_string($k) || in_array($k, $nie, true) || count($werte) >= 400) {
+            continue;
+        }
+        if (in_array($k, spot_eingaben_listen(), true)) {
+            $l = array();
+            foreach ((array) $v as $w) {
+                if (!is_array($w)) { $l[] = substr((string) $w, 0, 16); }
+            }
+            $werte[$k . '[]'] = array_slice($l, 0, 48);
+            continue;
+        }
+        if (is_array($v)) {
+            foreach ($v as $i => $w) {
+                $n = $k . '[' . $i . ']';
+                if (!is_array($w) && spot_eingaben_name_ok($n)) { $werte[$n] = substr((string) $w, 0, 1000); }
+            }
+            continue;
+        }
+        if (spot_eingaben_name_ok($k)) {
+            /* Ein Token in der eingetippten Marstek-Adresse reist nicht mit zurueck
+             * (es gehoert ins eigene Feld und nie ins Formular). */
+            $werte[$k] = substr($k === 'marstek_url' ? spot_marstek_url_ohne_token((string) $v) : (string) $v, 0, 1000);
+        }
+    }
+    $felder = array();
+    foreach ((array) $beanstandet as $k) {
+        if (spot_eingaben_name_ok($k) && !in_array($k, $nie, true) && !in_array($k, $felder, true)) { $felder[] = $k; }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Die Eingaben aus der Einmalmeldung - nur, was die Regeln oben zulassen. */
+function spot_eingaben_pruefen($e) {
+    $liste = spot_eingaben_formulare();
+    if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular']) || !isset($liste[$e['formular']])) {
+        return array();
+    }
+    $f = $e['formular'];
+    $nie = array_merge($liste[$f], array('fmt', 'activetab', 'tab', $f));
+    $werte = array();
+    if (isset($e['werte']) && is_array($e['werte'])) {
+        foreach ($e['werte'] as $k => $w) {
+            if (!spot_eingaben_name_ok($k) || in_array($k, $nie, true)) { continue; }
+            if (substr($k, -2) === '[]') {
+                if (is_array($w)) { $werte[$k] = array_values(array_filter($w, 'is_string')); }
+            } elseif (is_string($w)) {
+                $werte[$k] = $w;
+            }
+        }
+    }
+    $felder = array();
+    if (isset($e['felder']) && is_array($e['felder'])) {
+        foreach ($e['felder'] as $k) {
+            if (spot_eingaben_name_ok($k) && !in_array($k, $nie, true)) { $felder[] = $k; }
+        }
+    }
+    return array('formular' => $f, 'werte' => $werte, 'felder' => $felder);
+}
+
+/**
+ * Die Eingaben in das fertige HTML EINES Formulars einsetzen und die
+ * beanstandeten Felder markieren. Gehoeren die Eingaben zu einem anderen
+ * Formular (oder gibt es keine), kommt das HTML unveraendert zurueck. Ein
+ * Haken, der nicht abgeschickt wurde, war nicht gesetzt.
+ */
+function spot_eingaben_einsetzen($html, $formular, $e) {
+    if (!is_array($e) || !isset($e['formular']) || $e['formular'] !== $formular
+        || !isset($e['werte']) || !is_array($e['werte'])) {
+        return $html;
+    }
+    $werte = $e['werte'];
+    $felder = (isset($e['felder']) && is_array($e['felder'])) ? $e['felder'] : array();
+    $nie = spot_eingaben_formulare();
+    $nie = $nie[$formular];
+    $attr = function ($tag, $name) {
+        return preg_match('/\s' . $name . '="([^"]*)"/', $tag, $m) ? html_entity_decode($m[1], ENT_QUOTES, 'UTF-8') : null;
+    };
+    $marke = function ($tag, $name) use ($felder) {
+        if (!in_array($name, $felder, true)) { return $tag; }
+        if (preg_match('/\sclass="/', $tag)) {
+            $tag = preg_replace('/\sclass="/', ' class="sm-beanstandet ', $tag, 1);
+        } else {
+            $tag = preg_replace('/^<([a-z]+)\b/', '<$1 class="sm-beanstandet"', $tag, 1);
+        }
+        return preg_replace('/^<([a-z]+)\b/', '<$1 aria-invalid="true"', $tag, 1);
+    };
+    $wert_setzen = function ($tag, $wert) {
+        $neu = ' value="' . sp_e($wert) . '"';
+        if (preg_match('/\svalue="[^"]*"/', $tag, $m, PREG_OFFSET_CAPTURE)) {
+            return substr_replace($tag, $neu, $m[0][1], strlen($m[0][0]));
+        }
+        return substr($tag, 0, -1) . $neu . '>';
+    };
+    $html = preg_replace_callback('/<input\b[^>]*>/', function ($m) use ($werte, $nie, $attr, $marke, $wert_setzen) {
+        $tag = $m[0];
+        $name = $attr($tag, 'name');
+        if ($name === null || in_array($name, $nie, true)) { return $tag; }
+        $typ = strtolower((string) $attr($tag, 'type'));
+        if ($typ === '') { $typ = 'text'; }
+        if (in_array($typ, array('hidden', 'submit', 'button', 'file', 'password', 'reset', 'image'), true)) {
+            return $marke($tag, $name);
+        }
+        if ($typ === 'checkbox' || $typ === 'radio') {
+            $v = $attr($tag, 'value');
+            $v = ($v === null) ? 'on' : $v;
+            if (substr($name, -2) === '[]') {
+                $an = isset($werte[$name]) && is_array($werte[$name]) && in_array($v, $werte[$name], true);
+            } elseif ($typ === 'radio') {
+                $an = isset($werte[$name]) && $werte[$name] === $v;
+            } else {
+                $an = isset($werte[$name]);
+            }
+            $tag = preg_replace('/\schecked(="[^"]*")?(?=[\s>\/])/', '', $tag);
+            if ($an) { $tag = rtrim(substr($tag, 0, -1)) . ' checked>'; }
+            return $marke($tag, $name);
+        }
+        if (isset($werte[$name]) && is_string($werte[$name])) { $tag = $wert_setzen($tag, $werte[$name]); }
+        return $marke($tag, $name);
+    }, $html);
+    $html = preg_replace_callback('/(<select\b[^>]*>)(.*?)(<\/select>)/s', function ($m) use ($werte, $nie, $attr, $marke) {
+        $name = $attr($m[1], 'name');
+        if ($name === null || in_array($name, $nie, true)) { return $m[0]; }
+        $innen = $m[2];
+        if (isset($werte[$name]) && is_string($werte[$name])) {
+            $soll = $werte[$name];
+            $innen = preg_replace_callback('/<option\b[^>]*>/', function ($o) use ($soll, $attr) {
+                $t = preg_replace('/\sselected(="[^"]*")?(?=[\s>\/])/', '', $o[0]);
+                $v = $attr($t, 'value');
+                return ($v !== null && $v === $soll) ? rtrim(substr($t, 0, -1)) . ' selected>' : $t;
+            }, $innen);
+        }
+        return $marke($m[1], $name) . $innen . $m[3];
+    }, $html);
+    $html = preg_replace_callback('/(<textarea\b[^>]*>)(.*?)(<\/textarea>)/s', function ($m) use ($werte, $nie, $attr, $marke) {
+        $name = $attr($m[1], 'name');
+        if ($name === null || in_array($name, $nie, true)) { return $m[0]; }
+        $innen = (isset($werte[$name]) && is_string($werte[$name])) ? sp_e($werte[$name]) : $m[2];
+        return $marke($m[1], $name) . $innen . $m[3];
+    }, $html);
+    // Oben im Formular ein Satz, warum die Felder nicht den gespeicherten Stand zeigen.
+    $hinweis = '<div class="sm-warnung">' . sp_e(spot_t('TEXT.EINGABEN_ZURUECK')) . '</div>';
+    return preg_replace_callback('/<form\b[^>]*>/', function ($m) use ($hinweis) {
+        return $m[0] . "\n" . $hinweis;
+    }, $html, 1);
+}
+
+/**
+ * O1 (Pruefbericht oberflaeche, Befund 1): Ist jede Reiterflaeche ein Kind des
+ * Reiterbehaelters? Gemessen am GERENDERTEN HTML: die Tiefe der <div>-Schachtelung
+ * am Anfang jeder Flaeche muss gleich sein, und jede Flaeche muss sich schliessen,
+ * bevor die naechste beginnt. Bis 1.2.31 lagen "Kostenvergleich" und "Logdateien"
+ * in der Flaeche "Test" (ein <div class="sm-breit"> ohne Ende) - leer, ausser im
+ * Reiter Test -, und die Pruefzeile meldete einen Haken, weil sie nur die
+ * Namen im Quelltext verglich. Rueckgabe array(0|1|2, Klartext).
+ */
+function spot_flaechen_schachtel($html, array $ids) {
+    $html = preg_replace('/<!--.*?-->|<script\b.*?<\/script>/s', '', (string) $html);
+    $tiefe = 0;
+    $start = array();
+    $offen = array();
+    $in = array();
+    preg_match_all('/<div\b[^>]*>|<\/div>/', $html, $m);
+    foreach ($m[0] as $tag) {
+        if ($tag === '</div>') {
+            $tiefe--;
+            foreach ($offen as $id => $t) {
+                if ($t === $tiefe) { unset($offen[$id]); }
+            }
+            continue;
+        }
+        if (preg_match('/\sid="tab-([a-z0-9_]+)"/', $tag, $i) && in_array($i[1], $ids, true)) {
+            if ($offen) { $in[$i[1]] = implode(', ', array_keys($offen)); }
+            $start[$i[1]] = $tiefe;
+            $offen[$i[1]] = $tiefe;
+        }
+        $tiefe++;
+    }
+    if (!$start) {
+        return array(2, spot_t('PRUEFTEXT.SCHACHTEL_UNKLAR'));
+    }
+    if ($in || $offen || count(array_unique($start)) !== 1 || count($start) !== count($ids)) {
+        $l = array();
+        foreach ($in as $id => $wo) { $l[] = $id . ' in ' . $wo; }
+        foreach ($offen as $id => $t) { $l[] = $id; }
+        return array(0, sprintf(spot_t('PRUEFTEXT.SCHACHTEL_FEHLT'), $l ? implode('; ', array_unique($l)) : '-'));
+    }
+    return array(1, sprintf(spot_t('PRUEFTEXT.SCHACHTEL_OK'), count($start)));
 }
 
 /* Der Escape-Helfer gehoert in die Bibliothek, nicht in

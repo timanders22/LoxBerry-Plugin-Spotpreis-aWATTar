@@ -22,7 +22,12 @@
  * Deinstallation nicht daran scheitern. */
 $spot_leeren = in_array('--mqtt-leeren', isset($argv) ? (array) $argv : array(), true);
 if (!$spot_leeren) {
-    $spot_sperrdatei = sys_get_temp_dir() . '/' . basename(dirname(__DIR__)) . '_cron.lock';
+    /* C3 (Pruefbericht code, Befund 3; installer, I5): basename(__DIR__), wie
+     * der Kommentar darueber es sagt. Bis 1.2.31 stand hier dirname(__DIR__) -
+     * installiert ist das "plugins", die Sperrdatei hiess fuer JEDE Installation
+     * plugins_cron.lock, und zwei Installationen sperrten sich wieder
+     * gegenseitig aus (gemessen: die zweite endete mit rc 0, ohne Laufzaehler). */
+    $spot_sperrdatei = sys_get_temp_dir() . '/' . basename(__DIR__) . '_cron.lock';
     $spot_sperre = @fopen($spot_sperrdatei, 'c');
     if ($spot_sperre === false || !flock($spot_sperre, LOCK_EX | LOCK_NB)) {
         exit(0);
@@ -96,14 +101,30 @@ if ($spot_leeren) {
  * H2). */
 spot_keine_wurzel_abbruch('cron.php');
 
-$st = spot_state();
-
 /* Der Laufzaehler wird als ERSTES weitergedreht - vor allem, was scheitern
  * kann. Er beantwortet die Frage "laeuft der Cron ueberhaupt noch?", und
  * die soll auch dann noch beantwortbar sein, wenn der Abruf bei aWATTar
  * gerade nicht durchgeht. Ein Zaehler, der nur bei Erfolg weiterzaehlt,
- * misst den Erfolg, nicht den Lauf - dafuer gibt es OK. */
+ * misst den Erfolg, nicht den Lauf - dafuer gibt es OK.
+ *
+ * P5 (Pruefbericht code, Befund 6): bis 1.2.31 stand spot_state() - mit den
+ * Abrufen - DAVOR, und der Kommentar sagte das Gegenteil. Gemessen mit einer
+ * Gegenstelle, die jeden Verbindungsaufbau verschluckt: Laufzaehler erst 44 s
+ * nach dem Start geschrieben. */
 spot_lauf_weiter();
+
+/* P4: Ein ?refresh=1 am Endpunkt ruft nicht mehr selbst ab, sondern bestellt
+ * den Abruf hier (Merker im Zwischenspeicher, hoechstens eine Stunde alt). */
+$spot_bestellt = spot_tmpdir() . '/abruf_bestellt';
+$spot_neu_holen = is_file($spot_bestellt) && time() - (int) @filemtime($spot_bestellt) < 3600;
+if (is_file($spot_bestellt)) {
+    @unlink($spot_bestellt);
+}
+$st = spot_state($spot_neu_holen);
+if ($spot_neu_holen) {
+    spot_log('Abruf am Endpunkt bestellt (?refresh=1) - Marktdaten neu abgerufen: heute '
+        . (int) $st['heute']['n'] . ', morgen ' . (int) $st['morgen']['n'] . ' Stunden.');
+}
 
 /* Fehlende Schluessel einmal in die Datei schreiben (Regeln/05). Die
  * Funktion tut nichts, solange nichts fehlt - geschrieben wird also nur beim

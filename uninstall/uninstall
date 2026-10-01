@@ -11,14 +11,18 @@
 #
 # LoxBerry raeumt beim Deinstallieren alle Ordner weg, die dem Plugin
 # gehoeren - bin/, config/, data/, log/, templates/ und die beiden
-# webfrontend-Ordner - und entfernt den Cron-Eintrag. Drei Dinge liegen
+# webfrontend-Ordner - und entfernt den Cron-Eintrag. Vier Dinge liegen
 # aber ausserhalb und blieben sonst liegen:
 #
 #   1. config/plugins/<ordner>.backup.json
 #      Diese Sicherung liegt bewusst NEBEN dem Konfigordner, damit die
-#      Tarifeinstellungen ein Update und sogar eine Neuinstallation
-#      ueberstehen (spot_paths()['backup'], postinstall.sh,
-#      postupgrade.sh). Beim Deinstallieren ist genau das falsch.
+#      Tarifeinstellungen ein Update ueberstehen (spot_paths()['backup'],
+#      postinstall.sh, postupgrade.sh). Eine Neuinstallation uebernimmt sie
+#      nicht: preinstall.sh legt eine liegengebliebene Zweitschrift nach
+#      <ordner>.backup.json.alt (Entscheidung 1 vom 29.09.2026). Bis dahin
+#      stand hier "und sogar eine Neuinstallation"; die Zweitschrift wurde
+#      dabei ohne Meldung eingespielt (Pruefbericht installer, Fall D).
+#      Beim Deinstallieren gehoert sie weg.
 #
 #   2. /tmp/<ordner>
 #      Zwischenspeicher fuer Marktdaten, Ansage-Merker und die
@@ -41,12 +45,25 @@
 #      history.csv - die Preisgeschichte, keine Zugangsdaten, aber sie
 #      gehoert nach dem Entfernen nicht mehr auf die Karte.
 #
+#   4. Reste nach Entscheidung 1, nur wenn vorhanden:
+#      config/plugins/<ordner>.backup.json.alt und
+#      data/plugins/<ordner>.upgrade_sicherung.alt (von preinstall.sh bei
+#      einer Neuinstallation beiseitegelegt) und die Marke
+#      data/plugins/<ordner>.upgrade_laeuft eines abgebrochenen Updates.
+#      Ohne diese Zeilen bliebe die beiseitegelegte Zweitschrift mit dem
+#      Aktionstoken nach der Deinstallation liegen (Pruefbericht installer,
+#      Fall G), und eine liegengebliebene Marke liesse eine spaetere
+#      Neuinstallation als Aktualisierung laufen.
+#
 # ZU MQTT: Bis 1.2.27 stand hier, das Plugin setze kein Retain. Das stimmte
 # seit 1.2.24 nicht mehr - elf Themen gingen zurueckbehalten hinaus
 # (spot_retain_liste(); Bestand-2026-09-18/klasse-E, Liste vom 19.09.2026).
 # Seit 1.2.28 leert dieses Skript die Themen der Linie unter dem eingestellten
-# Praefix und liest beim Broker nach (weiter unten). Themen unter einem
-# FRUEHER eingestellten Praefix bleiben stehen.
+# Praefix und liest beim Broker nach (weiter unten). Seit dem Durchgang
+# 01.10.2026 (M1) auch unter jedem frueher eingestellten Praefix, das sich
+# das Plugin beim Wechsel gemerkt hat (data/plugins/<ordner>/
+# mqtt_praefixe.json). Stehen bleiben nur Themen unter einem Praefix, das
+# vor dieser Fassung gewechselt wurde - davon weiss das Plugin nichts.
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="spotpreis"
@@ -144,7 +161,29 @@ if [ -d "$SICH" ]; then
     rm -rf "$SICH" && echo "<OK> Sicherung des Aktualisierens entfernt: $PDIR.upgrade_sicherung"
 fi
 
-echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem FRUEHER eingestellten Praefix"
-echo "<INFO> raeumt dieses Skript nicht ab. Nachsehen:"
+# Punkt 4 oben: nur melden, was da war. Gepruefte Pfade - der Ordnername
+# darf keinen Pfadtrenner tragen.
+case "$PDIR" in
+    */*|*..*)
+        echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - .alt-Ablagen und Marke wurden nicht abgeraeumt." ;;
+    *)
+        # Dazu die eigene Sperrdatei des Minutenlaufs (bin/cron.php,
+        # sys_get_temp_dir() . '/<ordner>_cron.lock', seit dem Durchgang
+        # 01.10.2026 je Installation). Die alte, geteilte plugins_cron.lock
+        # bleibt: sie kann einer anderen Installation gehoeren.
+        for SP_REST in "$BK.alt" "$SICH.alt" "$BASE/data/plugins/$PDIR.upgrade_laeuft" "/tmp/${PDIR}_cron.lock"; do
+            if [ -e "$SP_REST" ] || [ -L "$SP_REST" ]; then
+                rm -rf "${SP_REST:?}" 2>/dev/null
+                if [ -e "$SP_REST" ] || [ -L "$SP_REST" ]; then
+                    echo "<WARNING> Liess sich nicht entfernen: $SP_REST"
+                else
+                    echo "<OK> Entfernt: $(basename "$SP_REST")"
+                fi
+            fi
+        done ;;
+esac
+
+echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem Praefix, das VOR dieser Fassung"
+echo "<INFO> gewechselt wurde, kennt das Plugin nicht und raeumt sie nicht ab. Nachsehen:"
 echo "<INFO> mosquitto_sub -t '<praefix>/#' --retained-only"
 exit 0
