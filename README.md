@@ -8,6 +8,15 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.32 behebt
+
+Fahrplaner nur mit 12 Preisstunden, Baustein-Liste in einer Tabelle (Planer-30, Entscheidung 30, X-8).
+Gemessen am Fahrplaner-Selbsttest (195 Fälle) und mit Proben abends/morgens unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Fahrplaner 1.1.8:** Die Schaltregeln „günstigste Stunden“ und „Fenster“ entscheiden im gemeinsamen Fahrplaner jetzt selbst nach Entscheidung 30. Solange weniger als 12 künftige Preisstunden bekannt sind, stehen sie auf 0, mit dem Grund „zu wenige künftige Preisstunden“. Eine solche Regel belegt dann auch kein Leistungsbudget mehr; eine nachrangige Regel (etwa „Schwelle“) bekommt es. Die Zahl 12 steht an einer einzigen Stelle (`PLAN_RANG_MIN_STUNDEN`).
+* **PV-Prognose:** Eine Antwort mit unendlich großen oder negativen Werten wird ganz verworfen und gemeldet („Die Quelle liefert unbrauchbare Zahlen …“). Bisher ließ ein solcher Wert den Zwischenspeicher nicht mehr schreiben. Ein Lastgang darf weiterhin negative Werte enthalten; sie werden wie bisher einzeln verworfen.
+* **Einbindung in Loxone, Schritt 4:** Die Baustein-Liste ist jetzt eine einzige nummerierte Tabelle (#, Baustein, Name, Parameter, Eingänge) statt sieben Teiltabellen. Alle Eingänge und Befehle der Importvorlage, die sie benutzt, stehen als eigene Zeilen darin. Jedes UND und ODER hat höchstens zwei Eingänge. Der Monatsbericht kommt ohne Analogspeicher aus.
+
 ## Was 1.2.31 behebt
 
 Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/aWATTar_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 8, 16, 19, 25, 26 und 30).

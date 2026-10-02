@@ -2015,58 +2015,110 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 </div>
 
 <div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
-<b><?php echo spot_t('TEXT.4A_STUNDENANSAGE_PUSH'); ?></b> <?php echo spot_t('TEXT.DIE_ANSAGE_SELBST_SPRICHT_DAS_PLUG'); ?>
+<?php
+/* X-8 (Nachzug 02.10.2026, im Bau Planer-30): EINE Liste in der Hausform -
+ * #, Baustein (Typ), Name (Vorschlag), Parameter, Eingaenge verbinden mit. Bis 1.2.32
+ * standen hier sieben Teiltabellen ohne Nummer, mit Kurzzeichen (S1, U1, O1 ...).
+ *
+ * Je Zeile: Kennung => array(Gruppe, Typ, Name, Parameter, Eingaenge)
+ *   Name       Sprachschluessel, oder array('mono', Text) fuer die Befehlsnamen der Vorlage
+ *   Parameter  Sprachschluessel, array('mono', Text), array('mono_t', Schluessel),
+ *              array('t', Schluessel, Kennung ...) (Text mit %d) oder ''
+ *   Eingaenge  array(Schluessel mit %d, Kennung ...) oder ''
+ * Die Nummer ist die Stelle in der Liste; Verweise gehen ueber die Kennung, damit eine
+ * eingeschobene Zeile keinen Verweis verschiebt. Regel A4: ein UND/ODER hat hoechstens
+ * zwei Eingaenge, eine Quelle je Eingang. */
+$sp_bl = array(
+    'VE'       => array('ein', 'TEXT.BL_T_VE', array('mono', 'Spotpreis aWATTar'), 'TEXT.BL_P_VE', ''),
+    'ANN'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_ANN'), array('mono_t', 'TEXT.IANN_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'PUSH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_PUSH'), array('mono_t', 'TEXT.IPUSH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'PTEST'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_PTEST'), array('mono_t', 'TEXT.IPTEST_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'LEVEL'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_LEVEL'), array('mono_t', 'TEXT.ILEVEL_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'CUR'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CUR'), array('mono_t', 'TEXT.ICUR_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'NEG'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_NEG'), array('mono_t', 'TEXT.INEG_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'WININ'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WININ'), array('mono_t', 'TEXT.IWININ_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'WINH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WINH'), array('mono_t', 'TEXT.IWINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'WINCT'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WINCT'), array('mono_t', 'TEXT.IWINCT_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'OK'       => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_OK'), array('mono_t', 'TEXT.IOK_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'MINH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MINH'), array('mono_t', 'TEXT.IMINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'MINP'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MINP'), array('mono_t', 'TEXT.IMINP_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'MAXH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MAXH'), array('mono_t', 'TEXT.IMAXH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'CO2CLEAN' => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2CLEAN'), array('mono_t', 'TEXT.ICO2CLEAN_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'CO2'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2'), array('mono_t', 'TEXT.ICO2_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'CO2MINH'  => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2MINH'), array('mono_t', 'TEXT.ICO2MINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'DYNM'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_DYNM'), array('mono_t', 'TEXT.IDYNM_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'FIX'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_FIX'), array('mono_t', 'TEXT.IFIX_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'DIFFM'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_DIFFM'), array('mono_t', 'TEXT.IDIFFM_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
+    'TS'       => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_TS'), array('mono', '\i;TS=\i\v'), array('TEXT.BL_E_UNTER', 'VE')),
+    // Stundenansage-Push
+    'S1'  => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.MELDEFENSTER_AKTIV', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'ANN')),
+    'S2'  => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.PUSH_FREIGEGEBEN', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'PUSH')),
+    'U1'  => array('ansage', 'TEXT.BL_T_UND', 'TEXT.PREIS_PUSH_JETZT', '', array('TEXT.BL_E_2', 'S1', 'S2')),
+    'O1'  => array('ansage', 'TEXT.BL_T_ODER', 'TEXT.PUSH_SAMMLER', 'TEXT.EINZIGE_QUELLE_DES_BENACHRICHTIGUN', array('TEXT.BL_E_1', 'U1')),
+    'B1'  => array('ansage', 'TEXT.BL_T_BENACHR', 'TEXT.PUSH_AKTUELLER_STROMPREIS', 'TEXT.TEXT_Z_B_STROMPREIS_JETZT_V1_1_CT_', array('TEXT.BL_E_1', 'O1')),
+    'SPT' => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.BL_N_PTEST', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'PTEST')),
+    'B2'  => array('ansage', 'TEXT.BL_T_BENACHR', 'TEXT.TEST_PUSH', 'TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST', array('TEXT.BL_E_1', 'SPT')),
+    // Guenstig-/Teuer-Schaltung fuer grosse Verbraucher
+    'S3'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.STROM_IST_GNSTIG', 'TEXT.BL_P_S3', array('TEXT.BL_E_ODER_CT', 'LEVEL', 'CUR')),
+    'S4'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.STROM_IST_TEUER', 'TEXT.EIN_2_5_AUS_2_4_AN_LEVEL', array('TEXT.BL_E_1', 'LEVEL')),
+    'S5'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.BRSENPREIS_NEGATIV_2', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'NEG')),
+    'O2'  => array('gross', 'TEXT.BL_T_ODER', 'TEXT.FREIGABE_GROE_VERBRAUCHER', 'TEXT.AUF_FREIGABE_EINGANG_VON_WALLBOX_W', array('TEXT.BL_E_2', 'S3', 'S5')),
+    'U2'  => array('gross', 'TEXT.BL_T_UND', 'TEXT.SPERRE_BEI_HOCHPREIS', 'TEXT.Z_B_HEIZSTAB_BOILER_SPERREN', array('TEXT.BL_E_EIGEN', 'S4')),
+    // Guenstigstes Fenster nutzen
+    'S6'  => array('fenster', 'TEXT.BL_T_SWS', 'TEXT.GNSTIGSTES_FENSTER_LUFT', 'TEXT.INVERTIERT_EIN_BEI_UNTERSCHREITEN_', array('TEXT.BL_E_1', 'WININ')),
+    'U3'  => array('fenster', 'TEXT.BL_T_UND', 'TEXT.START_FREIGABE_GERT', 'TEXT.SCHALTSTECKDOSE_GERTE_STARTBEFEHL', array('TEXT.BL_E_TASTER', 'S6')),
+    'ST1' => array('fenster', 'TEXT.BL_T_STATUS', 'TEXT.HINWEIS_KACHEL', 'TEXT.TEXT_GNSTIGSTES_FENSTER_AB_V1_0_UH', array('TEXT.BL_E_I2', 'WINH', 'WINCT')),
+    // Preise fuer morgen
+    'S7'  => array('morgen', 'TEXT.BL_T_SWS', 'TEXT.PREISE_FR_MORGEN_VORHANDEN', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'OK')),
+    'IG1' => array('morgen', 'TEXT.BL_T_IMPULS', 'TEXT.IMPULS_20_00_TAGESVORSCHAU', 'TEXT.20_00_UHR', ''),
+    'U4'  => array('morgen', 'TEXT.BL_T_UND', 'TEXT.BL_N_U4', '', array('TEXT.BL_E_2', 'IG1', 'S7')),
+    'ST2' => array('morgen', 'TEXT.BL_T_STATUS', 'TEXT.BL_N_ST2', 'TEXT.TEXT_MORGEN_AM_GNSTIGSTEN_UM_V1_0_', array('TEXT.BL_E_I3', 'MINH', 'MINP', 'MAXH')),
+    'B3'  => array('morgen', 'TEXT.BL_T_BENACHR', 'TEXT.PUSH_MORGEN_GNSTIGSTE_STUNDE', array('t', 'TEXT.BL_P_TEXT_AUS', 'ST2'), array('TEXT.BL_E_1', 'U4')),
+    // CO2-optimiertes Schalten
+    'S8'  => array('co2', 'TEXT.BL_T_SWS', 'TEXT.OUML_KOSTROM_ZEIT', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'CO2CLEAN')),
+    'O3'  => array('co2', 'TEXT.BL_T_ODER', 'TEXT.FREIGABE_SAUBER_ODER_GNSTIG', 'TEXT.Z_B_WARMWASSER_NACHHEIZUNG_SPEICHE', array('TEXT.BL_E_2', 'S8', 'S3')),
+    'ST3' => array('co2', 'TEXT.BL_T_STATUS', 'TEXT.KACHEL_STROMMIX', 'TEXT.TEXT_V1_0_G_CO2_KWH_SAUBERSTE_STUN', array('TEXT.BL_E_I2', 'CO2', 'CO2MINH')),
+    // Tarifvergleich als Monatsbericht
+    'IG2' => array('tarif', 'TEXT.BL_T_IMPULS', 'TEXT.BL_N_IG2', 'TEXT.BL_P_IG2', ''),
+    'ST4' => array('tarif', 'TEXT.BL_T_STATUS', 'TEXT.BL_N_ST4', 'TEXT.BL_P_ST4', array('TEXT.BL_E_I3', 'DYNM', 'FIX', 'DIFFM')),
+    'B4'  => array('tarif', 'TEXT.BL_T_BENACHR', 'TEXT.MONATSBERICHT_TARIFVERGLEICH', array('t', 'TEXT.BL_P_TEXT_AUS', 'ST4'), array('TEXT.BL_E_1', 'IG2')),
+    'S9'  => array('tarif', 'TEXT.BL_T_SWS', 'TEXT.DYNAMISCH_WRE_GNSTIGER', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'DIFFM')),
+    'B5'  => array('tarif', 'TEXT.BL_T_BENACHR', 'TEXT.BL_N_B5', '', array('TEXT.BL_E_1', 'S9')),
+    // Ausfallerkennung
+    'F1'  => array('ausfall', 'TEXT.BL_T_FORMEL', 'LEBEN.B_FORMEL_NAME', array('mono', '(I1 + 1230768000) - I2'), array('TEXT.BL_E_FORMEL', 'TS')),
+    'S10' => array('ausfall', 'TEXT.BL_T_SWS', 'LEBEN.B_SCHWELLE_NAME', 'LEBEN.B_SCHWELLE_EIN', array('TEXT.BL_E_1', 'F1')),
+);
+$sp_bl_nr = array();
+foreach (array_keys($sp_bl) as $sp_bl_i => $sp_bl_k) { $sp_bl_nr[$sp_bl_k] = $sp_bl_i + 1; }
+$sp_bl_text = function ($v) use ($sp_bl_nr) {
+    if ($v === '' || $v === null) { return '&mdash;'; }
+    if (is_string($v)) { return spot_t($v); }
+    if ($v[0] === 'mono') { return '<span class="sm-mono">' . sp_e($v[1]) . '</span>'; }
+    if ($v[0] === 'mono_t') { return '<span class="sm-mono">' . spot_t($v[1]) . '</span>'; }
+    $schl = ($v[0] === 't') ? $v[1] : $v[0];
+    $refs = array_slice($v, ($v[0] === 't') ? 2 : 1);
+    $zahlen = array();
+    foreach ($refs as $r) { $zahlen[] = $sp_bl_nr[$r]; }
+    return vsprintf(spot_t($schl), $zahlen);
+};
+$sp_bl_gruppen = array();
+foreach ($sp_bl as $sp_bl_k => $sp_bl_z) {
+    $g = $sp_bl_z[0];
+    if (!isset($sp_bl_gruppen[$g])) { $sp_bl_gruppen[$g] = array($sp_bl_nr[$sp_bl_k], $sp_bl_nr[$sp_bl_k]); }
+    $sp_bl_gruppen[$g][1] = $sp_bl_nr[$sp_bl_k];
+}
+?>
+<?php echo spot_t('TEXT.BL_EINLEITUNG'); ?>
+<ul>
+<?php foreach ($sp_bl_gruppen as $g => $sp_bl_vb) { ?>
+<li><?php echo sprintf(spot_t('TEXT.BL_ZEILEN'), $sp_bl_vb[0], $sp_bl_vb[1], spot_t('TEXT.BL_G_' . strtoupper($g))); ?></li>
+<?php } ?>
+</ul>
 <table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.NAME'); ?></th><th><?php echo spot_t('TEXT.EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.EINGNGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S1'); ?></td><td><?php echo spot_t('TEXT.MELDEFENSTER_AKTIV'); ?></td><td><?php echo spot_t('TEXT.EIN_0_5_AUS_0_4'); ?></td><td><?php echo spot_t('TEXT.ANN_2'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S2'); ?></td><td><?php echo spot_t('TEXT.PUSH_FREIGEGEBEN'); ?></td><td><?php echo spot_t('TEXT.EIN'); ?> 0,5 / <?php echo spot_t('TEXT.AUS'); ?> 0,4</td><td><?php echo spot_t('TEXT.PUSH_3'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.UND_U1'); ?></td><td><?php echo spot_t('TEXT.PREIS_PUSH_JETZT'); ?></td><td></td><td><?php echo spot_t('TEXT.S1_S2'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.ODER_O1'); ?></td><td><?php echo spot_t('TEXT.PUSH_SAMMLER'); ?></td><td><?php echo spot_t('TEXT.EINZIGE_QUELLE_DES_BENACHRICHTIGUN'); ?></td><td>U1</td></tr>
-<tr><td><?php echo spot_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.PUSH_AKTUELLER_STROMPREIS'); ?></td><td><?php echo spot_t('TEXT.TEXT_Z_B_STROMPREIS_JETZT_V1_1_CT_'); ?></td><td><?php echo spot_t('TEXT.O1'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN_2'); ?></td><td><?php echo spot_t('TEXT.TEST_PUSH'); ?></td><td><?php echo spot_t('TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST'); ?></td><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_AN_PTEST_EIN_0'); ?></td></tr>
-</table>
-<b><?php echo spot_t('TEXT.4B_GNSTIG_TEUER_SCHALTUNG_FR_GROE_'); ?></b>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S3'); ?></td><td><?php echo spot_t('TEXT.STROM_IST_GNSTIG'); ?></td><td><?php echo spot_t('TEXT.INVERTIERT_EIN_BEI'); ?> <b><?php echo spot_t('TEXT.UNTERSCHREITEN'); ?></b> <?php echo spot_t('TEXT.EIN_1_5_AUS_1_6_AN_LEVEL_ODER_DIRE'); ?></td><td><?php echo spot_t('TEXT.LEVEL_BZW_CUR'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S4'); ?></td><td><?php echo spot_t('TEXT.STROM_IST_TEUER'); ?></td><td><?php echo spot_t('TEXT.EIN_2_5_AUS_2_4_AN_LEVEL'); ?></td><td><?php echo spot_t('TEXT.LEVEL_2'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S5'); ?></td><td><?php echo spot_t('TEXT.BRSENPREIS_NEGATIV_2'); ?></td><td><?php echo spot_t('TEXT.EIN'); ?> 0,5 / <?php echo spot_t('TEXT.AUS'); ?> 0,4</td><td><?php echo spot_t('TEXT.NEG_2'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.ODER_O2'); ?></td><td><?php echo spot_t('TEXT.FREIGABE_GROE_VERBRAUCHER'); ?></td><td><?php echo spot_t('TEXT.AUF_FREIGABE_EINGANG_VON_WALLBOX_W'); ?></td><td>S3 | S5</td></tr>
-<tr><td><?php echo spot_t('TEXT.UND_U2'); ?></td><td><?php echo spot_t('TEXT.SPERRE_BEI_HOCHPREIS'); ?></td><td><?php echo spot_t('TEXT.Z_B_HEIZSTAB_BOILER_SPERREN'); ?></td><td><?php echo spot_t('TEXT.S4_EIGENE_FREIGABE'); ?></td></tr>
-</table>
-<b><?php echo spot_t('TEXT.4C_GNSTIGSTES_FENSTER_NUTZEN'); ?></b> <?php echo spot_t('TEXT.WASCHMASCHINE_SPLMASCHINE_E_AUTO'); ?>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S6'); ?></td><td><?php echo spot_t('TEXT.GNSTIGSTES_FENSTER_LUFT'); ?></td><td><?php echo spot_t('TEXT.INVERTIERT_EIN_BEI_UNTERSCHREITEN_'); ?></td><td><?php echo spot_t('TEXT.WININ'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.UND_U3'); ?></td><td><?php echo spot_t('TEXT.START_FREIGABE_GERT'); ?></td><td><?php echo spot_t('TEXT.SCHALTSTECKDOSE_GERTE_STARTBEFEHL'); ?></td><td><?php echo spot_t('TEXT.S6_TASTER_START_BEI_GNSTIGEM_STROM'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.HINWEIS_KACHEL'); ?></td><td><?php echo spot_t('TEXT.TEXT_GNSTIGSTES_FENSTER_AB_V1_0_UH'); ?></td><td><?php echo spot_t('TEXT.I1_WINH_I2_WINCT'); ?></td></tr>
-</table>
-<b><?php echo spot_t('TEXT.4D_ANSAGE_PREISE_FR_MORGEN_SIND_DA'); ?></b>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S7'); ?></td><td><?php echo spot_t('TEXT.PREISE_FR_MORGEN_VORHANDEN'); ?></td><td><?php echo spot_t('TEXT.EIN'); ?> 0,5 / <?php echo spot_t('TEXT.AUS'); ?> 0,4</td><td><?php echo spot_t('TEXT.OK'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.IMPULSGEBER_BEI_UHRZEIT'); ?></td><td><?php echo spot_t('TEXT.IMPULS_20_00_TAGESVORSCHAU'); ?></td><td><?php echo spot_t('TEXT.20_00_UHR'); ?></td><td></td></tr>
-<tr><td><?php echo spot_t('TEXT.UND_U4_STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.PUSH_MORGEN_GNSTIGSTE_STUNDE'); ?></td><td><?php echo spot_t('TEXT.TEXT_MORGEN_AM_GNSTIGSTEN_UM_V1_0_'); ?></td><td><?php echo spot_t('TEXT.U4_IMPULS_S7_STATUS_I1MINH_I2MINP_'); ?></td></tr>
-</table>
-<b><?php echo spot_t('TEXT.4E_CO_8322_OPTIMIERTES_SCHALTEN'); ?></b> <?php echo spot_t('TEXT.UNABHNGIG_VOM_PREIS'); ?>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S8'); ?></td><td><?php echo spot_t('TEXT.OUML_KOSTROM_ZEIT'); ?></td><td><?php echo spot_t('TEXT.EIN'); ?> 0,5 / <?php echo spot_t('TEXT.AUS'); ?> 0,4</td><td><?php echo spot_t('TEXT.CO2CLEAN'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.ODER_O3'); ?></td><td><?php echo spot_t('TEXT.FREIGABE_SAUBER_ODER_GNSTIG'); ?></td><td><?php echo spot_t('TEXT.Z_B_WARMWASSER_NACHHEIZUNG_SPEICHE'); ?></td><td>S8 | S3</td></tr>
-<tr><td><?php echo spot_t('TEXT.STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.KACHEL_STROMMIX'); ?></td><td><?php echo spot_t('TEXT.TEXT_V1_0_G_CO2_KWH_SAUBERSTE_STUN'); ?></td><td><?php echo spot_t('TEXT.I1_CO2_I2_CO2MINH'); ?></td></tr>
-</table>
-<b><?php echo spot_t('TEXT.4F_TARIFVERGLEICH_ALS_MONATSBERICH'); ?></b>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('TEXT.ANALOGSPEICHER_STATUSBAUSTEIN'); ?></td><td><?php echo spot_t('TEXT.MONATSBERICHT_TARIFVERGLEICH'); ?></td><td><?php echo spot_t('TEXT.TEXT_DYNAMISCH_V1_1_CT_GEGEN_FEST_'); ?></td><td><?php echo spot_t('TEXT.I1_DYNM_I2_FIX_I3_DIFFM'); ?></td></tr>
-<tr><td><?php echo spot_t('TEXT.SCHWELLWERTSCHALTER_S9'); ?></td><td><?php echo spot_t('TEXT.DYNAMISCH_WRE_GNSTIGER'); ?></td><td><?php echo spot_t('TEXT.EIN_0_5_AUS_0_4_AN_DIFFM'); ?></td><td><?php echo spot_t('TEXT.PUSH_TARIFWECHSEL_PRFEN'); ?></td></tr>
-</table>
-<b><?php echo spot_t('LEBEN.H_BAUSTEINE'); ?></b> <?php echo spot_t('LEBEN.BAUSTEINE_TEXT'); ?>
-<table class="sm-tbl">
-<tr><th><?php echo spot_t('TEXT.SP_BAUSTEIN'); ?></th><th><?php echo spot_t('TEXT.SP_NAME'); ?></th><th><?php echo spot_t('TEXT.SP_EINSTELLUNG'); ?></th><th><?php echo spot_t('TEXT.SP_EINGAENGE'); ?></th></tr>
-<tr><td><?php echo spot_t('LEBEN.B_STATUS'); ?></td><td><?php echo spot_t('LEBEN.B_STATUS_NAME'); ?></td><td><?php echo spot_t('LEBEN.B_STATUS_EIN'); ?></td><td><span class="sm-mono">TS</span></td></tr>
-<tr><td><?php echo spot_t('LEBEN.B_FORMEL'); ?></td><td><?php echo spot_t('LEBEN.B_FORMEL_NAME'); ?></td><td><span class="sm-mono">(I1 + 1230768000) - I2</span></td><td><?php echo spot_t('LEBEN.B_FORMEL_EIN'); ?></td></tr>
-<tr><td><?php echo spot_t('LEBEN.B_SCHWELLE'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_NAME'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_EIN'); ?></td><td><?php echo spot_t('LEBEN.B_SCHWELLE_ANSCHLUSS'); ?></td></tr>
+<tr><th>#</th><th><?php echo spot_t('TEXT.BL_H_TYP'); ?></th><th><?php echo spot_t('TEXT.BL_H_NAME'); ?></th><th><?php echo spot_t('TEXT.BL_H_PARAM'); ?></th><th><?php echo spot_t('TEXT.BL_H_EIN'); ?></th></tr>
+<?php foreach ($sp_bl as $sp_bl_k => $sp_bl_z) { ?>
+<tr><td><?php echo $sp_bl_nr[$sp_bl_k]; ?></td><td><?php echo spot_t($sp_bl_z[1]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[2]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[3]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[4]); ?></td></tr>
+<?php } ?>
 </table>
 <div class="sm-hinweis"><?php echo spot_t('LEBEN.BAUSTEINE_HINWEIS'); ?></div>
 <span class="sm-small"><?php echo spot_t('TEXT.DAS_PLUGIN_SENDET_DENSELBEN_BERICH'); ?></span>

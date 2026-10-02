@@ -34,8 +34,11 @@ define('SPOT_REGELN', 4);
  *  morgen kannte das Plugin nur noch 4 Stunden; die teure Abendstunde war "Rang 1
  *  von 4", die Marstek-Kopplung lud mit 2500 W aus dem Netz, und die Schaltregeln
  *  "guenstigste Stunden"/"Fenster" schalteten ein. 12 passt zur Hoechstzahl der
- *  Ladestunden. Eine andere Entscheidung ist diese eine Zeile. */
-define('SPOT_RANG_MIN_STUNDEN', 12);
+ *  Ladestunden. Eine andere Entscheidung ist diese eine Zeile.
+ *  Planer-30 (02.10.2026): die Zahl steht seit planer.php 1.1.8 dort als
+ *  PLAN_RANG_MIN_STUNDEN, weil der Planer die Schaltregeln jetzt selbst nach
+ *  Nr. 30 rechnet - eine Quelle fuer Rang, Kopplung und Regeln. */
+define('SPOT_RANG_MIN_STUNDEN', PLAN_RANG_MIN_STUNDEN);
 
 /**
  * P4 (Pruefbericht code, Befund 5): Betrieb nur aus dem Zwischenspeicher.
@@ -1346,8 +1349,11 @@ function spot_lastgang($force = false)
     // kwh kennt plan_nach_wh() nicht - also in wh umrechnen, nicht raten.
     $einheit = $cfg['last_einheit'] === 'kwh' ? 'wh' : $cfg['last_einheit'];
     $faktor = $cfg['last_einheit'] === 'kwh' ? 1000.0 : 1.0;
+    /* false: ein Lastgang darf negative Werte tragen (Einspeisung); sie werden
+     * unten je Wert verworfen. Nicht endliche Werte weist planer.php seit 1.1.8
+     * immer ab (WERTE_UNGUELTIG). */
     list($werte, $meldung) = plan_pv_lesen($roh, $cfg['last_quelle'], $cfg['last_pfad'],
-        $cfg['last_zeitfeld'], $cfg['last_wertfeld'], $einheit, 3600);
+        $cfg['last_zeitfeld'], $cfg['last_wertfeld'], $einheit, 3600, false);
     $erg['meldung'] = $meldung;
     if ($werte) {
         foreach ($werte as $ts => $wh) {
@@ -1523,8 +1529,11 @@ function spot_regeln($all, $st) {
  * (guenstigstes Fenster) urteilt ueber einen RANG. Sind weniger als
  * SPOT_RANG_MIN_STUNDEN kuenftige Preisstunden bekannt, ist das kein Rang - die
  * Regel geht auf 0, mit dem Grund "horizont". Schwelle und Tagesmittel sind
- * keine Rangfrage und bleiben, wie sie sind. planer.php bleibt unberuehrt (gemeinsame
- * Datei); geaendert wird nur, was dieses Plugin aus seinem Ergebnis macht.
+ * keine Rangfrage und bleiben, wie sie sind.
+ * Seit planer.php 1.1.8 (Planer-30) trifft der Planer dieselbe Entscheidung
+ * selbst, mit derselben Zahl und demselben Grund - und eine Regel ohne Rang
+ * bucht dort auch kein Leistungsbudget mehr. Diese Funktion bleibt als zweite
+ * Wache stehen: sie urteilt ueber rang_ok aus spot_state().
  */
 function spot_regel_horizont($w, $r, $st) {
     $art = isset($r['art']) ? (string) $r['art'] : 'fenster';
