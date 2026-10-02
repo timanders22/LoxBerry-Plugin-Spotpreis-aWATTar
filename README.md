@@ -8,6 +8,30 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Was 1.2.33 behebt
+
+Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
+Gemessen an Attrappen für Alexa-NG, Chromecast 4 Lox NG,
+Music Server, MusicServer4Home und eine eigene Vorlage, unter PHP 7.4 und 8.5, je ohne und mit php-curl. Nicht am
+Gerät, nicht an echten Lautsprechern.
+
+* **Der Ansagetext steht nicht mehr im Protokoll.** Bisher stand er dort beim Music Server, bei
+  AudioServer4Home und bei einer eigenen Vorlage im Wortlaut; bei Alexa-NG und Google-Lautsprechern stand schon
+  nur die Länge. Jetzt steht bei allen Ausgabearten nur die Länge, etwa „Ansage gesendet: 91 Zeichen -> OK“.
+* **Die Antwort auf `?say=1` und `?saytomorrow=1` nennt nur noch die Länge des Texts.** Statt
+  `SAY;OK=1;TEXT=<Ansage>` kommt `SAY;OK=1;TEXTLAENGE=91`. `OK=` bleibt, wie es war.
+* **Beim Original-Audioserver bleibt `TEXT=`.** Dort gibt Loxone den Text selbst über den Textgenerator aus und
+  braucht ihn deshalb in der Antwort.
+* Music Server, AudioServer4Home und eigene Vorlage: Eine Weiterleitung (HTTP 3xx) wird nicht mehr verfolgt und
+  gilt nicht als „gesendet“. Gesendet ist eine Ansage nur noch bei HTTP 2xx.
+* Neue Datei `webfrontend/html/sprachausgabe.php`: die gemeinsame Sprachausgabe des Hauses (Fassung 1.0.2), in
+  allen Linien mit Sprachausgabe byte-gleich.
+* **Unverändert:** Einstellungen, Feldnamen, gespeicherte Werte und die Sicherungsdatei. Sicherungen aus 1.2.20
+  und 1.2.30 (beide ohne Alexa-NG und Google-Lautsprecher) lassen sich weiter zurückspielen; die hinterlegten
+  Sprechtoken bleiben dabei stehen.
+
+**In Loxone:** Wer aus der Antwort den Text `TEXT=` gelesen hat, liest jetzt `TEXTLAENGE=` (außer beim Original-Audioserver).
+
 ## Was 1.2.32 behebt
 
 Fahrplaner nur mit 12 Preisstunden, Baustein-Liste in einer Tabelle (Planer-30, Entscheidung 30, X-8).
@@ -352,7 +376,10 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
   Ausgabe über den Loxone Music Server, AudioServer4Home, eine eigene Vorlage,
   **Alexa-NG** oder **Google-Lautsprecher über Chromecast 4 Lox NG** (die beiden
   letzten mit eigenem Sprechtoken, ab Werk nicht gewählt; Voraussetzung ist das
-  jeweilige Plugin auf demselben LoxBerry, Chromecast 4 Lox NG ab 1.3.15)
+  jeweilige Plugin auf demselben LoxBerry, Chromecast 4 Lox NG ab 1.3.15). Vom
+  Ansagetext steht im Protokoll und in der Antwort auf `?say=1` nur die Länge
+  (`TEXTLAENGE=`); nur beim Original-Audioserver steht der Text in der Antwort
+  (`TEXT=`), weil Loxone ihn dort über den Textgenerator ausgibt.
 - **Push-Auslöser** für Loxone (`ANN`) samt Test-Push-Funktion
 - **CO₂-Intensität** des Strommixes als zweite Kennzahl (Fraunhofer ISE
   Energy-Charts, kostenlos und ohne Konto): aktueller Wert, sauberste Stunde der

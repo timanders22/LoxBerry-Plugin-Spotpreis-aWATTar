@@ -221,7 +221,8 @@ if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
         $text = spot_t('ANSAGE.TEST_LEER');
     }
     $ok = spot_say($text);
-    echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
+    /* Seit 1.2.33 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
+    echo 'SAY;OK=' . ($ok ? 1 : 0) . ';' . spot_say_feld($text) . "\n";
     exit;
 }
 

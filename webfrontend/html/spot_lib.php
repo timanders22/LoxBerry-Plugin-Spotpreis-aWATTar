@@ -22,6 +22,12 @@ date_default_timezone_set('Europe/Berlin');
  * Rechenwerk auch im Octopus-Plugin steckt - byteweise gleich. Naeheres im
  * Kopf von planer.php. */
 require_once __DIR__ . '/planer.php';
+/* Die gemeinsame Sprachausgabe (seit 1.2.33, Nr. 36 b). Eigene Datei daneben,
+ * byteweise gleich mit der Stammfassung Werkzeuge/gemeinsam/sprachausgabe.php
+ * im Arbeitsordner und mit den Abschriften der anderen Linien; Naeheres im
+ * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
+ * anzulegen und antwortet bei direktem Aufruf mit 403. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 /** Anzahl der Schaltregeln. Vier decken Wallbox, Speicher, Warmwasser und
  *  Waermepumpe ab - mehr macht die Oberflaeche unuebersichtlich. */
@@ -4197,51 +4203,14 @@ function spot_tts_url($text) {
         $z = spot_sprech_ziel($mode, $cfg);
         return $z['token'] === '' ? '' : $z['adresse'];
     }
-    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
-    }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren. Vorher wurde nur im
-     * Modus musicserver je Zone getrimmt; in den Vorlagen-Modi ging die
-     * Eingabe roh in {zones} - aus "2, 4, 6" wurde eine Adresse mit
-     * Leerzeichen. */
-    $zl = array();
-    foreach (explode(',', (string) $tts['zones']) as $z) {
-        $z = trim($z);
-        if ($z !== '') { $zl[] = $z; }
-    }
-    $tts['zones'] = implode(',', $zl);
-    if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
-        // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
-        $vol = max(1, min(100, (int) $tts['volume']));
-        $zones = array();
-        foreach (explode(',', (string) $tts['zones']) as $z) {
-            $z = trim($z);
-            if ($z === '') {
-                continue;
-            }
-            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
-        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
-    }
-    // ms4h (MusicServer4Home / Audioserver4Home) und custom: Vorlage mit Platzhaltern
-    $tpl = trim((string) $tts['template']);
-    if ($tpl === '') {
-        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
-    }
-    /* Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
-     * Vorher stand die Pruefung unbedingt am Anfang - eine eigene Vorlage
-     * ohne {ip} war damit unbenutzbar (AWM-1.2.0-Fund, hier nachgezogen). */
-    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(
-        array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-        array($tts['ip'], (int) $tts['port'], $tts['zones'], (int) $tts['volume'], $tts['lang'], rawurlencode($text)),
-        $tpl
-    );
+    /* Seit 1.2.33 baut die gemeinsame Sprachausgabe die Adresse, mit demselben
+     * Ergebnis wie der Code bis 1.2.32: Zonenliste einmal fuer alle Arten
+     * normalisiert ("2, 4" -> "2,4"), beim Music Server je Zone die
+     * Lautstaerke, IP nur verlangt, wenn die Art bzw. die Vorlage sie benutzt
+     * ('' = IP fehlt). Wie bis 1.2.32 geht jede Art ausser musicserver ueber
+     * die Vorlage (ms4h, custom). */
+    $tts['mode'] = ($mode === 'musicserver' || $mode === 'ms4h') ? $mode : 'custom';
+    return ansage_tts_url($text, $tts);
 }
 
 function spot_say($text) {
@@ -4262,11 +4231,35 @@ function spot_say($text) {
         spot_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
         return false;
     }
-    $ctx = stream_context_create(array('http' => array('timeout' => 10)));
-    $r = @file_get_contents($url, false, $ctx);
-    spot_ansage_letzte($r !== false ? 'OK' : 'FEHLER');
-    spot_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
-    return $r !== false;
+    /* Seit 1.2.33 ueber den Transport der gemeinsamen Sprachausgabe: ohne
+     * Proxy, ohne Weiterleitung, 10 s, Erfolg nur bei HTTP 2xx. Vom Text steht
+     * nur die Laenge im Protokoll (Nr. 40) - die Adresse traegt ihn und steht
+     * deshalb ebenfalls nicht darin. */
+    $k = spot_ansage_k();
+    $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k), $k);
+    $ok = $a['code'] >= 200 && $a['code'] < 300;
+    spot_ansage_letzte($ok ? 'OK' : 'FEHLER');
+    spot_log('Ansage gesendet: ' . ansage_zeichen((string) $text) . ' Zeichen -> ' . ($ok ? 'OK' : 'FEHLER'));
+    return $ok;
+}
+
+/**
+ * Das Textfeld der Antwort auf ?say=1 und ?saytomorrow=1 (seit 1.2.33,
+ * Nr. 40): beim Original-Audioserver der Text selbst (TEXT=, Loxone gibt ihn
+ * ueber den Textgenerator an den Audioserver), sonst nur seine Laenge
+ * (TEXTLAENGE=).
+ */
+function spot_say_feld($text) {
+    $cfg = spot_config();
+    if ((string) $cfg['tts']['mode'] === 'audioserver') {
+        return 'TEXT=' . $text;
+    }
+    return 'TEXTLAENGE=' . ansage_zeichen((string) $text);
+}
+
+/** Kontext der gemeinsamen Sprachausgabe: Webport und Kennung dieses Plugins. */
+function spot_ansage_k() {
+    return array('port' => spot_webport(), 'kopf' => array('User-Agent: LoxBerry-Plugin-Spotpreis'), 'ordner' => '');
 }
 
 /* ---- Ausgabearten Alexa-NG und Google-Lautsprecher (S1, 01.10.2026) ----
@@ -4285,24 +4278,15 @@ function spot_say($text) {
 
 /** Form eines Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (Chromecast 4 Lox NG verlangt selbst 16). */
 function spot_sprech_token_ok($t) {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+    return ansage_token_ok($t);     // seit 1.2.33 aus der gemeinsamen Sprachausgabe
 }
 
 /** Port des Webservers dieses LoxBerry (general.json Webserver/WEBSERVER -> Port), sonst 80. */
 function spot_webport() {
     $p = spot_paths();
-    $port = 80;
-    if ($p['lbhome'] !== '') {
-        $g = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
-        foreach (array('Webserver', 'WEBSERVER') as $ab) {
-            if (isset($g[$ab]['Port']) && is_scalar($g[$ab]['Port'])
-                && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
-                $port = (int) $g[$ab]['Port'];
-                break;
-            }
-        }
-    }
-    return $port;
+    /* Seit 1.2.33 aus der gemeinsamen Sprachausgabe: Webserver.Port oder
+     * WEBSERVER.Port, nur Ziffern, 1 bis 65535, sonst 80. */
+    return ansage_webport($p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '');
 }
 
 /** Die Angaben des gemeinsamen Ruf-Teils fuer eine der beiden Arten. */
@@ -4313,12 +4297,12 @@ function spot_sprech_ziel($art, $cfg = null) {
     $t = $cfg['tts'];
     if ($art === 'cc4lox') {
         return array('name' => 'Chromecast 4 Lox NG',
-                     'adresse' => 'http://127.0.0.1:' . spot_webport() . '/plugins/chromecast-4lox-ng/index.php',
+                     'adresse' => ansage_adresse('cc4lox', spot_webport()),
                      'token' => (string) $t['google_token'], 'geraet' => (string) $t['google_geraet'],
                      'laut' => (int) $t['google_laut'], 'fehlt' => 'TEXT.SPRECH_GOOGLE_FEHLT');
     }
     return array('name' => 'Alexa-NG',
-                 'adresse' => 'http://127.0.0.1:' . spot_webport() . '/plugins/alexang/index.php',
+                 'adresse' => ansage_adresse('alexang', spot_webport()),
                  'token' => (string) $t['alexa_token'], 'geraet' => (string) $t['alexa_geraet'],
                  'laut' => -1, 'fehlt' => 'TEXT.SPRECH_ALEXA_FEHLT');
 }
@@ -4333,54 +4317,19 @@ function spot_ansage_letzte($setzen = null) {
 }
 
 /**
- * POST an einen Endpunkt auf DIESEM LoxBerry: ohne Proxy, ohne Umleitung,
- * 3 s Verbindungsfrist, $zeit s gesamt. Rueckgabe array('code' => HTTP-Code oder
- * 0, 'body' => Rumpf, 'fehler' => '' | ZEIT | VERBINDUNG).
+ * POST an einen Endpunkt auf DIESEM LoxBerry ueber den Transport der
+ * gemeinsamen Sprachausgabe (seit 1.2.33): ohne Proxy, ohne Umleitung, 3 s
+ * Verbindungsfrist, $zeit s gesamt, hoechstens 64 KiB Rumpf. Rueckgabe wie bis
+ * 1.2.32: array('code' => HTTP-Code oder 0, 'body' => Rumpf, 'fehler' => '' |
+ * ZEIT | VERBINDUNG).
  */
 function spot_http_lokal($url, array $felder, $zeit = 10) {
-    $rumpf = http_build_query($felder, '', '&');
-    $erg = array('code' => 0, 'body' => '', 'fehler' => '');
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $rumpf);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/x-www-form-urlencoded'));
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_TIMEOUT, (int) $zeit);
-        curl_setopt($ch, CURLOPT_NOPROXY, '127.0.0.1');
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-        $b = curl_exec($ch);
-        $nr = curl_errno($ch);
-        $erg['code'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        if ($b === false) {
-            $erg['fehler'] = ($nr === 28) ? 'ZEIT' : 'VERBINDUNG';
-            $erg['code'] = 0;
-            return $erg;
-        }
-        $erg['body'] = (string) $b;
-        return $erg;
+    $k = spot_ansage_k();
+    $a = ansage_ausfuehren(ansage_anfrage('POST', (string) $url, $felder, (int) $zeit, $k), $k);
+    if ((int) $a['code'] <= 0) {
+        return array('code' => 0, 'body' => '', 'fehler' => ((int) $a['errno'] === 28) ? 'ZEIT' : 'VERBINDUNG');
     }
-    $ctx = stream_context_create(array('http' => array(
-        'method' => 'POST', 'header' => 'Content-Type: application/x-www-form-urlencoded',
-        'content' => $rumpf, 'timeout' => (int) $zeit, 'ignore_errors' => true, 'follow_location' => 0)));
-    $t0 = microtime(true);
-    $fh = @fopen($url, 'rb', false, $ctx);
-    if ($fh === false) {
-        $erg['fehler'] = (microtime(true) - $t0 >= (int) $zeit - 0.5) ? 'ZEIT' : 'VERBINDUNG';
-        return $erg;
-    }
-    $meta = @stream_get_meta_data($fh);
-    $b = @stream_get_contents($fh, 65536);
-    @fclose($fh);
-    foreach ((is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) ? $meta['wrapper_data'] : array() as $z) {
-        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
-            $erg['code'] = (int) $m[1];
-        }
-    }
-    $erg['body'] = $b === false ? '' : (string) $b;
-    return $erg;
+    return array('code' => (int) $a['code'], 'body' => (string) $a['rumpf'], 'fehler' => '');
 }
 
 /**
@@ -5211,7 +5160,8 @@ function spot_sicherung_schreiben()
      * die Datei - wie das Marstek-Token. Sie werden beim Umzug im jeweiligen
      * Plugin abgelesen. */
     if (isset($daten['tts']) && is_array($daten['tts'])) {
-        unset($daten['tts']['alexa_token'], $daten['tts']['google_token']);
+        // seit 1.2.33 aus der gemeinsamen Sprachausgabe (eine Liste der Geheimnisse)
+        $daten['tts'] = ansage_sicherung_bereinigen($daten['tts']);
     }
     /* X-3 (Pruefbericht oberflaeche, Befund 11): was das Zurueckspielen
      * abweisen wuerde, sagt die Datei schon beim Sichern - nur mit Namen, nie
