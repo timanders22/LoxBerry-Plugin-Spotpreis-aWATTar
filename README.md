@@ -8,6 +8,16 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.35
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern:** Dienst („ohne Dienst“ – der Cron holt jede Minute), ob die Preise
+  für heute geladen und für morgen schon veröffentlicht sind, Preiszone und ob MQTT eingeschaltet ist – aus
+  Werten, die die Seite ohnehin liest, ohne eigene Abfrage.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.34
 
 Sprachausgabe in Hausform (Entscheidung 40, Stufe 2). Gemessen unter PHP 7.4 und 8.5 gegen Attrappen

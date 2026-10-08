@@ -1049,6 +1049,31 @@ foreach ($sp_reiter_ids as $sp_i) {
         ? spot_t($sp_beschriftung[$sp_i]) : $sp_i;
 }
 ?>
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.2.35): Statusuebersicht ueber den
+   Reitern, immer sichtbar. Nur, was die Seite schon liest: $sp_st
+   (spot_state(), oben schon aufgerufen) und die Konfiguration. Einen Dienst
+   gibt es nicht - der Cron holt die Preise jede Minute. */
+$sp_k_ok = !empty($sp_st) && !empty($sp_st['ok']);
+$sp_k_morgen = !empty($sp_st) && !empty($sp_st['tomorrow_ok']);
+?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?php echo spot_t('ALLGEMEIN.KOPF_EIGENSCHAFT'); ?></th><th><?php echo spot_t('ALLGEMEIN.KOPF_WERT'); ?></th></tr>
+<tr><td><?php echo spot_t('ALLGEMEIN.KOPF_DIENST'); ?></td>
+    <td><?php echo spot_t('ALLGEMEIN.KOPF_OHNE_DIENST'); ?></td></tr>
+<tr><td><?php echo spot_t('ALLGEMEIN.KOPF_HEUTE'); ?></td>
+    <td><?= $sp_k_ok
+        ? '<span class="sm-an">' . sprintf(spot_t('ALLGEMEIN.KOPF_HEUTE_OK'), (int) $sp_st['heute']['n']) . '</span>'
+        : '<span class="sm-aus">' . spot_t('ALLGEMEIN.KOPF_HEUTE_FEHLT') . '</span>' ?></td></tr>
+<tr><td><?php echo spot_t('ALLGEMEIN.KOPF_MORGEN'); ?></td>
+    <td><?= $sp_k_morgen ? '<span class="sm-an">' . spot_t('ALLGEMEIN.KOPF_MORGEN_OK') . '</span>'
+                         : spot_t('ALLGEMEIN.KOPF_MORGEN_NOCH') ?></td></tr>
+<tr><td><?php echo spot_t('TEXT.PREISZONE_API'); ?></td>
+    <td><?= $sp_cfg['market'] === 'at' ? spot_t('TEXT.OUML_STERREICH_API_AWATTAR_AT') : spot_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE') ?></td></tr>
+<tr><td><?php echo spot_t('ALLGEMEIN.KOPF_MQTT'); ?></td>
+    <td><?= !empty($sp_cfg['mqtt_enabled']) ? '<span class="sm-an">' . spot_t('ALLGEMEIN.KOPF_AN') . '</span>'
+                                             : spot_t('ALLGEMEIN.KOPF_AUS') ?></td></tr>
+</table>
+
 <?php
 /* DIE REITERLEISTE STEHT AUSGESCHRIEBEN - das ist Absicht.
  *
@@ -1083,6 +1108,7 @@ foreach ($sp_reiter_ids as $sp_i) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?php echo $sp_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<div class="sm-hinweis"><?php echo spot_t('ALLGEMEIN.WAS_IST_DAS'); ?></div>
 <?php /* O8 (Pruefbericht oberflaeche, Befund 14): EINE Legende oben im Reiter,
          vor dem ersten Knopf (Regeln/04). Bis 1.2.31 stand sie erst am
          Sicherungsblock, unter fuenf Knoepfen. */ ?>
