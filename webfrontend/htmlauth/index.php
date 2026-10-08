@@ -236,22 +236,26 @@ if ($sp_ist_post && isset($_POST['fetchnow']) && function_exists('spot_state')) 
         : spot_t('TEXT.ABRUF_FEHL');
 }
 
-// ---------- Testansage (S1; mit PRG: F5 spricht nicht noch einmal) ----------
+// ---------- Testansage (POST mit PRG: F5 spricht nicht noch einmal) ----------
+/* Seit 1.2.34 (Sprachausgabe Stufe 2): ueber die gemeinsame Sprachausgabe wie die Stundenansage. Gesprochen
+ * wird der aktuelle Preistext, mit testansage=morgen der Text "Preise fuer morgen" - die GET-Verweise auf
+ * spot.php?say=1 und ?saytomorrow=1 im Reiter Test sind dafuer entfallen. Die Meldung nennt Ergebnis,
+ * Zeichenzahl und HTTP-Code (bei Alexa-NG/Chromecast die Antwortzeile ohne Token), nie den Text. */
 if ($sp_ist_post && isset($_POST['testansage'])) {
     $sp_ta_st = spot_state();
-    $sp_ta_text = spot_announce_text($sp_ta_st);
+    $sp_ta_morgen = (is_string($_POST['testansage']) && $_POST['testansage'] === 'morgen');
+    $sp_ta_text = $sp_ta_morgen ? spot_tomorrow_text($sp_ta_st) : spot_announce_text($sp_ta_st);
     if ($sp_ta_text === '') {
-        $sp_ta_text = spot_t('ANSAGE.TEST_LEER');
+        $sp_ta_text = spot_t('SPOT_ANSAGE.TEST_LEER');
     }
-    $sp_ta_ok = spot_say($sp_ta_text);
-    $sp_ta_was = spot_ansage_letzte();
-    if (in_array($sp_ta_was, array('OK', 'FEHLER', 'KEINE_IP', 'AUDIOSERVER'), true)) {
-        $sp_ta_was = spot_t('TEXT.ANSAGE_LETZT_' . $sp_ta_was);
-    }
-    if ($sp_ta_ok) {
-        $sp_note = sprintf(spot_t('TEXT.TESTANSAGE_OK'), $sp_ta_was);
+    $sp_ta = spot_say_ergebnis($sp_ta_text);
+    if ($sp_ta['stand'] === 1) {
+        $sp_note = sprintf(spot_t('TEXT.TESTANSAGE_OK'), sprintf(spot_t('TEXT.TESTANSAGE_WAS'),
+            (int) $sp_ta['zeichen'], (int) $sp_ta['http']) . ($sp_ta['zeile'] !== '' ? ' ' . $sp_ta['zeile'] : ''));
+    } elseif ($sp_ta['stand'] === -1) {
+        $sp_note = sprintf(spot_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($sp_ta['kennung'], spot_ansage_k()));
     } else {
-        $sp_fehler[] = sprintf(spot_t('TEXT.TESTANSAGE_FEHL'), $sp_ta_was);
+        $sp_fehler[] = sprintf(spot_t('TEXT.TESTANSAGE_FEHL'), ansage_kennung_text($sp_ta['kennung'], spot_ansage_k()));
     }
     $sp_tab = 'tab-test';
 }
@@ -566,55 +570,27 @@ if ($sp_ist_post && isset($_POST['save'])) {
         'tomorrow' => isset($_POST['notify_tomorrow']) ? 1 : 0,
     );
     // ---- Sprachausgabe ----
-    $sp_lang = $sp_txt($sp_post('tts_lang'));
-    $sp_laut = $sp_txt($sp_post('tts_google_laut'));
-    $sp_new['tts'] = array(
-        'mode' => $sp_pruef($sp_txt($sp_post('tts_mode')), $sp_s['tts.mode'], 'tts_mode', 'tts.mode'),
-        'ip' => $sp_pruef($sp_txt($sp_post('tts_ip')), $sp_s['tts.ip'], 'tts_ip', 'tts.ip'),
-        'port' => $sp_pruef($sp_num($sp_post('tts_port')), $sp_s['tts.port'], 'tts_port', 'tts.port'),
-        'zones' => $sp_pruef($sp_txt($sp_post('tts_zones')), $sp_s['tts.zones'], 'tts_zones', 'tts.zones'),
-        'volume' => $sp_pruef($sp_num($sp_post('tts_volume')), $sp_s['tts.volume'], 'tts_volume', 'tts.volume'),
-        'lang' => $sp_pruef(is_string($sp_lang) ? strtolower($sp_lang) : $sp_lang, $sp_s['tts.lang'], 'tts_lang', 'tts.lang'),
-        'template' => $sp_pruef($sp_txt($sp_post('tts_template')), $sp_s['tts.template'], 'tts_template', 'tts.template'),
-        'alexa_token' => '',
-        'alexa_geraet' => $sp_pruef($sp_txt($sp_post('tts_alexa_geraet')), $sp_s['tts.alexa_geraet'], 'tts_alexa_geraet', 'tts.alexa_geraet'),
-        'google_token' => '',
-        'google_geraet' => $sp_pruef($sp_txt($sp_post('tts_google_geraet')), $sp_s['tts.google_geraet'], 'tts_google_geraet', 'tts.google_geraet'),
-        'google_laut' => $sp_laut === '' ? -1
-            : $sp_pruef($sp_num($sp_laut), $sp_s['tts.google_laut'], 'tts_google_laut', 'tts.google_laut'),
-    );
-    /* S1: die Sprechtoken wie das Marstek-Token - leer = unveraendert, Haken
-     * loescht, beides zugleich, falsche Form oder Liste: beanstandet. Eine
-     * gewaehlte Ausgabeart ohne Token ebenso (sie bliebe still wirkungslos). */
+    /* Seit 1.2.34 (Sprachausgabe Stufe 2, Nr. 36 b): der Formular-Baustein der gemeinsamen Sprachausgabe
+     * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
+     * Sprechtoken wie ein Kennwort (leer = unveraendert, der Haken loescht, beides zugleich ist ein
+     * Widerspruch), eine gewaehlte Art Alexa-NG/Google ohne Token ist beanstandet. Jede Beanstandung kommt in
+     * dieselbe Liste wie die der uebrigen Felder: bei EINER wird nichts gespeichert (Nr. 16), die Felder sind
+     * markiert, die Eingaben kommen zurueck (X-2, ohne Token). Die POST-Namen sind dieselben wie bis 1.2.33.
+     * Still bleibt wie bisher nur: die Sprache in Kleinbuchstaben, Leerraum am Rand. */
+    $sp_tpost = $_POST;
+    if (isset($sp_tpost['tts_lang']) && is_string($sp_tpost['tts_lang'])) {
+        $sp_tpost['tts_lang'] = strtolower($sp_tpost['tts_lang']);
+    }
+    $sp_tmangel = array();
+    $sp_tbean = array();
+    $sp_new['tts'] = ansage_formular_lesen($sp_tpost, spot_tts($sp_alt), $sp_tmangel, $sp_tbean,
+                                           spot_ansage_opt(), spot_ansage_k());
+    foreach ($sp_tmangel as $sp_tm) { $sp_fehler[] = $sp_tm['text']; }
+    foreach ($sp_tbean as $sp_tb) { $sp_feldfehler[] = $sp_tb; }
     $sp_tok_getippt = false;
-    foreach (array('alexa' => 'alexang', 'google' => 'cc4lox') as $sp_a => $sp_modus) {
-        $sp_feld = 'tts_' . $sp_a . '_token';
-        $sp_tk_neu = (isset($sp_alt['tts'][$sp_a . '_token']) && is_string($sp_alt['tts'][$sp_a . '_token']))
-            ? $sp_alt['tts'][$sp_a . '_token'] : '';
-        $sp_roh = $sp_post($sp_feld);
-        $sp_weg = isset($_POST[$sp_feld . '_weg']);
-        if (!is_string($sp_roh)) {
-            $sp_fehler[] = spot_t('TEXT.SPRECH_TOKEN_FORM');
-            $sp_feldfehler[] = $sp_feld;
-        } else {
-            $sp_roh = trim($sp_roh);
-            $sp_tok_getippt = $sp_tok_getippt || $sp_roh !== '';
-            if ($sp_roh !== '' && $sp_weg) {
-                $sp_fehler[] = spot_t('TEXT.SPRECH_TOKEN_BEIDES');
-                $sp_feldfehler[] = $sp_feld;
-            } elseif ($sp_roh !== '' && !spot_sprech_token_ok($sp_roh)) {
-                $sp_fehler[] = spot_t('TEXT.SPRECH_TOKEN_FORM');
-                $sp_feldfehler[] = $sp_feld;
-            } elseif ($sp_roh !== '') {
-                $sp_tk_neu = $sp_roh;
-            } elseif ($sp_weg) {
-                $sp_tk_neu = '';
-            }
-        }
-        $sp_new['tts'][$sp_a . '_token'] = $sp_tk_neu;
-        if ($sp_new['tts']['mode'] === $sp_modus && $sp_tk_neu === '' && !in_array($sp_feld, $sp_feldfehler, true)) {
-            $sp_fehler[] = spot_t($sp_a === 'alexa' ? 'TEXT.SPRECH_ALEXA_OHNE_TOKEN' : 'TEXT.SPRECH_GOOGLE_OHNE_TOKEN');
-            $sp_feldfehler[] = $sp_feld;
+    foreach (array('tts_alexa_token', 'tts_google_token') as $sp_tf) {
+        if (isset($_POST[$sp_tf]) && is_string($_POST[$sp_tf]) && trim($_POST[$sp_tf]) !== '') {
+            $sp_tok_getippt = true;
         }
     }
     // Das Token des Endpunkts gehoert nicht ins Formular (eigene Knoepfe).
@@ -973,7 +949,8 @@ ob_start();
    sm-seite. Ab hier folgen NUR Regeln, die die Vorlage nicht kennt.
    ================================================================== */
 .sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
-.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
+.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap input[type=password], .sm-wrap select,
+.sm-wrap textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
 .sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -1679,86 +1656,22 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 </div>
 
 <h2><?php echo spot_t('TEXT.SPRACHAUSGABE'); ?></h2>
-<div class="sm-row">
-    <div>
-        <label><?php echo spot_t('TEXT.AUDIO_AUSGABE'); ?></label>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="spTtsMode()">
-            <option value="musicserver"<?= $sp_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?php echo spot_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
-            <option value="ms4h"<?= $sp_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?php echo spot_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
-            <option value="audioserver"<?= $sp_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?php echo spot_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
-            <option value="custom"<?= $sp_tts['mode'] === 'custom' ? ' selected' : '' ?>><?php echo spot_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
-            <option value="alexang"<?= $sp_tts['mode'] === 'alexang' ? ' selected' : '' ?>><?php echo spot_t('TEXT.TTS_ALEXANG'); ?></option>
-            <option value="cc4lox"<?= $sp_tts['mode'] === 'cc4lox' ? ' selected' : '' ?>><?php echo spot_t('TEXT.TTS_CC4LOX'); ?></option>
-        </select>
-    </div>
-    <div>
-        <label><?php echo spot_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= sp_e($sp_tts['ip']) ?>" placeholder="<?= sp_e(spot_t('TEXT.IP_PLATZHALTER')) ?>">
-    </div>
-    <div>
-        <label><?php echo spot_t('TEXT.PORT'); ?></label>
-        <input data-role="none" type="number" name="tts_port" value="<?= (int) $sp_tts['port'] ?>" min="1" max="65535">
-    </div>
-</div>
-<div class="sm-row">
-    <div>
-        <label><?php echo spot_t('TEXT.ZONEN'); ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= sp_e($sp_tts['zones']) ?>" placeholder="<?= sp_e(spot_t('TEXT.ZONEN_PLATZHALTER')) ?>">
-        <div class="sm-small"><?php echo spot_t('TEXT.ZONENNUMMERN_MIT_KOMMA_Z_B'); ?> <span class="sm-mono">2,4,6</span><?php echo spot_t('TEXT.DIE_LAUTSTRKE_KOMMT_AUS_DEM_FELD_D'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.ZONE_LAUTSTRKE'); ?></span> <?php echo spot_t('TEXT.Z_B'); ?> <span class="sm-mono">2~25,4~40</span><?php echo spot_t('TEXT.LEERZEICHEN_NACH_DEM_KOMMA_SIND_ER'); ?> <span class="sm-mono">2,4,6</span> <?php echo spot_t('TEXT.UND'); ?> <span class="sm-mono">2, 4, 6</span> <?php echo spot_t('TEXT.FUNKTIONIEREN_BEIDE'); ?></div>
-    </div>
-    <div>
-        <label><?php echo spot_t('TEXT.LAUTSTRKE'); ?></label>
-        <input data-role="none" type="number" name="tts_volume" value="<?= (int) $sp_tts['volume'] ?>" min="1" max="100">
-    </div>
-    <div>
-        <label><?php echo spot_t('TEXT.SPRACHE'); ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= sp_e($sp_tts['lang']) ?>" maxlength="2">
-    </div>
-</div>
-<div id="tts_template_row">
-    <label><?php echo spot_t('TEXT.URL_VORLAGE_FR_AUDIOSERVER4HOME_MS'); ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="<?php echo spot_t('TEXT.HTTP'); ?>{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= sp_e($sp_tts['template']) ?></textarea>
-    <div class="sm-small"><?php echo spot_t('TEXT.PLATZHALTER'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.IP_PORT_ZONES_VOL_LANG_TEXT'); ?></span><?php echo spot_t('TEXT.LEER_STANDARD_VORLAGE'); ?></div>
-</div>
-<div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
-    <?php echo spot_t('TEXT.DER_ORIGINALE_LOXONE_AUDIOSERVER_B'); ?> <b><?php echo spot_t('TEXT.KEINE_HTTP_TTS_SCHNITTSTELLE'); ?></b><?php echo spot_t('TEXT.IN_DIESEM_MODUS_SPRICHT_DAS_PLUGIN'); ?>
-    <span class="sm-mono">ANN=1</span> (<?php echo spot_t('TEXT.ANLEITUNG_SCHRITT4'); ?>).
-</div>
-<?php /* S1: Alexa-NG und Google-Lautsprecher (Chromecast 4 Lox NG). Das Sprechtoken
-         ist ein Kennwortfeld: leer lassen behaelt es, der Haken loescht es, es
-         steht nie im Formular, in der Einmalmeldung oder in der Sicherung. */ ?>
-<div id="tts_alexa_row" style="<?= $sp_tts['mode'] === 'alexang' ? '' : 'display:none;' ?>">
-<div class="sm-row">
-    <div>
-        <label for="sp_tts_alexa_token"><?= sp_e(spot_t('TEXT.SPRECH_ALEXA_TOKEN_L')) ?></label>
-        <input data-role="none" type="password" id="sp_tts_alexa_token" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?= sp_e((string) $sp_tts['alexa_token'] !== '' ? sprintf(spot_t('TEXT.SPRECH_TOKEN_GESETZT'), strlen((string) $sp_tts['alexa_token'])) : spot_t('TEXT.SPRECH_TOKEN_LEER')) ?>"<?= in_array('tts_alexa_token', $sp_feldfehler, true) ? ' aria-invalid="true" style="border:2px solid #c62828;"' : '' ?>>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;"><input data-role="none" type="checkbox" name="tts_alexa_token_weg" value="1"><?= sp_e(spot_t('TEXT.SPRECH_TOKEN_WEG')) ?></label>
-    </div>
-    <div>
-        <label for="sp_tts_alexa_geraet"><?= sp_e(spot_t('TEXT.SPRECH_GERAET_L')) ?></label>
-        <input data-role="none" type="text" id="sp_tts_alexa_geraet" name="tts_alexa_geraet" value="<?= sp_e($sp_tts['alexa_geraet']) ?>" placeholder="<?= sp_e(spot_t('TEXT.SPRECH_GERAET_P')) ?>">
-    </div>
-</div>
-<div class="sm-small"><?php echo spot_t('TEXT.SPRECH_ALEXA_H'); ?></div>
-</div>
-<div id="tts_google_row" style="<?= $sp_tts['mode'] === 'cc4lox' ? '' : 'display:none;' ?>">
-<div class="sm-row">
-    <div>
-        <label for="sp_tts_google_token"><?= sp_e(spot_t('TEXT.SPRECH_GOOGLE_TOKEN_L')) ?></label>
-        <input data-role="none" type="password" id="sp_tts_google_token" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?= sp_e((string) $sp_tts['google_token'] !== '' ? sprintf(spot_t('TEXT.SPRECH_TOKEN_GESETZT'), strlen((string) $sp_tts['google_token'])) : spot_t('TEXT.SPRECH_TOKEN_LEER')) ?>"<?= in_array('tts_google_token', $sp_feldfehler, true) ? ' aria-invalid="true" style="border:2px solid #c62828;"' : '' ?>>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;"><input data-role="none" type="checkbox" name="tts_google_token_weg" value="1"><?= sp_e(spot_t('TEXT.SPRECH_TOKEN_WEG')) ?></label>
-    </div>
-    <div>
-        <label for="sp_tts_google_geraet"><?= sp_e(spot_t('TEXT.SPRECH_GERAET_L')) ?></label>
-        <input data-role="none" type="text" id="sp_tts_google_geraet" name="tts_google_geraet" value="<?= sp_e($sp_tts['google_geraet']) ?>" placeholder="<?= sp_e(spot_t('TEXT.SPRECH_GERAET_P')) ?>">
-    </div>
-    <div>
-        <label for="sp_tts_google_laut"><?= sp_e(spot_t('TEXT.SPRECH_LAUT_L')) ?></label>
-        <input data-role="none" type="text" id="sp_tts_google_laut" name="tts_google_laut" value="<?= (int) $sp_tts['google_laut'] >= 0 ? (int) $sp_tts['google_laut'] : '' ?>" placeholder="<?= sp_e(spot_t('TEXT.SPRECH_LAUT_P')) ?>">
-    </div>
-</div>
-<div class="sm-small"><?php echo spot_t('TEXT.SPRECH_GOOGLE_H'); ?></div>
-</div>
+<div class="sm-hinweis"><?php echo spot_t('TEXT.ANSAGE_HAUSFORM'); ?></div>
+<?php /* Seit 1.2.34 der Formular-Baustein der gemeinsamen Sprachausgabe (ansage_formular_html()): Klassen
+         sm-feld, sm-hilfe, sm-hinweis aus der Vorlage; das Umschalt-Skript des Bausteins blendet ein Feld mit
+         .sm-beanstandet nie aus. Die Eingaben nach einer Beanstandung setzt spot_eingaben_einsetzen() ein wie
+         bei allen Feldern dieses Formulars (X-2); ein Sprechtoken steht nie in der Seite. */ ?>
+<?php
+/* Die Kennwortfelder und Loesch-Haken reisen nie zurueck und werden deshalb von spot_eingaben_einsetzen()
+ * nicht markiert; ihre Markierung setzt der Baustein selbst ('m'), wie bis 1.2.33 die Vorlage. */
+$sp_tnie = array('tts_alexa_token', 'tts_google_token', 'tts_alexa_token_weg', 'tts_google_token_weg');
+$sp_th = spot_ansage_opt();
+$sp_th['m'] = function ($n) use ($sp_tnie, $sp_feldfehler) {
+    return (in_array($n, $sp_tnie, true) && in_array($n, $sp_feldfehler, true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+};
+?>
+<?= ansage_formular_html(spot_tts($sp_cfg), $sp_th, spot_ansage_k()) ?>
+<p class="sm-hilfe"><?php echo sprintf(spot_t('TEXT.ANSAGE_TEST_HINWEIS'), '<b>' . sp_e(spot_t('REITER.TEST')) . '</b>'); ?></p>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
@@ -2426,8 +2339,6 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 
 <h3 class="sm-h3"><?php echo spot_t('TEXT.LST_ETWAS_AUS'); ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?say=1<?= $sp_tk2 ?>" target="_blank"><?php echo spot_t('TEXT.TEST_ANSAGE_AKTUELLER_PREIS'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?saytomorrow=1<?= $sp_tk2 ?>" target="_blank"><?php echo spot_t('TEXT.TEST_ANSAGE_PREISE_MORGEN'); ?></a>
 <a class="sm-btn sm-b-aktion"  href="/plugins/<?= sp_e($sp_plugin) ?>/spot.php?ptest=1<?= $sp_tk2 ?>" target="_blank"><?php echo spot_t('TEXT.TEST_PUSHNACHRICHT_2'); ?></a>
 </div>
 <div class="sm-knopfreihe">
@@ -2435,6 +2346,7 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <?php echo spot_fmt(); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="1"><?php echo spot_t('TEXT.K_TESTANSAGE'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="morgen"><?php echo spot_t('TEXT.TEST_ANSAGE_PREISE_MORGEN'); ?></button>
   </form>
 </div>
 <div class="sm-small"><?php echo spot_t('TEXT.H_TESTANSAGE'); ?></div>
@@ -2568,17 +2480,6 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 
 </div>
 <script>
-function spTtsMode() {
-    var m = document.getElementById('tts_mode').value;
-    document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
-    document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
-    var ra = document.getElementById('tts_alexa_row');
-    if (ra) { ra.style.display = (m === 'alexang') ? 'block' : 'none'; }
-    var rg = document.getElementById('tts_google_row');
-    if (rg) { rg.style.display = (m === 'cc4lox') ? 'block' : 'none'; }
-    var port = document.getElementsByName('tts_port')[0];
-    if (m === 'musicserver' && (!port.value || port.value === '80')) { port.value = 7091; }
-}
 function spMarket() {
     var m = document.getElementById('market').value;
     var vat = document.getElementById('vat');
@@ -2661,7 +2562,6 @@ function spHours(mode) {
         });
     });
     activate(<?= json_encode($sp_tab) ?>);
-    spTtsMode();
 })();
 </script>
 <?php

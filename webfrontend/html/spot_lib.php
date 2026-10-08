@@ -655,24 +655,25 @@ function spot_config_normalisieren($cfg) {
     for ($i = 0; $i < 12; $i++) {
         $cfg['months'][$i] = isset($cfg['months'][$i]) ? max(0, (float) $cfg['months'][$i]) : 0.0;
     }
-    $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
-    /* S1 (Ansage-2/Ansage-3, 01.10.2026): je Ausgabeart ein eigenes Sprechtoken,
-     * Geraet (leer = Standardgeraet des anderen Plugins) und fuer Chromecast 4 Lox
-     * NG eine Lautstaerke (-1 = dessen Ansagelautstaerke). Ein Token in fremder
-     * Form gilt als "keines" (es ginge sonst nie als "Array" hinaus), eine
-     * Lautstaerke ausserhalb 0 bis 100 als -1 - abgewiesen wird beim Speichern
-     * und beim Zurueckspielen (spot_wert_mangel()). */
-    $cfg['tts'] += array('alexa_token' => '', 'alexa_geraet' => '',
-                         'google_token' => '', 'google_geraet' => '', 'google_laut' => -1);
+    /* Seit 1.2.34 (Sprachausgabe Stufe 2, Nr. 36 b): Vorgaben des Blocks tts aus der gemeinsamen
+     * Sprachausgabe - EINE Vorgabeliste (spot_tts()). Die Ausgabeart ab Werk bleibt musicserver wie bis
+     * 1.2.33 (mit leerer IP spricht sie nicht). Neu im Block: alexa_laut (-1 = Ansagelautstaerke von
+     * Alexa-NG), sonos_zone und sonos_laut (vom Modul vorgegeben; Sonos4Lox bietet diese Linie nicht an).
+     *
+     * S1 (Ansage-2/Ansage-3, 01.10.2026): Ein Token in fremder Form gilt als "keines" (es ginge sonst nie
+     * als "Array" hinaus), ein Geraet, das kein Text ist, als leer, eine Lautstaerke ausserhalb 0 bis 100
+     * als -1 - abgewiesen wird beim Speichern und beim Zurueckspielen (spot_wert_mangel()). */
+    $cfg['tts'] = spot_tts($cfg);
     foreach (array('alexa_token', 'google_token') as $sp_k) {
         $cfg['tts'][$sp_k] = spot_sprech_token_ok($cfg['tts'][$sp_k]) ? $cfg['tts'][$sp_k] : '';
     }
     foreach (array('alexa_geraet', 'google_geraet') as $sp_k) {
         if (!is_string($cfg['tts'][$sp_k])) { $cfg['tts'][$sp_k] = ''; }
     }
-    $sp_l = $cfg['tts']['google_laut'];
-    $cfg['tts']['google_laut'] = (is_int($sp_l) && $sp_l >= 0 && $sp_l <= 100) ? $sp_l : -1;
+    foreach (array('alexa_laut', 'google_laut') as $sp_k) {
+        $sp_l = $cfg['tts'][$sp_k];
+        $cfg['tts'][$sp_k] = (is_int($sp_l) && $sp_l >= 0 && $sp_l <= 100) ? $sp_l : -1;
+    }
     return $cfg;
 }
 
@@ -4188,59 +4189,72 @@ function spot_vorlage() {
     ), $cmds));
 }
 
-/* ---------------- Ansage (TTS) - identisch zu Abfahrtsassistent/Abfuhrkalender ---------------- */
+/* ---------------- Sprachausgabe (seit 1.2.34 in Hausform, Nr. 36 b Stufe 2) ----------------
+ *
+ * Gesprochen wird ueber die gemeinsame Sprachausgabe (sprachausgabe.php, Abschrift neben dieser Datei):
+ * ansage_sprechen() fuer jede Ausgabeart. Das Modul prueft vor jedem Senden, dass Adresse und Vorlage im
+ * Heimnetz liegen (Entscheidung Nr. 40, F1), folgt keiner Umleitung, nimmt keinen Proxy und haelt 10 s
+ * ein. Vom Text kommt nur die Laenge ins Protokoll (ansage_kurz()); das Sprechtoken steht nur im
+ * POST-Koerper an Alexa-NG bzw. Chromecast 4 Lox NG. Das Ergebnis jeder Ansage (Zeit, ok, Kennung - nie
+ * Text oder Token) legt das Modul als <art>_letzte.json im Datenordner ab; die Pruefzeile im Reiter Test
+ * nennt es.
+ *
+ * Bis 1.2.33 standen hier eigene Zweige je Ausgabeart (spot_tts_url, spot_sprech_ziel, spot_http_lokal,
+ * spot_sprechen_bewerten, spot_sprechen_an, spot_sprech_selbsttest, spot_ansage_letzte). Sie prueften das
+ * Heimnetz nicht und sind entfallen.
+ */
 
-/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null. */
-function spot_tts_url($text) {
-    $cfg = spot_config();
-    $tts = $cfg['tts'];
-    $mode = $tts['mode'];
-    if ($mode === 'audioserver') {
-        return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
-    }
-    if ($mode === 'alexang' || $mode === 'cc4lox') {
-        /* S1: die feste Adresse ohne Token; '' heisst "kein Sprechtoken hinterlegt". */
-        $z = spot_sprech_ziel($mode, $cfg);
-        return $z['token'] === '' ? '' : $z['adresse'];
-    }
-    /* Seit 1.2.33 baut die gemeinsame Sprachausgabe die Adresse, mit demselben
-     * Ergebnis wie der Code bis 1.2.32: Zonenliste einmal fuer alle Arten
-     * normalisiert ("2, 4" -> "2,4"), beim Music Server je Zone die
-     * Lautstaerke, IP nur verlangt, wenn die Art bzw. die Vorlage sie benutzt
-     * ('' = IP fehlt). Wie bis 1.2.32 geht jede Art ausser musicserver ueber
-     * die Vorlage (ms4h, custom). */
-    $tts['mode'] = ($mode === 'musicserver' || $mode === 'ms4h') ? $mode : 'custom';
-    return ansage_tts_url($text, $tts);
+/** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 1.2.33 nicht angeboten). 'aus' ist
+ *  neu waehlbar; ab Werk bleibt es musicserver (spot_tts()). */
+function spot_ansage_modi() {
+    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
 }
 
+/** Optionen fuer Formular-Baustein und Formular-Lesen: die erlaubten Arten und die POST-Namen der
+ *  Loesch-Haken, wie diese Linie sie seit Ansage-2 fuehrt (kein POST-Name aendert sich). */
+function spot_ansage_opt() {
+    return array('modi' => spot_ansage_modi(),
+                 'namen' => array('alexa_token_loeschen' => 'tts_alexa_token_weg',
+                                  'google_token_loeschen' => 'tts_google_token_weg'));
+}
+
+/** Der Block tts, vervollstaendigt mit den Vorgaben des Moduls - ab Werk musicserver wie bis 1.2.33. */
+function spot_tts($cfg = null) {
+    if (!is_array($cfg)) {
+        $cfg = spot_config();
+    }
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(),
+                                        'musicserver');
+    return $t;
+}
+
+/** Kontext der gemeinsamen Sprachausgabe: Webport, Kennung dieses Plugins, Datenordner fuer
+ *  <art>_letzte.json (nur wenn es ihn gibt) und die Texte aus der Sprachdatei. */
+function spot_ansage_k() {
+    $d = spot_paths()['datadir'];
+    return array('port' => spot_webport(), 'kopf' => array('User-Agent: LoxBerry-Plugin-Spotpreis'),
+                 'ordner' => @is_dir($d) ? $d : '',
+                 't' => function ($s) { return spot_t($s); },
+                 /* Zwei Saetze des Moduls sagen "ab Werk aus" - in dieser Linie ist ab Werk der Music
+                  * Server gewaehlt (Entwurf F7); dafuer stehen eigene Saetze in der Sprachdatei. */
+                 'schluessel' => array('ART_HINWEIS' => 'TEXT.ANSAGE_ART_HINWEIS', 'O_AUS' => 'TEXT.ANSAGE_O_AUS'));
+}
+
+/**
+ * Eine Ansage ueber die eingestellte Ausgabeart. Rueckgabe: das Ergebnis von ansage_sprechen() - stand
+ * (1 gesendet, 0 gescheitert, -1 nichts gesendet ohne Fehler: aus, Original-Audioserver, leerer Text),
+ * kennung, art, http, zeile, zeichen; nie Text oder Token. Ins Protokoll kommt genau eine Zeile.
+ */
+function spot_say_ergebnis($text) {
+    $r = ansage_sprechen((string) $text, spot_tts(), spot_ansage_k());
+    spot_log('Ansage: ' . ansage_kurz($r));
+    return $r;
+}
+
+/** Wie bis 1.2.33: true nur, wenn gesendet. */
 function spot_say($text) {
-    $cfg = spot_config();
-    $sp_mode = (string) $cfg['tts']['mode'];
-    if ($sp_mode === 'alexang' || $sp_mode === 'cc4lox') {
-        // S1: ueber den gemeinsamen Ruf-Teil; vom Text nur die Laenge ins Protokoll.
-        return spot_sprechen_an(spot_sprech_ziel($sp_mode, $cfg), $text);
-    }
-    $url = spot_tts_url($text);
-    if ($url === null) {
-        spot_ansage_letzte('AUDIOSERVER');
-        spot_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
-        return false;
-    }
-    if ($url === '') {
-        spot_ansage_letzte('KEINE_IP');
-        spot_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
-        return false;
-    }
-    /* Seit 1.2.33 ueber den Transport der gemeinsamen Sprachausgabe: ohne
-     * Proxy, ohne Weiterleitung, 10 s, Erfolg nur bei HTTP 2xx. Vom Text steht
-     * nur die Laenge im Protokoll (Nr. 40) - die Adresse traegt ihn und steht
-     * deshalb ebenfalls nicht darin. */
-    $k = spot_ansage_k();
-    $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k), $k);
-    $ok = $a['code'] >= 200 && $a['code'] < 300;
-    spot_ansage_letzte($ok ? 'OK' : 'FEHLER');
-    spot_log('Ansage gesendet: ' . ansage_zeichen((string) $text) . ' Zeichen -> ' . ($ok ? 'OK' : 'FEHLER'));
-    return $ok;
+    $r = spot_say_ergebnis($text);
+    return $r['stand'] === 1;
 }
 
 /**
@@ -4257,148 +4271,28 @@ function spot_say_feld($text) {
     return 'TEXTLAENGE=' . ansage_zeichen((string) $text);
 }
 
-/** Kontext der gemeinsamen Sprachausgabe: Webport und Kennung dieses Plugins. */
-function spot_ansage_k() {
-    return array('port' => spot_webport(), 'kopf' => array('User-Agent: LoxBerry-Plugin-Spotpreis'), 'ordner' => '');
-}
-
-/* ---- Ausgabearten Alexa-NG und Google-Lautsprecher (S1, 01.10.2026) ----
- *
- * Alexa-NG (https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG) und
- * Chromecast 4 Lox NG (https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox,
- * ab der Fassung mit "Sprachausgabe fuer andere Plugins") nehmen Ansagen mit
- * DERSELBEN Schnittstelle an: POST aktion=sprechen, token, geraet, laut, text;
- * Antwort eine Zeile SPRECHEN;OK=1;...;GRUND=... Verschieden sind nur der
- * Ordner, die Geraetenamen und das Sprechtoken (je eines, im jeweiligen Plugin
- * festgelegt). Beide Wege gehen an 127.0.0.1 mit dem Webport dieses LoxBerry,
- * ohne Proxy und ohne einer Umleitung zu folgen; das Token steht nur im
- * Koerper - nie in einer Adresse, im Protokoll, in der Antwort an Loxone, in der
- * Einmalmeldung oder in der Sicherung. Vom Ansagetext steht nur die Laenge im
- * Protokoll. Ab Werk ist keine der beiden Arten gewaehlt. */
-
-/** Form eines Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (Chromecast 4 Lox NG verlangt selbst 16). */
+/** Form eines Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (aus der gemeinsamen Sprachausgabe). */
 function spot_sprech_token_ok($t) {
-    return ansage_token_ok($t);     // seit 1.2.33 aus der gemeinsamen Sprachausgabe
+    return ansage_token_ok($t);
 }
 
-/** Port des Webservers dieses LoxBerry (general.json Webserver/WEBSERVER -> Port), sonst 80. */
+/** Port des Webservers dieses LoxBerry (lbwebserverport(), sonst general.json), sonst 80. */
 function spot_webport() {
     $p = spot_paths();
-    /* Seit 1.2.33 aus der gemeinsamen Sprachausgabe: Webserver.Port oder
-     * WEBSERVER.Port, nur Ziffern, 1 bis 65535, sonst 80. */
     return ansage_webport($p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '');
 }
 
-/** Die Angaben des gemeinsamen Ruf-Teils fuer eine der beiden Arten. */
-function spot_sprech_ziel($art, $cfg = null) {
-    if ($cfg === null) {
-        $cfg = spot_config();
-    }
-    $t = $cfg['tts'];
-    if ($art === 'cc4lox') {
-        return array('name' => 'Chromecast 4 Lox NG',
-                     'adresse' => ansage_adresse('cc4lox', spot_webport()),
-                     'token' => (string) $t['google_token'], 'geraet' => (string) $t['google_geraet'],
-                     'laut' => (int) $t['google_laut'], 'fehlt' => 'TEXT.SPRECH_GOOGLE_FEHLT');
-    }
-    return array('name' => 'Alexa-NG',
-                 'adresse' => ansage_adresse('alexang', spot_webport()),
-                 'token' => (string) $t['alexa_token'], 'geraet' => (string) $t['alexa_geraet'],
-                 'laut' => -1, 'fehlt' => 'TEXT.SPRECH_ALEXA_FEHLT');
-}
-
-/** Ergebnis der letzten Ansage dieses Aufrufs (fuer die Testansage) - nie mit Token oder Text. */
-function spot_ansage_letzte($setzen = null) {
-    static $letzte = '';
-    if ($setzen !== null) {
-        $letzte = (string) $setzen;
-    }
-    return $letzte;
-}
-
 /**
- * POST an einen Endpunkt auf DIESEM LoxBerry ueber den Transport der
- * gemeinsamen Sprachausgabe (seit 1.2.33): ohne Proxy, ohne Umleitung, 3 s
- * Verbindungsfrist, $zeit s gesamt, hoechstens 64 KiB Rumpf. Rueckgabe wie bis
- * 1.2.32: array('code' => HTTP-Code oder 0, 'body' => Rumpf, 'fehler' => '' |
- * ZEIT | VERBINDUNG).
+ * Die Pruefzeile der Sprachausgabe fuer den Reiter Test und ?selftest=1: array(0|1|2, Klartext). Gefragt
+ * werden Alexa-NG bzw. Chromecast 4 Lox NG nur mit $offen (Knopf; selftest=1, spricht nicht), der Music
+ * Server nie (eine Probe dort spraeche). 2 = nicht beurteilt (aus, Original-Audioserver, Knopf nicht
+ * gedrueckt, Hinweis). Der Text ist roh - die Tabelle maskiert (sp_e()).
  */
-function spot_http_lokal($url, array $felder, $zeit = 10) {
+function spot_ansage_pruefzeile($offen) {
     $k = spot_ansage_k();
-    $a = ansage_ausfuehren(ansage_anfrage('POST', (string) $url, $felder, (int) $zeit, $k), $k);
-    if ((int) $a['code'] <= 0) {
-        return array('code' => 0, 'body' => '', 'fehler' => ((int) $a['errno'] === 28) ? 'ZEIT' : 'VERBINDUNG');
-    }
-    return array('code' => (int) $a['code'], 'body' => (string) $a['rumpf'], 'fehler' => '');
-}
-
-/**
- * Antwort eines Sprech-Endpunkts bewerten: array(ok, Text fuer Protokoll und
- * Anzeige). Gesendet ist nur HTTP 200 UND eine Zeile, die mit "<KOPF>;OK=1"
- * beginnt (UNVERAENDERT und TEXT_NULL zaehlen als gesendet). 404 ohne GRUND
- * kommt vom Webserver selbst: das andere Plugin fehlt oder ist zu alt.
- */
-function spot_sprechen_bewerten(array $r, $tok, $kopf, array $z) {
-    $rumpf = trim(str_replace((string) $tok, '***', (string) $r['body']));
-    $zeile = (string) strtok($rumpf, "\n");
-    $grund = preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})/', $zeile, $m) ? $m[1] : '';
-    if ((int) $r['code'] === 200 && strpos($zeile, $kopf . ';OK=1') === 0) {
-        return array(true, 'HTTP 200' . ($grund !== '' ? ', GRUND=' . $grund : ''));
-    }
-    if ((int) $r['code'] === 0) {
-        return array(false, spot_t($r['fehler'] === 'ZEIT' ? 'TEXT.SPRECH_ZEIT' : 'TEXT.SPRECH_VERBINDUNG'));
-    }
-    $was = 'HTTP ' . (int) $r['code'] . ($grund !== '' ? ', GRUND=' . $grund : '');
-    if ($grund === '' && (int) $r['code'] === 404) {
-        return array(false, spot_t($z['fehlt']) . ' (' . $was . ')');
-    }
-    return array(false, $was);
-}
-
-/** Eine Ansage ueber Alexa-NG oder Chromecast 4 Lox NG. Rueckgabe true nur bei Erfolg. */
-function spot_sprechen_an(array $z, $text) {
-    $tok = (string) $z['token'];
-    if ($tok === '') {
-        spot_ansage_letzte(spot_t('TEXT.SPRECH_KEIN_TOKEN'));
-        spot_log('Ansage uebersprungen: Ausgabeart ' . $z['name'] . ', aber kein Sprechtoken hinterlegt');
-        return false;
-    }
-    $f = array('aktion' => 'sprechen', 'token' => $tok);
-    if ((string) $z['geraet'] !== '') {
-        $f['geraet'] = (string) $z['geraet'];
-    }
-    if ((int) $z['laut'] >= 0 && (int) $z['laut'] <= 100) {
-        $f['laut'] = (int) $z['laut'];
-    }
-    $f['text'] = (string) $text;
-    list($ok, $was) = spot_sprechen_bewerten(spot_http_lokal($z['adresse'], $f, 10), $tok, 'SPRECHEN', $z);
-    spot_ansage_letzte($was);
-    $wo = array();
-    if (isset($f['geraet'])) { $wo[] = 'Geraet ' . $f['geraet']; }
-    if (isset($f['laut'])) { $wo[] = 'Lautstaerke ' . $f['laut']; }
-    $laenge = preg_match_all('/./us', (string) $text);
-    spot_log('Ansage an ' . $z['name'] . ($wo ? ' (' . implode(', ', $wo) . ')' : '') . ': '
-        . (int) $laenge . ' Zeichen -> ' . ($ok ? 'OK, ' : 'FEHLER, ') . $was);
-    return $ok;
-}
-
-/** Selbsttest gegen Alexa-NG / Chromecast 4 Lox NG: POST selftest=1 - prueft nur das Token, spricht nichts. */
-function spot_sprech_selbsttest($art) {
-    $z = spot_sprech_ziel($art);
-    if ($z['token'] === '') {
-        return array(0, sprintf(spot_t('PRUEFTEXT.SPRECH_KEIN_TOKEN'), $z['name']));
-    }
-    $r = spot_http_lokal($z['adresse'], array('selftest' => '1', 'token' => $z['token']), 10);
-    list($ok, $was) = spot_sprechen_bewerten($r, $z['token'], 'SELFTEST', $z);
-    if (!$ok) {
-        return array(0, sprintf(spot_t('PRUEFTEXT.SPRECH_NEIN'), $z['name'], $was));
-    }
-    $zeile = (string) strtok(trim((string) $r['body']), "\n");
-    $hinweis = array();
-    if (preg_match('/;SPRECHEN=0(;|$)/', $zeile)) { $hinweis[] = spot_t('PRUEFTEXT.SPRECH_AUS'); }
-    if (preg_match('/;DIENST=0(;|$)/', $zeile)) { $hinweis[] = spot_t('PRUEFTEXT.SPRECH_DIENST'); }
-    return array($hinweis ? 0 : 1, sprintf(spot_t('PRUEFTEXT.SPRECH_JA'), $z['name'], $was)
-        . ($hinweis ? ' ' . implode(' ', $hinweis) : ''));
+    $k['e'] = function ($s) { return (string) $s; };
+    list($st, $text) = ansage_pruefzeile(spot_tts(), (bool) $offen, $k);
+    return array($st === 1 ? 1 : ($st === 0 ? 0 : 2), $text);
 }
 
 /**
@@ -4431,22 +4325,22 @@ function spot_announce_text($st = null) {
      * aenderte, musste an diese Liste denken. In den Sprachdateien stehen
      * die Umlaute unmittelbar. */
     if ($st['neg']) {
-        $t = sprintf(spot_t('ANSAGE.NEGATIV'), spot_num($st['cur'], 1));
+        $t = sprintf(spot_t('SPOT_ANSAGE.NEGATIV'), spot_num($st['cur'], 1));
     } else {
-        $t = sprintf(spot_t('ANSAGE.PREIS'), spot_num($st['cur'], 1));
+        $t = sprintf(spot_t('SPOT_ANSAGE.PREIS'), spot_num($st['cur'], 1));
         if ($st['level'] === 1) {
-            $t .= spot_t('ANSAGE.GUENSTIG');
+            $t .= spot_t('SPOT_ANSAGE.GUENSTIG');
         } elseif ($st['level'] === 3) {
-            $t .= spot_t('ANSAGE.TEUER');
+            $t .= spot_t('SPOT_ANSAGE.TEUER');
         }
     }
     if ($st['fenster']['in'] === 0) {
-        $t .= sprintf(spot_t('ANSAGE.FENSTER_JETZT'), (int) $st['fenster_len']);
+        $t .= sprintf(spot_t('SPOT_ANSAGE.FENSTER_JETZT'), (int) $st['fenster_len']);
     } elseif ($st['fenster']['in'] > 0) {
-        $t .= sprintf(spot_t('ANSAGE.FENSTER_SPAETER'), (int) $st['fenster']['h']);
+        $t .= sprintf(spot_t('SPOT_ANSAGE.FENSTER_SPAETER'), (int) $st['fenster']['h']);
     }
     if (!empty($st['co2_ok']) && !empty($st['co2_clean'])) {
-        $t .= sprintf(spot_t('ANSAGE.CO2'), (int) $st['co2']);
+        $t .= sprintf(spot_t('SPOT_ANSAGE.CO2'), (int) $st['co2']);
     }
     return $t;
 }
@@ -4459,7 +4353,7 @@ function spot_tomorrow_text($st = null) {
     if (!$st['tomorrow_ok']) {
         return '';
     }
-    return sprintf(spot_t('ANSAGE.MORGEN'),
+    return sprintf(spot_t('SPOT_ANSAGE.MORGEN'),
         (int) $st['morgen']['minh'], spot_num($st['morgen']['minp'], 1),
         (int) $st['morgen']['maxh'], spot_num($st['morgen']['maxp'], 1),
         spot_num($st['morgen']['avg'], 1));
@@ -4476,8 +4370,8 @@ function spot_month_text($vm) {
     if (!is_array($vm)) {
         return '';
     }
-    $t = sprintf(spot_t('ANSAGE.MONAT'), spot_num($vm['dynp'], 1), spot_num($vm['fix'], 1));
-    $t .= sprintf(spot_t($vm['diff'] >= 0 ? 'ANSAGE.MONAT_DYN' : 'ANSAGE.MONAT_FIX'),
+    $t = sprintf(spot_t('SPOT_ANSAGE.MONAT'), spot_num($vm['dynp'], 1), spot_num($vm['fix'], 1));
+    $t .= sprintf(spot_t($vm['diff'] >= 0 ? 'SPOT_ANSAGE.MONAT_DYN' : 'SPOT_ANSAGE.MONAT_FIX'),
         spot_num(abs($vm['diff']), 1));
     return $t;
 }
@@ -4756,7 +4650,8 @@ function spot_t($schluessel)
  * adresse ('' oder http/https), thema (MQTT-Praefix), monate, stunden.
  * ================================================================== */
 
-/** Die Schranken je Schluessel; Unterschluessel als 'regel.<k>', 'tts.<k>', 'notify.<k>'. */
+/** Die Schranken je Schluessel; Unterschluessel als 'regel.<k>', 'notify.<k>'. Den Block tts prueft seit
+ *  1.2.34 die gemeinsame Sprachausgabe (spot_wert_mangel()). */
 function spot_schranken() {
     $text_feld = array('text', 0, 200, '/["\']/');
     return array(
@@ -4806,13 +4701,6 @@ function spot_schranken() {
         'notify.audio' => array('schalter'), 'notify.push' => array('schalter'),
         'notify.only_cheap' => array('schalter'), 'notify.negative' => array('schalter'),
         'notify.tomorrow' => array('schalter'), 'notify.hours' => array('stunden'),
-        // Sprachausgabe
-        'tts.mode' => array('wahl', array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox')),
-        'tts.ip' => array('text', 0, 253, '/[^A-Za-z0-9.:\[\]\-]/'), 'tts.port' => array('ganz', 1, 65535),
-        'tts.zones' => array('text', 0, 100, '/[^0-9~, ]/'), 'tts.volume' => array('ganz', 1, 100),
-        'tts.lang' => array('text', 2, 2, '/[^a-z]/'), 'tts.template' => array('text', 0, 1000, ''),
-        'tts.alexa_geraet' => array('text', 0, 200, ''), 'tts.google_geraet' => array('text', 0, 200, ''),
-        'tts.google_laut' => array('ganz', -1, 100),
     );
 }
 
@@ -4910,6 +4798,17 @@ function spot_wert_mangel($k, $w) {
                 if ($uw !== '') { $aus[] = array('tts.' . $uk, array('SPRECHTOKEN')); }
                 continue;
             }
+            /* Seit 1.2.34 prueft die gemeinsame Sprachausgabe jeden Wert des Blocks tts - dieselbe Pruefung
+             * wie das Formular (Heimnetz fuer Adresse und Vorlage, Entscheidung Nr. 40). Ein Eintrag, den das
+             * Modul nicht kennt, bleibt FREMD; genannt werden Name und Grund, nie der Wert. */
+            if ($k === 'tts') {
+                if (!array_key_exists($uk, ansage_vorgaben())) { $aus[] = array('tts.' . $uk, array('FREMD')); continue; }
+                $sp_g = '';
+                if (ansage_wert_pruefen(array($uk => $uw), $sp_g, spot_ansage_modi()) === null) {
+                    $aus[] = array('tts.' . $uk, array('ANSAGE', $sp_g));
+                }
+                continue;
+            }
             if (!isset($s[$k . '.' . $uk])) { $aus[] = array($k . '.' . $uk, array('FREMD')); continue; }
             $m = spot_wert_gegen($uw, $s[$k . '.' . $uk]);
             if ($m !== null) { $aus[] = array($k . '.' . $uk, $m); }
@@ -4947,6 +4846,12 @@ function spot_wert_text($m) {
     }
     if ($k === 'WAHL') {
         return sprintf($t, $m[1]);
+    }
+    if ($k === 'ANSAGE') {
+        // Seit 1.2.34: der Satz der gemeinsamen Sprachausgabe zu ihrer Kennung (Abschnitt [ANSAGE]). Manche
+        // Saetze beginnen schon mit dem Namen (tts.port: ...); der steht in der Meldung bereits davor.
+        $sp_s = ansage_kennung_text(isset($m[1]) ? (string) $m[1] : '', spot_ansage_k());
+        return (string) preg_replace('/^tts\\.[a-z_]+: /', '', $sp_s);
     }
     return $t;
 }
@@ -5631,17 +5536,14 @@ function spot_selbsttest($endpunkt_pruefen = false)
         list($sp_mok, $sp_mtext) = spot_marstek_pruefen($endpunkt_pruefen);
         $add('PRUEF.MARSTEK', $sp_mok, $sp_mtext);
     }
-    /* S1: Antwortet Alexa-NG bzw. Chromecast 4 Lox NG, passt das Sprechtoken? Nur
-     * mit einer dieser Ausgabearten, und gefragt wird nur auf den Knopf (wie der
-     * eigene Endpunkt) - sonst kostete ein haengender Dienst jeden Seitenaufbau. */
-    $sp_tm = (string) $cfg['tts']['mode'];
-    if ($sp_tm === 'alexang' || $sp_tm === 'cc4lox') {
-        if ($endpunkt_pruefen) {
-            list($sp_sok, $sp_stext) = spot_sprech_selbsttest($sp_tm);
-        } else {
-            $sp_sok = 2;
-            $sp_stext = sprintf(spot_t('PRUEFTEXT.SPRECH_KNOPF'), spot_sprech_ziel($sp_tm, $cfg)['name']);
-        }
+    /* Sprachausgabe (seit 1.2.34 die Zeile der gemeinsamen Sprachausgabe, ansage_pruefzeile()). Alexa-NG
+     * bzw. Chromecast 4 Lox NG werden nur auf den Knopf gefragt (selftest=1, spricht nicht) - sonst
+     * kostete ein haengender Dienst jeden Seitenaufbau; der Music Server nie (eine Probe dort spraeche).
+     * Die Zeile steht, wenn eine dieser Arten gewaehlt oder die Ansage eingeschaltet ist; ohne Ansage gibt
+     * es nichts zu beurteilen. Hinten angehaengt wie bisher. */
+    $sp_tm = (string) spot_tts($cfg)['mode'];
+    if ($sp_tm === 'alexang' || $sp_tm === 'cc4lox' || !empty($cfg['notify']['audio'])) {
+        list($sp_sok, $sp_stext) = spot_ansage_pruefzeile($endpunkt_pruefen);
         $add('PRUEF.SPRECHEN', $sp_sok, $sp_stext);
     }
     return $z;

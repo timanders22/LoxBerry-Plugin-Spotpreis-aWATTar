@@ -218,7 +218,7 @@ if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
         // einem Plugin, dessen Ansagen seit 1.1.2 aus den Sprachdateien
         // kommen. Wer die Oberflaeche auf Englisch fuehrt, bekam eine
         // deutsche Testansage.
-        $text = spot_t('ANSAGE.TEST_LEER');
+        $text = spot_t('SPOT_ANSAGE.TEST_LEER');
     }
     $ok = spot_say($text);
     /* Seit 1.2.33 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */

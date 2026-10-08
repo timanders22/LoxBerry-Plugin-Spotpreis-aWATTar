@@ -8,6 +8,34 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.34
+
+Sprachausgabe in Hausform (Entscheidung 40, Stufe 2). Gemessen unter PHP 7.4 und 8.5 gegen Attrappen
+(Music Server, MusicServer4Home, eigene Vorlage, Alexa-NG, Chromecast 4 Lox NG); nicht am Gerät und nicht an
+einem echten Lautsprecher.
+
+* **Einstellungen der Sprachausgabe** kommen jetzt aus dem gemeinsamen Baustein der Plugins dieses Hauses.
+  Neu wählbar ist die Ausgabeart „aus“; ab Werk bleibt es beim Loxone Music Server (mit leerer IP spricht er
+  nicht). Alexa-NG hat jetzt ein eigenes Feld für die Lautstärke (leer = Ansagelautstärke von Alexa-NG).
+* **Adresse und Vorlage müssen im Heimnetz liegen** (private IPv4-Bereiche, Namen ohne Punkt oder mit
+  `.local`, `.lan`, `.home`, `.fritz.box`, `.intern` …). Eine Adresse im Internet wird beim Speichern
+  beanstandet, beim Zurückspielen abgewiesen und vor jedem Senden noch einmal geprüft.
+* Sprache genau zwei Buchstaben, Zonen als Zahlen mit Komma (je wahlweise `~Lautstärke` 1 bis 100),
+  Lautstärken 1 bis 100 oder leer, Vorlage höchstens 500 Zeichen. Bei einer Beanstandung wird nichts
+  gespeichert, die Eingaben bleiben im Formular stehen.
+* **Testansage nur noch als Knopf (POST) im Reiter Test**, für den aktuellen Preis und für die Preise von
+  morgen; ein Neuladen der Seite spricht nicht noch einmal. Die beiden Verweise auf `spot.php?say=1` und
+  `?saytomorrow=1` im Reiter Test sind entfallen – der Endpunkt selbst ist für Loxone unverändert.
+* Die Prüfzeile „Sprachausgabe“ im Reiter Test steht, sobald eine Ansage eingeschaltet ist, und nennt das
+  Ergebnis der letzten Ansage. Ins Protokoll kommt je Ansage eine Zeile mit Art, Ergebnis, Zeichenzahl und
+  HTTP-Code – nie der Text, nie ein Sprechtoken.
+* Baustein-Liste: die Spalte „Eingänge verbinden mit“ in der Form `I1 = #N, I2 = #M` (für das
+  Leitungswerkzeug).
+* Gemeinsame Dateien: Fahrplaner `planer.php` 1.1.9 (ein direkter Aufruf über den Webserver bekommt 403),
+  Sprachmodul 1.1.1.
+
+**In Loxone:** nichts zu tun. Die Antwort auf `?say=1` bleibt `SAY;OK=…;TEXTLAENGE=…`.
+
 ## Was 1.2.33 behebt
 
 Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
