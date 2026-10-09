@@ -4235,9 +4235,10 @@ function spot_ansage_k() {
     return array('port' => spot_webport(), 'kopf' => array('User-Agent: LoxBerry-Plugin-Spotpreis'),
                  'ordner' => @is_dir($d) ? $d : '',
                  't' => function ($s) { return spot_t($s); },
-                 /* Zwei Saetze des Moduls sagen "ab Werk aus" - in dieser Linie ist ab Werk der Music
-                  * Server gewaehlt (Entwurf F7); dafuer stehen eigene Saetze in der Sprachdatei. */
-                 'schluessel' => array('ART_HINWEIS' => 'TEXT.ANSAGE_ART_HINWEIS', 'O_AUS' => 'TEXT.ANSAGE_O_AUS'));
+                 /* Ab Werk ist in dieser Linie der Music Server gewaehlt (spot_tts()). Seit Modul 1.1.2
+                  * sagt das Modul es selbst ('werk'); die eigenen Saetze TEXT.ANSAGE_ART_HINWEIS und
+                  * TEXT.ANSAGE_O_AUS (Entwurf F7) sind seit 1.2.36 gestrichen. */
+                 'werk' => 'musicserver');
 }
 
 /**

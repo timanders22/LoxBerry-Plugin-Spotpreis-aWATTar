@@ -8,6 +8,22 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.36
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone, Schritt 4):** Die Befehle des virtuellen HTTP-Eingangs
+  tragen in der Spalte „Eingänge verbinden mit“ jetzt „– (Befehl unter #1)“: Sie haben keinen Eingang,
+  sie liegen unter #1. An den Statusbausteinen heißen die Eingänge `V1`, `V2`, `V3` wie in Loxone
+  Config. Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe: Werksart vom Modul.** Ab Werk spricht das Plugin über den Loxone Music Server. Das
+  sagt jetzt das Modul selbst: „Loxone Music Server (ab Werk)“ in der Auswahl und der Hinweis, dass erst
+  gesprochen wird, wenn die Angaben eingetragen sind. Die beiden eigenen Sätze der Linie sind gestrichen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Dazu aus dem Modul:
+  Zeichenzahl bei kaputtem UTF-8 in Zeichen, die Meldung „Port abgewiesen“ nennt das Feld nicht mehr
+  doppelt, ein Satz statt der rohen Kennung bei einem unbekannten Eintrag im Block der Sprachausgabe.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.35
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
