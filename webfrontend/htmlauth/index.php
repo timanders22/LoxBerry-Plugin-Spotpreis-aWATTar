@@ -989,6 +989,15 @@ ob_start();
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
 /* X-2: beanstandete Felder (spot_eingaben_einsetzen()). */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+/* Welle Bild 16 (1.2.37): Seiten aus dem Musterprojekt im Reiter Einbindung - Ueberschrift je Seite,
+   Schritte, Hinweise, Bild (Bauart Funkwacht 1.0.15 / Raumklima 0.11.20). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 <div class="sm-wrap">
@@ -1955,116 +1964,42 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 
 <div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
 <?php
-/* X-8 (Nachzug 02.10.2026, im Bau Planer-30): EINE Liste in der Hausform -
- * #, Baustein (Typ), Name (Vorschlag), Parameter, Eingaenge verbinden mit. Bis 1.2.32
- * standen hier sieben Teiltabellen ohne Nummer, mit Kurzzeichen (S1, U1, O1 ...).
- *
- * Je Zeile: Kennung => array(Gruppe, Typ, Name, Parameter, Eingaenge)
- *   Name       Sprachschluessel, oder array('mono', Text) fuer die Befehlsnamen der Vorlage
- *   Parameter  Sprachschluessel, array('mono', Text), array('mono_t', Schluessel),
- *              array('t', Schluessel, Kennung ...) (Text mit %d) oder ''
- *   Eingaenge  array(Schluessel mit %d, Kennung ...) oder ''
- * Die Nummer ist die Stelle in der Liste; Verweise gehen ueber die Kennung, damit eine
- * eingeschobene Zeile keinen Verweis verschiebt. Regel A4: ein UND/ODER hat hoechstens
- * zwei Eingaenge, eine Quelle je Eingang. */
-$sp_bl = array(
-    'VE'       => array('ein', 'TEXT.BL_T_VE', array('mono', 'Spotpreis aWATTar'), 'TEXT.BL_P_VE', ''),
-    'ANN'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_ANN'), array('mono_t', 'TEXT.IANN_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'PUSH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_PUSH'), array('mono_t', 'TEXT.IPUSH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'PTEST'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_PTEST'), array('mono_t', 'TEXT.IPTEST_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'LEVEL'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_LEVEL'), array('mono_t', 'TEXT.ILEVEL_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'CUR'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CUR'), array('mono_t', 'TEXT.ICUR_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'NEG'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_NEG'), array('mono_t', 'TEXT.INEG_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'WININ'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WININ'), array('mono_t', 'TEXT.IWININ_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'WINH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WINH'), array('mono_t', 'TEXT.IWINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'WINCT'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_WINCT'), array('mono_t', 'TEXT.IWINCT_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'OK'       => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_OK'), array('mono_t', 'TEXT.IOK_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'MINH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MINH'), array('mono_t', 'TEXT.IMINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'MINP'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MINP'), array('mono_t', 'TEXT.IMINP_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'MAXH'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_MAXH'), array('mono_t', 'TEXT.IMAXH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'CO2CLEAN' => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2CLEAN'), array('mono_t', 'TEXT.ICO2CLEAN_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'CO2'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2'), array('mono_t', 'TEXT.ICO2_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'CO2MINH'  => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_CO2MINH'), array('mono_t', 'TEXT.ICO2MINH_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'DYNM'     => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_DYNM'), array('mono_t', 'TEXT.IDYNM_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'FIX'      => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_FIX'), array('mono_t', 'TEXT.IFIX_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'DIFFM'    => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_DIFFM'), array('mono_t', 'TEXT.IDIFFM_I_V'), array('TEXT.BL_E_UNTER', 'VE')),
-    'TS'       => array('ein', 'TEXT.BL_T_VEB', array('mono', 'SPOT_TS'), array('mono', '\i;TS=\i\v'), array('TEXT.BL_E_UNTER', 'VE')),
-    // Stundenansage-Push
-    'S1'  => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.MELDEFENSTER_AKTIV', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'ANN')),
-    'S2'  => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.PUSH_FREIGEGEBEN', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'PUSH')),
-    'U1'  => array('ansage', 'TEXT.BL_T_UND', 'TEXT.PREIS_PUSH_JETZT', '', array('TEXT.BL_E_2', 'S1', 'S2')),
-    'O1'  => array('ansage', 'TEXT.BL_T_ODER', 'TEXT.PUSH_SAMMLER', 'TEXT.EINZIGE_QUELLE_DES_BENACHRICHTIGUN', array('TEXT.BL_E_1', 'U1')),
-    'B1'  => array('ansage', 'TEXT.BL_T_BENACHR', 'TEXT.PUSH_AKTUELLER_STROMPREIS', 'TEXT.TEXT_Z_B_STROMPREIS_JETZT_V1_1_CT_', array('TEXT.BL_E_1', 'O1')),
-    'SPT' => array('ansage', 'TEXT.BL_T_SWS', 'TEXT.BL_N_PTEST', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'PTEST')),
-    'B2'  => array('ansage', 'TEXT.BL_T_BENACHR', 'TEXT.TEST_PUSH', 'TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST', array('TEXT.BL_E_1', 'SPT')),
-    // Guenstig-/Teuer-Schaltung fuer grosse Verbraucher
-    'S3'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.STROM_IST_GNSTIG', 'TEXT.BL_P_S3', array('TEXT.BL_E_ODER_CT', 'LEVEL', 'CUR')),
-    'S4'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.STROM_IST_TEUER', 'TEXT.EIN_2_5_AUS_2_4_AN_LEVEL', array('TEXT.BL_E_1', 'LEVEL')),
-    'S5'  => array('gross', 'TEXT.BL_T_SWS', 'TEXT.BRSENPREIS_NEGATIV_2', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'NEG')),
-    'O2'  => array('gross', 'TEXT.BL_T_ODER', 'TEXT.FREIGABE_GROE_VERBRAUCHER', 'TEXT.AUF_FREIGABE_EINGANG_VON_WALLBOX_W', array('TEXT.BL_E_2', 'S3', 'S5')),
-    'U2'  => array('gross', 'TEXT.BL_T_UND', 'TEXT.SPERRE_BEI_HOCHPREIS', 'TEXT.Z_B_HEIZSTAB_BOILER_SPERREN', array('TEXT.BL_E_EIGEN', 'S4')),
-    // Guenstigstes Fenster nutzen
-    'S6'  => array('fenster', 'TEXT.BL_T_SWS', 'TEXT.GNSTIGSTES_FENSTER_LUFT', 'TEXT.INVERTIERT_EIN_BEI_UNTERSCHREITEN_', array('TEXT.BL_E_1', 'WININ')),
-    'U3'  => array('fenster', 'TEXT.BL_T_UND', 'TEXT.START_FREIGABE_GERT', 'TEXT.SCHALTSTECKDOSE_GERTE_STARTBEFEHL', array('TEXT.BL_E_TASTER', 'S6')),
-    'ST1' => array('fenster', 'TEXT.BL_T_STATUS', 'TEXT.HINWEIS_KACHEL', 'TEXT.TEXT_GNSTIGSTES_FENSTER_AB_V1_0_UH', array('TEXT.BL_E_I2', 'WINH', 'WINCT')),
-    // Preise fuer morgen
-    'S7'  => array('morgen', 'TEXT.BL_T_SWS', 'TEXT.PREISE_FR_MORGEN_VORHANDEN', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'OK')),
-    'IG1' => array('morgen', 'TEXT.BL_T_IMPULS', 'TEXT.IMPULS_20_00_TAGESVORSCHAU', 'TEXT.20_00_UHR', ''),
-    'U4'  => array('morgen', 'TEXT.BL_T_UND', 'TEXT.BL_N_U4', '', array('TEXT.BL_E_2', 'IG1', 'S7')),
-    'ST2' => array('morgen', 'TEXT.BL_T_STATUS', 'TEXT.BL_N_ST2', 'TEXT.TEXT_MORGEN_AM_GNSTIGSTEN_UM_V1_0_', array('TEXT.BL_E_I3', 'MINH', 'MINP', 'MAXH')),
-    'B3'  => array('morgen', 'TEXT.BL_T_BENACHR', 'TEXT.PUSH_MORGEN_GNSTIGSTE_STUNDE', array('t', 'TEXT.BL_P_TEXT_AUS', 'ST2'), array('TEXT.BL_E_1', 'U4')),
-    // CO2-optimiertes Schalten
-    'S8'  => array('co2', 'TEXT.BL_T_SWS', 'TEXT.OUML_KOSTROM_ZEIT', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'CO2CLEAN')),
-    'O3'  => array('co2', 'TEXT.BL_T_ODER', 'TEXT.FREIGABE_SAUBER_ODER_GNSTIG', 'TEXT.Z_B_WARMWASSER_NACHHEIZUNG_SPEICHE', array('TEXT.BL_E_2', 'S8', 'S3')),
-    'ST3' => array('co2', 'TEXT.BL_T_STATUS', 'TEXT.KACHEL_STROMMIX', 'TEXT.TEXT_V1_0_G_CO2_KWH_SAUBERSTE_STUN', array('TEXT.BL_E_I2', 'CO2', 'CO2MINH')),
-    // Tarifvergleich als Monatsbericht
-    'IG2' => array('tarif', 'TEXT.BL_T_IMPULS', 'TEXT.BL_N_IG2', 'TEXT.BL_P_IG2', ''),
-    'ST4' => array('tarif', 'TEXT.BL_T_STATUS', 'TEXT.BL_N_ST4', 'TEXT.BL_P_ST4', array('TEXT.BL_E_I3', 'DYNM', 'FIX', 'DIFFM')),
-    'B4'  => array('tarif', 'TEXT.BL_T_BENACHR', 'TEXT.MONATSBERICHT_TARIFVERGLEICH', array('t', 'TEXT.BL_P_TEXT_AUS', 'ST4'), array('TEXT.BL_E_1', 'IG2')),
-    'S9'  => array('tarif', 'TEXT.BL_T_SWS', 'TEXT.DYNAMISCH_WRE_GNSTIGER', 'TEXT.EIN_0_5_AUS_0_4', array('TEXT.BL_E_1', 'DIFFM')),
-    'B5'  => array('tarif', 'TEXT.BL_T_BENACHR', 'TEXT.BL_N_B5', '', array('TEXT.BL_E_1', 'S9')),
-    // Ausfallerkennung
-    'F1'  => array('ausfall', 'TEXT.BL_T_FORMEL', 'LEBEN.B_FORMEL_NAME', array('mono', '(I1 + 1230768000) - I2'), array('TEXT.BL_E_FORMEL', 'TS')),
-    'S10' => array('ausfall', 'TEXT.BL_T_SWS', 'LEBEN.B_SCHWELLE_NAME', 'LEBEN.B_SCHWELLE_EIN', array('TEXT.BL_E_1', 'F1')),
-);
-$sp_bl_nr = array();
-foreach (array_keys($sp_bl) as $sp_bl_i => $sp_bl_k) { $sp_bl_nr[$sp_bl_k] = $sp_bl_i + 1; }
-$sp_bl_text = function ($v) use ($sp_bl_nr) {
-    if ($v === '' || $v === null) { return '&mdash;'; }
-    if (is_string($v)) { return spot_t($v); }
-    if ($v[0] === 'mono') { return '<span class="sm-mono">' . sp_e($v[1]) . '</span>'; }
-    if ($v[0] === 'mono_t') { return '<span class="sm-mono">' . spot_t($v[1]) . '</span>'; }
-    $schl = ($v[0] === 't') ? $v[1] : $v[0];
-    $refs = array_slice($v, ($v[0] === 't') ? 2 : 1);
-    $zahlen = array();
-    foreach ($refs as $r) { $zahlen[] = $sp_bl_nr[$r]; }
-    return vsprintf(spot_t($schl), $zahlen);
-};
-$sp_bl_gruppen = array();
-foreach ($sp_bl as $sp_bl_k => $sp_bl_z) {
-    $g = $sp_bl_z[0];
-    if (!isset($sp_bl_gruppen[$g])) { $sp_bl_gruppen[$g] = array($sp_bl_nr[$sp_bl_k], $sp_bl_nr[$sp_bl_k]); }
-    $sp_bl_gruppen[$g][1] = $sp_bl_nr[$sp_bl_k];
-}
+/* Welle Bild 16 (1.2.37, Hausherr 11.10./17.10.2026): fuenf Seiten aus dem LoxBerry-Plugins Musterprojekt
+ * (spot_bausteinseiten()), alle immer sichtbar: Ueberschrift = Seitenname, Kasten "So uebernehmen Sie diese Seite",
+ * Tabelle (eine Zeile je Baustein, deutsch wortgleich mit der Liste des Musterprojekts), Hinweise, Bild und Link.
+ * Jede Zelle und jeder Satz ist reiner Text und wird maskiert; nur MUSTERPROJEKT traegt Auszeichnung (den Link).
+ * Bis 1.2.36 stand hier die Liste $sp_bl mit 51 Zeilen (X-8): sechs Schwellwertschalter an digitalen Eingaengen
+ * (Impuls je Abfrage, Regeln/09), invertierte Schwellen an LEVEL/WININ (schalteten bei -1 ein), eine Zeitformel an
+ * TS, ein Monatsimpuls, den "Impuls um" nicht kann, und keine Schaltregeln. */
+$sp_bs = spot_bausteinseiten();
 ?>
-<?php echo spot_t('TEXT.BL_EINLEITUNG'); ?>
-<ul>
-<?php foreach ($sp_bl_gruppen as $g => $sp_bl_vb) { ?>
-<li><?php echo sprintf(spot_t('TEXT.BL_ZEILEN'), $sp_bl_vb[0], $sp_bl_vb[1], spot_t('TEXT.BL_G_' . strtoupper($g))); ?></li>
+<p class="sm-small"><?php echo sp_e(spot_t('LOX.BS_VORTEXT')); ?></p>
+<?php foreach ($sp_bs as $sp_s) { ?>
+<h4 class="sm-h4"><?php echo sp_e($sp_s['seite']); ?></h4>
+<div class="sm-hinweis"><b><?php echo sp_e(spot_t('LOX.SCHRITTE_TITEL')); ?></b>
+<ol class="sm-schritte">
+<?php foreach ($sp_s['schritte'] as $sp_x) { ?>
+<li><?php echo sp_e($sp_x); ?></li>
 <?php } ?>
-</ul>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo spot_t('TEXT.BL_H_TYP'); ?></th><th><?php echo spot_t('TEXT.BL_H_NAME'); ?></th><th><?php echo spot_t('TEXT.BL_H_PARAM'); ?></th><th><?php echo spot_t('TEXT.BL_H_EIN'); ?></th></tr>
-<?php foreach ($sp_bl as $sp_bl_k => $sp_bl_z) { ?>
-<tr><td><?php echo $sp_bl_nr[$sp_bl_k]; ?></td><td><?php echo spot_t($sp_bl_z[1]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[2]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[3]); ?></td><td><?php echo $sp_bl_text($sp_bl_z[4]); ?></td></tr>
+<?php foreach ($sp_s['zeilen'] as $sp_z) { ?>
+<tr><td><?php echo (int) $sp_z[0]; ?></td><td><?php echo sp_e($sp_z[1]); ?></td><td><?php echo sp_e($sp_z[2]); ?></td><td><?php echo sp_e($sp_z[3]); ?></td><td><?php echo sp_e($sp_z[4]); ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-hinweis"><?php echo spot_t('LEBEN.BAUSTEINE_HINWEIS'); ?></div>
-<span class="sm-small"><?php echo spot_t('TEXT.DAS_PLUGIN_SENDET_DENSELBEN_BERICH'); ?></span>
-<br><br><b><?php echo spot_t('TEXT.PRAXIS_ERFAHRUNGEN_ZUM_BENACHRICHT'); ?></b> <?php echo spot_t('TEXT.ERSPART_LANGE_FEHLERSUCHE'); ?><br>
-<?php echo spot_t('TEXT.ER_SENDET_NUR_BEI_EINER_01_FLANKE_'); ?><br>
-<?php echo spot_t('TEXT.FR_DEN_TEST_PTEST_EINEN_EIGENEN_BE'); ?><br>
-<?php echo spot_t('TEXT.INVERTIERTE_SCHWELLWERTSCHALTER_EI'); ?>
+<div class="sm-warnung"><b><?php echo sp_e(spot_t('LOX.HINWEISE_TITEL')); ?></b>
+<ul class="sm-schritte">
+<?php foreach ($sp_s['hinweise'] as $sp_x) { ?>
+<li><?php echo sp_e($sp_x); ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?php echo sp_e($sp_s['bild']); ?>" alt="<?php echo sp_e(sprintf(spot_t('LOX.BILD_ALT'), $sp_s['seite'])); ?>" loading="lazy">
+<figcaption><?php echo sp_e(sprintf(spot_t('LOX.BILD_UNTERSCHRIFT'), $sp_s['seite'])); ?></figcaption>
+</figure>
+<p class="sm-small"><?php echo spot_t('LOX.MUSTERPROJEKT'); ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_5_MQTT_ALTERNATIVE_JSON'); ?></b><br>

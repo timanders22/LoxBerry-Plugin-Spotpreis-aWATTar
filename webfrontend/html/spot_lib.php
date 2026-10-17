@@ -3984,88 +3984,94 @@ function spot_zeile($st, $cfg) {
     return $o;
 }
 
-/** Alle Felder der Loxone-Zeile: name => array(analog, min, max, einheit, text). */
+/** Alle Felder der Loxone-Zeile: name => array(analog, min, max, einheit, text).
+ *  Welle Bild 16 (1.2.37): text kommt aus [VORLAGE] F_<FELD> der Sprachdatei - er wird in der
+ *  Vorlage zum Kommentar (Kachelname) und folgt der Sprache der Oberflaeche (Sprachregel 13.10.2026:
+ *  Titel und Suchtext fest, nur Kommentare uebersetzt). Deutsch wortgleich wie bis 1.2.36. */
 function spot_felder() {
     $f = array(
-        'OK'      => array(0, 0, 1, '', 'Preise morgen da'),
-        'HOK'     => array(0, 0, 1, '', 'Preise heute da'),
-        'CUR'     => array(1, -100, 200, 'ct/kWh', 'Endpreis jetzt'),
-        'CURB'    => array(1, -100, 200, 'ct/kWh', 'Börsenanteil jetzt'),
-        'NEXT'    => array(1, -100, 200, 'ct/kWh', 'Preis nächste Stunde'),
-        'NEG'     => array(0, 0, 1, '', 'Börsenpreis negativ'),
+        'OK'      => array(0, 0, 1, '', spot_t('VORLAGE.F_OK')),
+        'HOK'     => array(0, 0, 1, '', spot_t('VORLAGE.F_HOK')),
+        'CUR'     => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_CUR')),
+        'CURB'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_CURB')),
+        'NEXT'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_NEXT')),
+        'NEG'     => array(0, 0, 1, '', spot_t('VORLAGE.F_NEG')),
         /* MinVal -1: die drei senden -1, wenn keine Preise vorliegen.
          * Ohne das stuende in der Visualisierung eine 0, und 0 waere
          * bei einem Rang eine Aussage statt einer Luecke. */
-        'RANK'    => array(1, -1, 48, '', 'Rang jetzt (1 = günstigste)'),
-        'RANKD'   => array(1, -1, 48, '', 'Rang von hinten'),
-        'LEVEL'   => array(1, -1, 3, '', 'Preisniveau 1 bis 3'),
-        'MINH'    => array(1, 0, 23, 'h', 'Günstigste Stunde morgen'),
-        'MINP'    => array(1, -100, 200, 'ct/kWh', 'Tiefstpreis morgen'),
-        'MAXH'    => array(1, 0, 23, 'h', 'Teuerste Stunde morgen'),
-        'MAXP'    => array(1, -100, 200, 'ct/kWh', 'Höchstpreis morgen'),
-        'AVG'     => array(1, -100, 200, 'ct/kWh', 'Tagesmittel morgen'),
-        'HMINH'   => array(1, 0, 23, 'h', 'Günstigste Stunde heute'),
-        'HMINP'   => array(1, -100, 200, 'ct/kWh', 'Tiefstpreis heute'),
-        'HMAXH'   => array(1, 0, 23, 'h', 'Teuerste Stunde heute'),
-        'HMAXP'   => array(1, -100, 200, 'ct/kWh', 'Höchstpreis heute'),
-        'HAVG'    => array(1, -100, 200, 'ct/kWh', 'Tagesmittel heute'),
-        'WINH'    => array(1, -1, 23, 'h', 'Fenster: Startstunde'),
-        'WININ'   => array(1, -1, 48, 'h', 'Fenster: Stunden bis Start'),
-        'WINCT'   => array(1, -100, 200, 'ct/kWh', 'Fenster: Schnitt'),
-        'CO2'     => array(1, 0, 1000, 'g/kWh', 'CO₂ jetzt'),
-        'CO2MIN'  => array(1, 0, 1000, 'g/kWh', 'CO₂ sauberste Stunde'),
-        'CO2MINH' => array(1, -1, 23, 'h', 'Sauberste Stunde'),
-        'CO2CLEAN' => array(0, 0, 1, '', 'Strommix sauber'),
-        'WPCUR'   => array(1, -100, 200, 'ct/kWh', '§14a-Preis jetzt'),
-        'WPNEXT'  => array(1, -100, 200, 'ct/kWh', '§14a nächste Stunde'),
-        'FIX'     => array(1, 0, 200, 'ct/kWh', 'Fester Tarif'),
-        'DYNM'    => array(1, -100, 200, 'ct/kWh', 'Dynamisch im Monat'),
-        'DIFFM'   => array(1, -200, 200, 'ct/kWh', 'Vorteil dynamisch'),
-        'EUROM'   => array(1, -10000, 10000, 'EUR', 'Vorteil im Monat'),
-        'SHIFTJ'  => array(1, 0, 10000, 'EUR', 'Verschiebe-Potenzial Jahr'),
-        'ANN'     => array(0, 0, 1, '', 'Meldefenster offen'),
-        'AUDIO'   => array(0, 0, 1, '', 'Ansage freigegeben'),
-        'PUSH'    => array(0, 0, 1, '', 'Push freigegeben'),
-        'PTEST'   => array(0, 0, 1, '', 'Test-Push angefordert'),
+        'RANK'    => array(1, -1, 48, '', spot_t('VORLAGE.F_RANK')),
+        'RANKD'   => array(1, -1, 48, '', spot_t('VORLAGE.F_RANKD')),
+        'LEVEL'   => array(1, -1, 3, '', spot_t('VORLAGE.F_LEVEL')),
+        'MINH'    => array(1, 0, 23, 'h', spot_t('VORLAGE.F_MINH')),
+        'MINP'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_MINP')),
+        'MAXH'    => array(1, 0, 23, 'h', spot_t('VORLAGE.F_MAXH')),
+        'MAXP'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_MAXP')),
+        'AVG'     => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_AVG')),
+        'HMINH'   => array(1, 0, 23, 'h', spot_t('VORLAGE.F_HMINH')),
+        'HMINP'   => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_HMINP')),
+        'HMAXH'   => array(1, 0, 23, 'h', spot_t('VORLAGE.F_HMAXH')),
+        'HMAXP'   => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_HMAXP')),
+        'HAVG'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_HAVG')),
+        'WINH'    => array(1, -1, 23, 'h', spot_t('VORLAGE.F_WINH')),
+        'WININ'   => array(1, -1, 48, 'h', spot_t('VORLAGE.F_WININ')),
+        'WINCT'   => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_WINCT')),
+        'CO2'     => array(1, 0, 1000, 'g/kWh', spot_t('VORLAGE.F_CO2')),
+        'CO2MIN'  => array(1, 0, 1000, 'g/kWh', spot_t('VORLAGE.F_CO2MIN')),
+        'CO2MINH' => array(1, -1, 23, 'h', spot_t('VORLAGE.F_CO2MINH')),
+        'CO2CLEAN' => array(0, 0, 1, '', spot_t('VORLAGE.F_CO2CLEAN')),
+        'WPCUR'   => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_WPCUR')),
+        'WPNEXT'  => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_WPNEXT')),
+        'FIX'     => array(1, 0, 200, 'ct/kWh', spot_t('VORLAGE.F_FIX')),
+        'DYNM'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_DYNM')),
+        'DIFFM'   => array(1, -200, 200, 'ct/kWh', spot_t('VORLAGE.F_DIFFM')),
+        'EUROM'   => array(1, -10000, 10000, 'EUR', spot_t('VORLAGE.F_EUROM')),
+        'SHIFTJ'  => array(1, 0, 10000, 'EUR', spot_t('VORLAGE.F_SHIFTJ')),
+        'ANN'     => array(0, 0, 1, '', spot_t('VORLAGE.F_ANN')),
+        'AUDIO'   => array(0, 0, 1, '', spot_t('VORLAGE.F_AUDIO')),
+        'PUSH'    => array(0, 0, 1, '', spot_t('VORLAGE.F_PUSH')),
+        'PTEST'   => array(0, 0, 1, '', spot_t('VORLAGE.F_PTEST')),
         /* Lebenszeichen. TS ist eine Unix-Sekundenzahl und damit gross -
          * MaxVal muss reichen, sonst kappt Loxone den Wert. 2147483647 ist
          * das Ende der 32-Bit-Zeitrechnung (2038) und die groesste Zahl,
          * die Config an dieser Stelle sinnvoll fuehrt.
          * In Loxone: Alter in Sekunden = (Zeit-Baustein + 1230768000) - TS. */
-        'CURX'    => array(0, 0, 1, '', 'Ersatzwert jetzt'),
-        'TS'      => array(1, 0, 2147483647, 's', 'Letzter Minutenlauf'),
-        'RECHNE'  => array(1, 0, 2147483647, 's', 'Letzte Zustandsrechnung'),
-        'LAUF'    => array(1, 0, 999, '', 'Laufzähler'),
+        'CURX'    => array(0, 0, 1, '', spot_t('VORLAGE.F_CURX')),
+        'TS'      => array(1, 0, 2147483647, 's', spot_t('VORLAGE.F_TS')),
+        'RECHNE'  => array(1, 0, 2147483647, 's', spot_t('VORLAGE.F_RECHNE')),
+        'LAUF'    => array(1, 0, 999, '', spot_t('VORLAGE.F_LAUF')),
     );
     // Schaltregeln - der Grund fuer die ganze Uebung: R<n> ist digital.
     for ($i = 1; $i <= SPOT_REGELN; $i++) {
-        $f['R' . $i]          = array(0, 0, 1, '', 'Regel ' . $i . ': einschalten');
-        $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', 'Regel ' . $i . ': Stunden bis Start');
-        $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', 'Regel ' . $i . ': Reststunden');
-        $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', 'Regel ' . $i . ': Schnitt');
+        // Welle Bild 16 (1.2.37): Kommentartexte aus [VORLAGE]; "Regel n" ersetzt spot_vorlage()
+        // durch den Namen der Regel - deshalb steht er hier als eigenes Stueck.
+        $sp_regel = sprintf(spot_t('VORLAGE.REGEL_N'), $i);
+        $f['R' . $i]          = array(0, 0, 1, '', sprintf(spot_t('VORLAGE.F_R_EIN'), $sp_regel));
+        $f['R' . $i . 'IN']   = array(1, -1, 48, 'h', sprintf(spot_t('VORLAGE.F_R_IN'), $sp_regel));
+        $f['R' . $i . 'REST'] = array(1, 0, 48, 'h', sprintf(spot_t('VORLAGE.F_R_REST'), $sp_regel));
+        $f['R' . $i . 'CT']   = array(1, -100, 200, 'ct/kWh', sprintf(spot_t('VORLAGE.F_R_CT'), $sp_regel));
         // Fahrplaner ab 1.2.0. VERD und SPERRE beantworten die Frage, die
         // sonst im Dunkeln bleibt: warum laeuft es gerade NICHT?
         $f['R' . $i . 'VERD']   = array(1, 0, 96, '',
-            'Regel ' . $i . ': verdrängt');
+            sprintf(spot_t('VORLAGE.F_R_VERD'), $sp_regel));
         $f['R' . $i . 'SPERRE'] = array(1, 0, 3, '',
-            'Regel ' . $i . ': Sperre');
+            sprintf(spot_t('VORLAGE.F_R_SPERRE'), $sp_regel));
     }
     // Fahrplaner, global
-    $f['PVSUM'] = array(1, 0, 1000, 'kWh', 'PV-Prognose 24 h');
-    $f['SOC']   = array(1, -1, 100, '%', 'Speicherstand');
-    $f['BUDGET'] = array(1, 0, 200, 'kW', 'Leistungsbudget');
-    $f['PLANLAST'] = array(1, 0, 200, 'kW', 'Verplante Leistung jetzt');
+    $f['PVSUM'] = array(1, 0, 1000, 'kWh', spot_t('VORLAGE.F_PVSUM'));
+    $f['SOC']   = array(1, -1, 100, '%', spot_t('VORLAGE.F_SOC'));
+    $f['BUDGET'] = array(1, 0, 200, 'kW', spot_t('VORLAGE.F_BUDGET'));
+    $f['PLANLAST'] = array(1, 0, 200, 'kW', spot_t('VORLAGE.F_PLANLAST'));
     $cfg = spot_config();
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $f[sprintf('PH%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis heute %02d Uhr', $h));
-            $f[sprintf('PM%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis morgen %02d Uhr', $h));
+            $f[sprintf('PH%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf(spot_t('VORLAGE.F_PH'), $h));
+            $f[sprintf('PM%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf(spot_t('VORLAGE.F_PM'), $h));
         }
     }
     if ($modus === 'relativ' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $f[sprintf('PR%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf('Preis in %d Stunden', $h));
+            $f[sprintf('PR%02d', $h)] = array(1, -100, 200, 'ct/kWh', sprintf(spot_t('VORLAGE.F_PR'), $h));
         }
     }
     return $f;
@@ -4137,12 +4143,15 @@ function spot_vorlage() {
         // "Wallbox" ist beim Verdrahten mehr wert als "Schaltregel 1".
         if (preg_match('/^R([0-9]+)/', $name, $m)) {
             $i = (int) $m[1] - 1;
-            if (isset($st['regeln'][$i]) && $st['regeln'][$i]['name'] !== '') {
+            /* Welle Bild 16 (1.2.37): ohne eigenen Namen traegt der Zustand "Regel n" (spot_regeln()) -
+             * dann bleibt der Text der Sprachdatei ("Regel n" bzw. "Rule n"). */
+            if (isset($st['regeln'][$i]) && $st['regeln'][$i]['name'] !== ''
+                && $st['regeln'][$i]['name'] !== 'Regel ' . ($i + 1)) {
                 /* Hoechstens 14 Zeichen des Namens - der Kachelname soll
                  * kurz bleiben. Gezaehlt in Zeichen, nicht in Byte
                  * (Modifikator u, ohne mbstring). */
                 $sp_name = preg_replace('/^(.{0,14}).*$/su', '$1', (string) $st['regeln'][$i]['name']);
-                $text = str_replace('Regel ' . ($i + 1), $sp_name, $text);
+                $text = str_replace(sprintf(spot_t('VORLAGE.REGEL_N'), $i + 1), $sp_name, $text);
             }
         }
         $cmds[] = array(
@@ -4183,10 +4192,48 @@ function spot_vorlage() {
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/spot.php'
                    . ($token !== '' ? '?token=' . rawurlencode($token) : ''),
         'polling' => '300',
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Spotpreis aWATTar (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und überschreibt nichts - '
-                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+        'comment' => sprintf(spot_t('VORLAGE.KOPF'), date('d.m.Y')),
     ), $cmds));
+}
+
+/**
+ * Welle Bild 16 (1.2.37): die fuenf Seiten des LoxBerry-Plugins Musterprojekts fuer den Reiter
+ * "Einbindung in Loxone", Schritt 4 - je Seite Name (= Seite im Musterprojekt und Abschnitt in dessen
+ * baustein_listen.txt), Bild, Schritte, Hinweise und Zeilen. Die Zeilen stehen in [LOX] Z<seite>_<nn>
+ * als "Typ | Name | Parameter | Eingaenge" (deutsch wortgleich mit der Liste des Musterprojekts), die
+ * Schritte in S<seite>_S<n>, die Hinweise in S<seite>_H<n>; H_EN ist der Hinweis zur
+ * Analogwertvalidierung (Seiten mit Validierung). Alles reiner Text - index.php maskiert jede Zelle.
+ * Bis 1.2.36 stand hier keine Funktion, sondern die Liste $sp_bl in index.php (51 Zeilen).
+ */
+function spot_bausteinseiten() {
+    $seiten = array(
+        array('seite' => 'Spotpreis aWATTar', 'bild' => 'einbindung_loxone.png', 'z' => 1, 'n' => 26,
+              'schritte' => array(spot_t('LOX.S1_S1'), spot_t('LOX.S1_S2'), spot_t('LOX.S1_S3'), spot_t('LOX.S1_S4'), spot_t('LOX.S1_S5'), spot_t('LOX.S1_S6')),
+              'hinweise' => array(spot_t('LOX.S1_H1'), spot_t('LOX.S1_H2'), spot_t('LOX.S1_H3'), spot_t('LOX.S1_H4'), spot_t('LOX.S1_H5'), spot_t('LOX.S1_H6'), spot_t('LOX.H_EN'))),
+        array('seite' => 'Spotpreis aWATTar Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'z' => 2, 'n' => 35,
+              'schritte' => array(spot_t('LOX.S2_S1'), spot_t('LOX.S2_S2'), spot_t('LOX.S2_S3'), spot_t('LOX.S2_S4'), spot_t('LOX.S2_S5')),
+              'hinweise' => array(spot_t('LOX.S2_H1'), spot_t('LOX.S2_H2'), spot_t('LOX.S2_H3'), spot_t('LOX.S2_H4'), spot_t('LOX.S2_H5'), spot_t('LOX.H_EN'))),
+        array('seite' => 'Spotpreis aWATTar Werte', 'bild' => 'einbindung_loxone_werte.png', 'z' => 3, 'n' => 29,
+              'schritte' => array(spot_t('LOX.S3_S1'), spot_t('LOX.S3_S2'), spot_t('LOX.S3_S3'), spot_t('LOX.S3_S4'), spot_t('LOX.S3_S5')),
+              'hinweise' => array(spot_t('LOX.S3_H1'), spot_t('LOX.S3_H2'), spot_t('LOX.S3_H3'), spot_t('LOX.S3_H4'))),
+        array('seite' => 'Spotpreis aWATTar Freigaben und Tarif', 'bild' => 'einbindung_loxone_freigaben_tarif.png', 'z' => 4, 'n' => 36,
+              'schritte' => array(spot_t('LOX.S4_S1'), spot_t('LOX.S4_S2'), spot_t('LOX.S4_S3'), spot_t('LOX.S4_S4'), spot_t('LOX.S4_S5')),
+              'hinweise' => array(spot_t('LOX.S4_H1'), spot_t('LOX.S4_H2'), spot_t('LOX.S4_H3'), spot_t('LOX.S4_H4'), spot_t('LOX.H_EN'))),
+        array('seite' => 'Spotpreis aWATTar Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 27,
+              'schritte' => array(spot_t('LOX.S5_S1'), spot_t('LOX.S5_S2'), spot_t('LOX.S5_S3'), spot_t('LOX.S5_S4'), spot_t('LOX.S5_S5')),
+              'hinweise' => array(spot_t('LOX.S5_H1'), spot_t('LOX.S5_H2'), spot_t('LOX.S5_H3'), spot_t('LOX.S5_H4'))),
+    );
+    $aus = array();
+    foreach ($seiten as $s) {
+        $zeilen = array();
+        for ($i = 1; $i <= $s['n']; $i++) {
+            $c = array_pad(explode(' | ', spot_t(sprintf('LOX.Z%d_%02d', $s['z'], $i)), 4), 4, '');
+            $zeilen[] = array($i, $c[0], $c[1], $c[2], $c[3]);
+        }
+        $aus[] = array('seite' => $s['seite'], 'bild' => $s['bild'], 'schritte' => $s['schritte'],
+                       'hinweise' => $s['hinweise'], 'zeilen' => $zeilen);
+    }
+    return $aus;
 }
 
 /* ---------------- Sprachausgabe (seit 1.2.34 in Hausform, Nr. 36 b Stufe 2) ----------------

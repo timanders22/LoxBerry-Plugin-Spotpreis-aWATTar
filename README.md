@@ -8,6 +8,35 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.37
+
+Reiter „Einbindung in Loxone“, Schritt 4: fünf Seiten aus dem LoxBerry-Plugins Musterprojekt statt der bisherigen
+Liste.
+
+* **Fünf Seiten mit Bild und Schritt-für-Schritt-Anleitung:** „Spotpreis aWATTar“ (läuft das Plugin, Preis jetzt,
+  Push), „Spotpreis aWATTar Steuerung“ (die vier Schaltregeln, abgesichert gegen einen stehenden LoxBerry),
+  „Spotpreis aWATTar Werte“ (heute, morgen, günstigstes Fenster, Fahrplaner), „Spotpreis aWATTar Freigaben und
+  Tarif“ (Preisfreigaben, Hochpreis-Sperre, Strommix, Tarifvergleich, §14a) und „Spotpreis aWATTar Stundenprofil“
+  (Loxone-Baustein Spotpreis-Optimierer im Modus „Absolut“ mit SPOT_PH00 bis SPOT_PH23). Je Seite ein Kasten
+  „So übernehmen Sie diese Seite“, die Baustein-Tabelle (eine Zeile je Baustein, wortgleich mit dem Musterprojekt),
+  Hinweise, ein Bild aus Loxone Config und der Link auf die Projektdatei
+  (<https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt>).
+* **Berichtigt gegenüber der alten Liste:** Die Schwellwertschalter an digitalen Eingängen (Meldefenster, Push,
+  Test-Push, negativer Preis, Preise morgen, Ökostrom) entfallen – sie gaben bei jeder Abfrage einen kurzen Impuls
+  und damit eine Meldung alle 300 s. „Strom ist günstig“ und „Fenster läuft“ sind jetzt „Gleich“-Bausteine: der
+  invertierte Schwellwertschalter schaltete bei -1 (keine Preise, kein Fenster) ein. Die Ausfallerkennung prüft den
+  Laufzähler SPOT_LAUF mit einer Analogwertvalidierung statt einer Zeitformel an SPOT_TS. Monatsimpuls und
+  „Push-Sammler“ entfallen, der Taster wird ein Schalter „Start bei günstigem Strom (aWATTar)“. Typnamen wie in
+  Config (Status, Virtueller HTTP-Eingang-Befehl, Impuls um). Wer die alte Liste nachgebaut hat: Push-Kette und
+  Freigaben nach den neuen Seiten umbauen.
+* **Analogwertvalidierung:** Config legt den Eingang En negiert an – Haken bei ‚En‘ im Eigenschaftsfenster
+  entfernen, sonst kommt die Konstante 1 als 0 an und die Ausfallmeldung löst nie aus.
+* **Vorlage:** Die Kommentare der Befehle (in Config der Kachelname) kommen aus der Sprachdatei – bei englischer
+  Oberfläche englisch. Titel, Befehlserkennung und Grenzen sind unverändert; eine schon importierte Vorlage muss
+  nicht neu eingelesen werden.
+* Der Hinweis zur Test-Pushnachricht im Reiter Test nennt Schritt 4, Seite „Spotpreis aWATTar“ (statt „Schritt 4a“).
+* Sonst kein Verhalten geändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.36
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
@@ -484,9 +513,11 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
   auf einen zweiten LoxBerry
 - Optional: **eigener Lastgang** statt des eingebauten Haushaltsprofils, damit
   der Tarifvergleich eine Messung wird statt einer Modellrechnung
-- Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt-für-Schritt inkl.
-  kompletter Baustein-Liste zum 1:1-Nachbauen), Kostenvergleich, Test,
-  Logdateien
+- Reiter: Einstellungen, MQTT, Einbindung in Loxone (Schritt für Schritt mit fünf
+  Seiten aus dem LoxBerry-Plugins Musterprojekt – je Seite Kasten, Baustein-Tabelle,
+  Hinweise und Bild; die ganze Projektdatei:
+  <https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt>), Kostenvergleich,
+  Test, Logdateien
 - Konfiguration, Preishistorie und Merker überleben Updates. Eine
   **Neuinstallation fängt frisch an**: Reste einer früheren Installation
   (Zweitschrift, Update-Sicherung) legt sie als `.alt` beiseite und meldet das;
