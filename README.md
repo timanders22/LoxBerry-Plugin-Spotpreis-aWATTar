@@ -8,6 +8,50 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.38
+
+Die Werte gehen jetzt über MQTT an Loxone – für neue Anlagen der Hauptweg. Der HTTP-Endpunkt bleibt für bestehende
+Anlagen unverändert erreichbar.
+
+* **Namenstabelle statt Vorlage:** Für die Werte über das MQTT-Gateway gibt es keine Importvorlage. Der Reiter
+  „Einbindung in Loxone“, Schritt 2, nennt alle bis zu 93 Namen (`spot_awattar_cur`, `spot_awattar_regel_1_aktiv` …)
+  mit Kopierknopf, Bedeutung, Einheit/Bereich: je Wert in Loxone Config einen einfachen „Virtuellen Eingang“ mit
+  genau diesem Namen anlegen, „Als Digitaleingang verwenden“ nicht aktivieren (LoxBerry-Anleitung zum MQTT-Gateway).
+  Der am Miniserver hinterlegte LoxBerry-Benutzer braucht Rechte auf die Eingänge. Wer die Seiten aus dem
+  LoxBerry-Plugins Musterprojekt kopiert, bekommt die Eingänge mit. Der Vorlagenknopf heißt jetzt „Vorlage für Loxone
+  Config erzeugen (HTTP)“ und dient bestehenden Anlagen.
+* **24 neue Themen `spot_awattar/stunde/0/ct` … `/23/ct`:** die Endpreise von heute je Stunde (wie bei Spotpreis
+  Tibber), nur mit Stundenprofil „absolut“ oder „beides“. Fehlt eine Stunde, steht dort der Tageshöchstpreis.
+  Für morgen und „relativ“ gibt es kein Thema.
+* **Reiter „Einbindung in Loxone“ neu geordnet:** Schritt 1 MQTT einschalten, Schritt 2 Virtuelle Eingänge anlegen
+  (Namenstabelle), Schritt 3 Gateway – unter Fassung 1 das Abo `spot_awattar/#`, unter Fassung 2 die Liste der
+  anzuhakenden Datenpunkte (dieselben wie in der Namenstabelle; keiner braucht „Zurücksetzen nach Senden“). Der
+  Abschnitt „Energiemanager“ nennt zuerst die Gateway-Namen, die HTTP-Namen darunter. Der Satz zu V2 sagte bisher, das Gateway
+  erkenne die Themen von selbst – berichtigt. Die HTTP-Schritte stehen unter „Für bestehende Anlagen: HTTP“.
+* **Fünf Musterprojekt-Seiten über MQTT:** Tabellen wortgleich mit dem Musterprojekt (Typ „Virtueller Eingang“, Namen
+  `spot_awattar_…`, wie das MQTT-Gateway sie vergibt), neue Bilder. Seite „Werte“: Tagesvorschau mit den Zahlen im Pushtext, Schalter
+  „Tagesvorschau-Push aus“ und Taste „Tagesvorschau jetzt senden“ (Nr. 30–41; Nr. 20 entfällt – wer sie gebaut hat,
+  löscht sie). Seite „Stundenprofil“: zweite Neuberechnung um 00:35 und der Hinweis „keine Preise für heute“
+  (Nr. 28–30).
+* **Verhalten (beide Wege):** `MINH`/`MAXH` bzw. `minh_morgen`/`maxh_morgen` stehen auf -1, solange die Preise für
+  morgen fehlen (bisher 0 = „0 Uhr“); in den Vorlagen MinVal -1. `WPNEXT`/`wp_next` nimmt bei fehlendem Preis
+  denselben Ersatz wie `NEXT` (bisher 0, sah wie die billigste Stunde aus).
+* **Verhalten (MQTT):** `plan/soc` geht ohne Speicherquelle als -1 hinaus, `plan/pv_prognose` ohne Prognose als 0
+  (bisher gar nicht – Loxone zeigte Speicher 0 %). Ohne Preise für heute gehen zusätzlich `level`, `rank` und
+  `rankd` als -1 hinaus, damit Freigaben sofort abfallen; die Preise bleiben stehen. HTTP antwortet dann wie bisher
+  mit 503.
+* **Stundenpreise jede Stunde frisch:** Die 24 Stundenthemen gehen beim ersten Lauf jeder vollen Stunde unverändert
+  hinaus (dazu wie alle Werte mit dem vollen Satz alle 30 Minuten) – der Spotpreis-Optimierer benutzt nur Preise,
+  die in der laufenden Stunde aktualisiert wurden. Unter Gateway V2 die Stundenthemen als „Noncached“ anhaken; die
+  Hakenliste kennzeichnet sie mit „[Noncached]“.
+* **Selbstprüfung:** neue Zeile „Stehen unter Gateway V2 die Haken (Stundenthemen ‚Noncached‘)?“ (liest
+  `config/system/subscriptions.json`).
+* **Umstieg:** Wer auf MQTT umsteigt, legt die Virtuellen Eingänge nach der Namenstabelle an (oder kopiert die Seiten
+  des Musterprojekts) und hakt unter Gateway V2 die Datenpunkte an. Wer beim HTTP-Behälter bleibt, muss nichts tun;
+  nur wer MINH/MAXH auf -1 prüfen will, setzt dort MinVal -1 (oder liest die HTTP-Vorlage neu ein – dann aber alle
+  Leitungen neu ziehen).
+* Nicht am Gerät angesehen; gerendert unter PHP 7.4, 8.4 und 8.5.
+
 ## Neu in 1.2.37
 
 Reiter „Einbindung in Loxone“, Schritt 4: fünf Seiten aus dem LoxBerry-Plugins Musterprojekt statt der bisherigen
@@ -501,8 +545,9 @@ Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
   (die Preise für morgen fehlen noch), sendet die Kopplung nichts. Empfehlung: das Spot-Laden in Loxone bauen
   (`RANK` oder eine Schaltregel, dort mit der Überschussbedingung am Zähler) und die
   Kopplung aus lassen.
-- **MQTT** über das LoxBerry MQTT Gateway (die vollständige Themenliste mit Spalte
-  „retained“ steht im Reiter MQTT; ohne Preise geht nur das Signal hinaus, keine
+- **MQTT** über das LoxBerry MQTT Gateway – der Weg für neue Anlagen, mit Namenstabelle für
+  die Virtuellen Eingänge und den 24 Stundenpreisen (die vollständige Themenliste mit
+  Spalte „retained“ steht im Reiter MQTT; ohne Preise geht nur das Signal hinaus, keine
   0-ct-Preise), **JSON** inklusive aller Stundenwerte
 - **Lebenszeichen** (`TS` und `LAUF`): daran erkennt der Miniserver, ob das
   Plugin noch arbeitet — ohne das steht bei einem Ausfall weiterhin der letzte

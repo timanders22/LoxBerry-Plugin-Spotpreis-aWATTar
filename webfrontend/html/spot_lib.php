@@ -1769,7 +1769,11 @@ function spot_state($force = false) {
         'rang_ok' => $rang_ok,
         'level' => $level,
         'heute' => $sh ? $sh : array('minh' => 0, 'minp' => 0, 'maxh' => 0, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
-        'morgen' => $sm ? $sm : array('minh' => 0, 'minp' => 0, 'maxh' => 0, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
+        /* Gruppe 1 / MQTT (1.2.38, aw E7): ohne Preise fuer morgen stehen minh/maxh auf -1 ("keine Aussage"),
+         * nicht auf 0 - "0 Uhr" ist eine echte Stunde. Gilt fuer HTTP (MINH/MAXH) und MQTT (minh_morgen/
+         * maxh_morgen). Die Preise selbst bleiben 0: ihre Gueltigkeit sagt morgen_ok, und -1 ct waere ein gueltiger
+         * Preis. Jede andere Lesestelle (Ansage, Oberflaeche, Protokoll) fragt vorher tomorrow_ok. */
+        'morgen' => $sm ? $sm : array('minh' => -1, 'minp' => 0, 'maxh' => -1, 'maxp' => 0, 'avg' => 0, 'n' => 0, 'hours' => array()),
         'fenster' => spot_window($all, $cfg['window']),
         'fenster_len' => (int) $cfg['window'],
         'addon' => round(spot_addon_net() * 100, 3),
@@ -1781,8 +1785,12 @@ function spot_state($force = false) {
     $st['wp_name'] = (string) $cfg['wp_name'];
     $st['wp_addon'] = round(spot_addon_net_wp() * 100, 3);
     $st['wp_cur'] = $st['ok'] ? round(spot_endprice_wp($curb / 100) * 100, 3) : 0;
-    $st['wp_next'] = ($st['ok'] && isset($all[$hstart + 3600]))
-        ? round(spot_endprice_wp((($all[$hstart + 3600] / 100) / (1 + $st['vat'] / 100)) - spot_addon_net()) * 100, 3) : 0;
+    /* Gruppe 1 / MQTT (1.2.38, aw E8): fehlt der Preis der naechsten Stunde, gilt derselbe Ersatz wie bei NEXT
+     * ($next ist dann der hoehere Tageshoechstpreis, $pr_ersatz). Bis 1.2.37 stand hier 0 - fuer den Zaehlpunkt
+     * nach Par. 14a sah die Stunde ohne Preis wie die billigste aus. Ist der Preis da, ist $next genau
+     * $all[$hstart + 3600] - der Wert bleibt dann derselbe. HTTP (WPNEXT) und MQTT (wp_next) gleich. */
+    $st['wp_next'] = $st['ok']
+        ? round(spot_endprice_wp((($next / 100) / (1 + $st['vat'] / 100)) - spot_addon_net()) * 100, 3) : 0;
     // CO2-Intensitaet
     $co2 = spot_co2();
     $st['co2'] = $co2['now'];
@@ -3039,11 +3047,24 @@ function spot_mqtt_themen($st = null) {
     $msgs['plan/budget2'] = (float) $cfg['budget2_kw'];
     $msgs['plan/spart'] = isset($st['spart_eur']) ? (float) $st['spart_eur'] : 0.0;
     $msgs['plan/last'] = isset($st['planlast']) ? (float) $st['planlast'] : 0.0;
-    if (isset($st['pv_summe']) && $st['pv_summe'] !== null) {
-        $msgs['plan/pv_prognose'] = (float) $st['pv_summe'];
-    }
-    if (isset($st['soc']) && $st['soc'] !== null) {
-        $msgs['plan/soc'] = (float) $st['soc'];
+    /* Gruppe 1 / MQTT (1.2.38, aw E5): ohne eingerichtete Quelle gehen beide trotzdem hinaus - wie in der
+     * HTTP-Zeile (PVSUM=0, SOC=-1, spot_zeile()). Bis 1.2.37 fehlten sie dann ganz, und Loxone zeigte Speicher 0 %
+     * statt "keine Speicherquelle". 0 statt -1 bei der Prognose mit Absicht: der Planer behandelt "keine
+     * Prognose" wie 0 kWh (keine Gutschrift), und die Musterseite liest 0 als "keine eingetragen". */
+    $msgs['plan/pv_prognose'] = (isset($st['pv_summe']) && $st['pv_summe'] !== null) ? (float) $st['pv_summe'] : 0.0;
+    $msgs['plan/soc'] = (isset($st['soc']) && $st['soc'] !== null) ? (float) $st['soc'] : -1;
+    /* Gruppe 1 / MQTT (1.2.38, aw E1/E12): die 24 Stundenpreise von heute als <praefix>/stunde/<h>/ct (h ohne
+     * fuehrende Null, wie Spotpreis Tibber), nur mit Stundenprofil "absolut" oder "beides" - dieselbe Bedingung
+     * wie die PROFIL-Zeile in spot_zeile(). Wert wie PH00..PH23: fehlt eine Stunde, der Tageshoechstpreis
+     * (spot_state()), nie 0 und nie -1 (-1 ct waere ein gueltiger Preis und saehe fuer den Spotpreis-Optimierer wie
+     * die guenstigste Stunde aus). Nicht retained (spot_retain_liste() unveraendert, Messwert mit Zeitbezug), bei
+     * ok=0 nicht gesendet (spot_mqtt_ausfall_themen() - Loxone behaelt die Werte des Vortags wie bei HTTP 503).
+     * Morgen (PM) und relativ (PR) bekommen kein Thema (E2). Der Vollsatz waechst damit um 24 Datagramme. */
+    $modus = (string) $cfg['profil_ein'];
+    if ($modus === 'absolut' || $modus === 'beides') {
+        for ($h = 0; $h < 24; $h++) {
+            $msgs['stunde/' . $h . '/ct'] = isset($st['profil_heute'][$h]) ? $st['profil_heute'][$h] : 0;
+        }
     }
     return $msgs;
 }
@@ -3074,6 +3095,17 @@ function spot_mqtt_ausfall_themen(array $msgs) {
             $aus[$k] = $v;
         }
     }
+    /* Gruppe 1 / MQTT (1.2.38, aw E6): dazu level, rank und rankd als -1. Sie sind keine Preise, sondern Kennzahlen
+     * mit vereinbartem -1 fuer "keine Preise" (spot_state()); blieben sie stehen, hielte eine alte Freigabe
+     * "guenstig" auf der Musterseite "Freigaben und Tarif", solange der Laufzaehler kommt. Die Preise bleiben
+     * stehen (ein Preis -1 waere eine Falschaussage - Regeln/07 "bei einer Stoerung nur das Signal").
+     * Damit unterscheiden sich die Wege an dieser Stelle mit Absicht: HTTP antwortet bei ok=0 mit 503 ohne Werte
+     * (spot.php), Loxone behaelt dort alle letzten Werte. */
+    foreach (array('level', 'rank', 'rankd') as $k) {
+        if (array_key_exists($k, $msgs)) {
+            $aus[$k] = -1;
+        }
+    }
     return $aus;
 }
 
@@ -3096,17 +3128,21 @@ function spot_mqtt_beschreibung() {
                    'ANN', 'AUDIO', 'PUSH', 'PTEST', 'STATUS_TS', 'STATUS_RECHNE', 'STATUS_ZAEHLER', 'STATUS_OK',
                    'REGEL_AKTIV', 'REGEL_IN', 'REGEL_REST', 'REGEL_CT', 'REGEL_EIN', 'REGEL_VERDRAENGT',
                    'REGEL_SPERRE', 'REGEL_RANG', 'REGEL_FEHLT', 'REGEL_SPART', 'REGEL_SPART_EUR',
-                   'PLAN_BUDGET', 'PLAN_BUDGET2', 'PLAN_SPART', 'PLAN_LAST') as $k) {
+                   'PLAN_BUDGET', 'PLAN_BUDGET2', 'PLAN_SPART', 'PLAN_LAST',
+                   /* Gruppe 1 / MQTT (1.2.38, aw E5): gehen jetzt immer hinaus (0 bzw. -1 ohne Quelle) - die
+                    * "optional"-Marke von 1.2.37 entfaellt. */
+                   'PLAN_PV_PROGNOSE', 'PLAN_SOC') as $k) {
         $l[$k] = 0;
     }
-    $l['PLAN_PV_PROGNOSE'] = 1;
-    $l['PLAN_SOC'] = 1;
+    /* Gruppe 1 / MQTT (1.2.38, aw E1/E12): stunde/<h>/ct nur mit Stundenprofil "absolut"/"beides" - deshalb 1. */
+    $l['STUNDE_CT'] = 1;
     return $l;
 }
 
 /** O9: der Sprachschluessel eines Themas - regel/3/aktiv -> REGEL_AKTIV, status/ts -> STATUS_TS. */
 function spot_mqtt_text_schluessel($thema) {
-    $t = preg_replace('#^regel/[0-9]+/#', 'regel/', (string) $thema);
+    /* Gruppe 1 / MQTT (1.2.38): stunde/<h>/ct fasst wie regel/<n>/ zusammen - stunde/7/ct -> STUNDE_CT. */
+    $t = preg_replace('#^(regel|stunde)/[0-9]+/#', '$1/', (string) $thema);
     return strtoupper(str_replace('/', '_', $t));
 }
 
@@ -3116,14 +3152,11 @@ function spot_mqtt_text_schluessel($thema) {
  * array(thema, retained 0|1, Sprachschluessel).
  */
 function spot_mqtt_themenliste($st = null) {
-    $themen = array_keys(spot_mqtt_themen($st));
-    foreach (array('plan/pv_prognose', 'plan/soc') as $t) {
-        if (!in_array($t, $themen, true)) {
-            $themen[] = $t;
-        }
-    }
+    /* Gruppe 1 / MQTT (1.2.38, aw E5): plan/pv_prognose und plan/soc gehen jetzt immer hinaus - das Nachtragen
+     * der beiden "nur bei Daten gesendeten" Themen von 1.2.37 entfaellt. Die Stundenpreise stehen hier, wenn sie
+     * gesendet werden (Stundenprofil "absolut"/"beides"). */
     $aus = array();
-    foreach ($themen as $t) {
+    foreach (array_keys(spot_mqtt_themen($st)) as $t) {
         $aus[] = array($t, spot_retain_fuer($t, 'x'), spot_mqtt_text_schluessel($t));
     }
     return $aus;
@@ -3251,6 +3284,16 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
      * uebrigen Themen bleibt, wie er war: nach dem Ausfall gehen sie nur bei
      * einer Aenderung erneut hinaus. Der HTTP-Endpunkt antwortet wie bisher 503. */
     $ausfall = empty($st['ok']);
+    /* Gruppe 1 / MQTT (1.2.38, Nachtrag 19.10.): die 24 Stundenpreise gehen beim ersten Lauf jeder vollen Stunde
+     * unveraendert hinaus, am Aenderungsfilter vorbei - zusaetzlich zum vollen Satz (bin/cron.php, gut alle 30 min,
+     * dessen Abstaende driften). Der Spotpreis-Optimierer benutzt einen Preis nur, wenn er in der laufenden Stunde
+     * aktualisiert wurde (EM.SPOTOPT_WARNUNG; ob ein gleicher, per Gateway geschriebener Wert dafuer zaehlt, ist am
+     * Miniserver nicht gemessen). Unter Gateway V2 muessen die Stundenthemen dafuer "Noncached" sein
+     * (spot_mqtt_noncached()). Merker: tmp/mqtt_stunde_marke mit dem Beginn der Stunde, fortgeschrieben nur,
+     * wenn wirklich gesendet wurde. Bei ok=0 nicht (keine Stundenpreise ohne Preise). */
+    $smarke = spot_tmpdir() . '/mqtt_stunde_marke';
+    $sjetzt = (string) (time() - time() % 3600);
+    $sneu = false;
     if ($ausfall) {
         $neu = spot_mqtt_ausfall_themen($msgs);
     } else {
@@ -3260,6 +3303,15 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
                 $neu[$t] = $msgs[$t];
             }
         }
+        $salt = is_file($smarke) ? trim((string) @file_get_contents($smarke)) : '';
+        if ($salt !== $sjetzt) {
+            foreach ($msgs as $t => $v) {
+                if (strpos((string) $t, 'stunde/') === 0) {
+                    $neu[$t] = $v;
+                    $sneu = true;
+                }
+            }
+        }
     }
     if (!$neu) {
         return 0;
@@ -3267,6 +3319,9 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
     $n = spot_mqtt_senden($prefix, $udpport, $neu);
     if ($n < 1) {
         return -1;      // nichts hinausgegangen - Merker NICHT fortschreiben
+    }
+    if ($sneu) {
+        spot_write_atomic($smarke, $sjetzt);
     }
     spot_write_atomic($merker, json_encode($ausfall ? array_merge($vorher, $neu) : $msgs));
     return $n;
@@ -4002,9 +4057,11 @@ function spot_felder() {
         'RANK'    => array(1, -1, 48, '', spot_t('VORLAGE.F_RANK')),
         'RANKD'   => array(1, -1, 48, '', spot_t('VORLAGE.F_RANKD')),
         'LEVEL'   => array(1, -1, 3, '', spot_t('VORLAGE.F_LEVEL')),
-        'MINH'    => array(1, 0, 23, 'h', spot_t('VORLAGE.F_MINH')),
+        /* Gruppe 1 / MQTT (1.2.38, aw E7): MINH/MAXH senden -1, solange die Preise fuer morgen fehlen -
+         * MinVal -1, sonst laege der Fehlwert ausserhalb des Bereichs (Regeln/07). */
+        'MINH'    => array(1, -1, 23, 'h', spot_t('VORLAGE.F_MINH')),
         'MINP'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_MINP')),
-        'MAXH'    => array(1, 0, 23, 'h', spot_t('VORLAGE.F_MAXH')),
+        'MAXH'    => array(1, -1, 23, 'h', spot_t('VORLAGE.F_MAXH')),
         'MAXP'    => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_MAXP')),
         'AVG'     => array(1, -100, 200, 'ct/kWh', spot_t('VORLAGE.F_AVG')),
         'HMINH'   => array(1, 0, 23, 'h', spot_t('VORLAGE.F_HMINH')),
@@ -4197,6 +4254,178 @@ function spot_vorlage() {
 }
 
 /**
+ * Gruppe 1 / MQTT (1.2.38): der Name, den das MQTT-Gateway einem Thema als virtuellen Eingang gibt - "/" und "%"
+ * werden "_" (Regeln/07; V1 und V2 gleich). Namenstabelle, Hakenliste und Selbstpruefung bauen den Namen hier.
+ */
+function spot_mqtt_gateway_name($praefix, $thema) {
+    return str_replace(array('/', '%'), '_', (string) $praefix . '/' . (string) $thema);
+}
+
+/**
+ * Gruppe 1 / MQTT (1.2.38, aw E4): welche Themen die Namenstabelle (Schritt 2) und die Hakenliste (Gateway V2) tragen - thema =>
+ * Feld der HTTP-Zeile, in der Reihenfolge von spot_felder(). Nur Themen, die ein Feld der HTTP-Zeile spiegeln: die
+ * Einzelfelder, die Regelfelder, die vier Planfelder und die 24 Stundenpreise (diese nur mit Stundenprofil
+ * "absolut"/"beides", weil spot_felder() PH00..PH23 nur dann fuehrt - E12). Nicht in der Vorlage: die nur ueber
+ * MQTT gesendeten regel/N/ein|rang|fehlt|spart|spart_eur, plan/budget2, plan/spart, status/ok (sie stehen in der
+ * Themenliste des Reiters MQTT) und PM00..PM23/PR00..PR23 (kein Thema, E2). Nachtrag 3 (19.10.): hiess bis dahin
+ * spot_mqtt_vorlage_felder() - eine MQTT-Importvorlage gibt es nicht mehr.
+ * Achtung Namensfalle: HTTP OK = morgen_ok, HTTP HOK = ok.
+ */
+function spot_mqtt_eingang_felder($felder = null) {
+    if ($felder === null) {
+        $felder = spot_felder();
+    }
+    $einzeln = array(
+        'OK' => 'morgen_ok', 'HOK' => 'ok', 'CUR' => 'cur', 'CURB' => 'cur_boerse', 'NEXT' => 'next', 'NEG' => 'neg',
+        'RANK' => 'rank', 'RANKD' => 'rankd', 'LEVEL' => 'level',
+        'MINH' => 'minh_morgen', 'MINP' => 'min_morgen', 'MAXH' => 'maxh_morgen', 'MAXP' => 'max_morgen',
+        'AVG' => 'avg_morgen', 'HMINH' => 'minh_heute', 'HMINP' => 'min_heute', 'HMAXH' => 'maxh_heute',
+        'HMAXP' => 'max_heute', 'HAVG' => 'avg_heute',
+        'WINH' => 'fenster_start', 'WININ' => 'fenster_in', 'WINCT' => 'fenster_ct',
+        'CO2' => 'co2', 'CO2MIN' => 'co2_min', 'CO2MINH' => 'co2_minh', 'CO2CLEAN' => 'co2_clean',
+        'WPCUR' => 'wp_cur', 'WPNEXT' => 'wp_next', 'FIX' => 'fix', 'DYNM' => 'dyn_monat', 'DIFFM' => 'diff_monat',
+        'EUROM' => 'euro_monat', 'SHIFTJ' => 'shift_jahr',
+        'ANN' => 'ann', 'AUDIO' => 'audio', 'PUSH' => 'push', 'PTEST' => 'ptest', 'CURX' => 'curx',
+        'TS' => 'status/ts', 'RECHNE' => 'status/rechne', 'LAUF' => 'status/zaehler',
+        'PVSUM' => 'plan/pv_prognose', 'SOC' => 'plan/soc', 'BUDGET' => 'plan/budget', 'PLANLAST' => 'plan/last',
+    );
+    $regel = array('' => 'aktiv', 'IN' => 'in', 'REST' => 'rest', 'CT' => 'ct', 'VERD' => 'verdraengt',
+                   'SPERRE' => 'sperre');
+    $aus = array();
+    foreach (array_keys($felder) as $f) {
+        if (isset($einzeln[$f])) {
+            $aus[$einzeln[$f]] = $f;
+        } elseif (preg_match('/^R([0-9]+)(IN|REST|CT|VERD|SPERRE)?$/', $f, $m)) {
+            $aus['regel/' . (int) $m[1] . '/' . $regel[isset($m[2]) ? $m[2] : '']] = $f;
+        } elseif (preg_match('/^PH([0-9]{2})$/', $f, $m)) {
+            $aus['stunde/' . (int) $m[1] . '/ct'] = $f;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Gruppe 1 / MQTT (1.2.38, Reiter Einbindung, Gateway V2): die Datenpunkte, die unter System -> MQTT Gateway ->
+ * Subscriptions anzuhaken sind - "<praefix>/<thema>" aus derselben Quelle wie die Namenstabelle
+ * (spot_mqtt_eingang_felder()), in ihrer Reihenfolge. Zuruecksetzen nach Senden braucht keines (alles Zustaende).
+ */
+function spot_mqtt_hakenliste($cfg = null) {
+    $pf = spot_mqtt_praefix($cfg);
+    $aus = array();
+    foreach (array_keys(spot_mqtt_eingang_felder()) as $t) {
+        $aus[] = $pf . '/' . $t;
+    }
+    return $aus;
+}
+
+/**
+ * Gruppe 1 / MQTT (1.2.38, Nachtrag 3 vom 19.10.2026): die Namenstabelle fuer Schritt 2 des Reiters. Fuer Werte ueber das
+ * MQTT-Gateway gibt es KEINE Importvorlage (Entscheidung des Hausherrn 19.10.; LoxBerry-Anleitung widget_mqtt und
+ * Regeln/07 R2_078: einfacher "Virtueller Eingang", kein "Virtueller HTTP-Eingang"). Je Thema: Gateway-Name (so legt
+ * der Anwender den Virtuellen Eingang an), Bedeutung (Sprachdatei [MQTTTHEMA], dieselbe wie im Reiter MQTT), Einheit
+ * und Bereich aus spot_felder() des gespiegelten HTTP-Feldes, analog 0|1. Aus derselben Quelle wie die Hakenliste.
+ */
+function spot_mqtt_namentabelle($cfg = null) {
+    $felder = spot_felder();
+    $pf = spot_mqtt_praefix($cfg);
+    $aus = array();
+    foreach (spot_mqtt_eingang_felder($felder) as $thema => $f) {
+        list($analog, $min, $max, $einheit) = $felder[$f];
+        $aus[] = array('name' => spot_mqtt_gateway_name($pf, $thema), 'thema' => $thema,
+                       'text' => spot_t('MQTTTHEMA.' . spot_mqtt_text_schluessel($thema)),
+                       'einheit' => (string) $einheit, 'min' => $min, 'max' => $max, 'analog' => (int) $analog);
+    }
+    return $aus;
+}
+
+/**
+ * Gruppe 1 / MQTT (1.2.38, Nachtrag 19.10.): die Themen, die unter Gateway V2 "Noncached" angehakt werden muessen - die
+ * 24 Stundenpreise (nur mit Stundenprofil absolut/beides). Sie gehen jede volle Stunde unveraendert hinaus
+ * (spot_mqtt_publish()); V2 reicht einen gleichen Wert sonst nicht an den Miniserver weiter (Doppelfilter,
+ * mqtt_gateway.py should_send_ms()). Aus derselben Quelle wie Namenstabelle und Hakenliste.
+ */
+function spot_mqtt_noncached($felder = null) {
+    $aus = array();
+    foreach (array_keys(spot_mqtt_eingang_felder($felder)) as $t) {
+        if (strpos($t, 'stunde/') === 0) {
+            $aus[] = $t;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Gruppe 1 / MQTT (1.2.38, Nachtrag 19.10.): Stehen unter Gateway V2 die Haken? Gelesen wird
+ * config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached - Form wie Midea2Lox mi_lib.php, am Geraet
+ * gelesen 18.10.). Rueckgabe array(1|0|2, Klartext): 1 jeder Datenpunkt der Hakenliste angehakt und die
+ * Stundenthemen Noncached, 0 es fehlt etwas (genannt), 2 nicht feststellbar (Gateway V1, Fassung oder Datei nicht
+ * lesbar).
+ */
+function spot_mqtt_v2_haken_lage($cfg = null) {
+    $gw = spot_mqtt_gateway_info();
+    if ($gw === null || (int) $gw['fassung'] === 0) {
+        return array(2, spot_t('PRUEFTEXT.V2_HAKEN_UNKLAR'));
+    }
+    if ((int) $gw['fassung'] < 2) {
+        return array(2, spot_t('PRUEFTEXT.V2_HAKEN_V1'));
+    }
+    $p = spot_paths();
+    $d = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/subscriptions.json'), true);
+    if (!is_array($d)) {
+        return array(2, spot_t('PRUEFTEXT.V2_HAKEN_UNKLAR'));
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($d[$s]) && is_array($d[$s])) {
+            $liste = $d[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    $pf = spot_mqtt_praefix($cfg);
+    $nc = array_flip(spot_mqtt_noncached());
+    $alle = array_keys(spot_mqtt_eingang_felder());
+    $fehlt = array();
+    $ohne = array();
+    foreach ($alle as $t) {
+        $id = $pf . '/' . $t;
+        if (!array_key_exists($id, $abo)) {
+            $fehlt[] = $id;
+        } elseif (isset($nc[$t]) && !$abo[$id]) {
+            $ohne[] = $id;
+        }
+    }
+    if (!$fehlt && !$ohne) {
+        return array(1, sprintf(spot_t('PRUEFTEXT.V2_HAKEN_OK'), count($alle), count($nc)));
+    }
+    return array(0, sprintf(spot_t('PRUEFTEXT.V2_HAKEN_FEHLT'),
+        $fehlt ? implode(', ', array_slice($fehlt, 0, 8)) . (count($fehlt) > 8 ? ' ...' : '') : '-',
+        $ohne ? implode(', ', array_slice($ohne, 0, 8)) . (count($ohne) > 8 ? ' ...' : '') : '-'));
+}
+
+/**
  * Welle Bild 16 (1.2.37): die fuenf Seiten des LoxBerry-Plugins Musterprojekts fuer den Reiter
  * "Einbindung in Loxone", Schritt 4 - je Seite Name (= Seite im Musterprojekt und Abschnitt in dessen
  * baustein_listen.txt), Bild, Schritte, Hinweise und Zeilen. Die Zeilen stehen in [LOX] Z<seite>_<nn>
@@ -4206,22 +4435,25 @@ function spot_vorlage() {
  * Bis 1.2.36 stand hier keine Funktion, sondern die Liste $sp_bl in index.php (51 Zeilen).
  */
 function spot_bausteinseiten() {
+    /* Gruppe 1 / MQTT (1.2.38): alle fuenf Seiten ueber MQTT (Behaelter "Spotpreis aWATTar MQTT",
+     * Gateway-Namen spot_awattar_...); Seite "Werte" 29 -> 41 Zeilen (Tagesvorschau mit Zahlen),
+     * "Stundenprofil" 27 -> 30 (Nachberechnung 00:35, Hinweis "keine Preise"). */
     $seiten = array(
         array('seite' => 'Spotpreis aWATTar', 'bild' => 'einbindung_loxone.png', 'z' => 1, 'n' => 26,
-              'schritte' => array(spot_t('LOX.S1_S1'), spot_t('LOX.S1_S2'), spot_t('LOX.S1_S3'), spot_t('LOX.S1_S4'), spot_t('LOX.S1_S5'), spot_t('LOX.S1_S6')),
-              'hinweise' => array(spot_t('LOX.S1_H1'), spot_t('LOX.S1_H2'), spot_t('LOX.S1_H3'), spot_t('LOX.S1_H4'), spot_t('LOX.S1_H5'), spot_t('LOX.S1_H6'), spot_t('LOX.H_EN'))),
+              'schritte' => array(spot_t('LOX.S1_S1'), spot_t('LOX.S1_S2'), spot_t('LOX.S1_S3'), spot_t('LOX.S1_S4'), spot_t('LOX.S1_S5'), spot_t('LOX.S1_S6'), spot_t('LOX.S1_S7')),
+              'hinweise' => array(spot_t('LOX.S1_H1'), spot_t('LOX.S1_H2'), spot_t('LOX.S1_H3'), spot_t('LOX.S1_H4'), spot_t('LOX.S1_H5'), spot_t('LOX.S1_H6'), spot_t('LOX.S1_H7'), spot_t('LOX.H_EN'))),
         array('seite' => 'Spotpreis aWATTar Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'z' => 2, 'n' => 35,
               'schritte' => array(spot_t('LOX.S2_S1'), spot_t('LOX.S2_S2'), spot_t('LOX.S2_S3'), spot_t('LOX.S2_S4'), spot_t('LOX.S2_S5')),
               'hinweise' => array(spot_t('LOX.S2_H1'), spot_t('LOX.S2_H2'), spot_t('LOX.S2_H3'), spot_t('LOX.S2_H4'), spot_t('LOX.S2_H5'), spot_t('LOX.H_EN'))),
-        array('seite' => 'Spotpreis aWATTar Werte', 'bild' => 'einbindung_loxone_werte.png', 'z' => 3, 'n' => 29,
+        array('seite' => 'Spotpreis aWATTar Werte', 'bild' => 'einbindung_loxone_werte.png', 'z' => 3, 'n' => 41,
               'schritte' => array(spot_t('LOX.S3_S1'), spot_t('LOX.S3_S2'), spot_t('LOX.S3_S3'), spot_t('LOX.S3_S4'), spot_t('LOX.S3_S5')),
-              'hinweise' => array(spot_t('LOX.S3_H1'), spot_t('LOX.S3_H2'), spot_t('LOX.S3_H3'), spot_t('LOX.S3_H4'))),
+              'hinweise' => array(spot_t('LOX.S3_H1'), spot_t('LOX.S3_H2'), spot_t('LOX.S3_H3'), spot_t('LOX.S3_H4'), spot_t('LOX.S3_H5'), spot_t('LOX.S3_H6'), spot_t('LOX.S3_H7'), spot_t('LOX.S3_H8'))),
         array('seite' => 'Spotpreis aWATTar Freigaben und Tarif', 'bild' => 'einbindung_loxone_freigaben_tarif.png', 'z' => 4, 'n' => 36,
               'schritte' => array(spot_t('LOX.S4_S1'), spot_t('LOX.S4_S2'), spot_t('LOX.S4_S3'), spot_t('LOX.S4_S4'), spot_t('LOX.S4_S5')),
               'hinweise' => array(spot_t('LOX.S4_H1'), spot_t('LOX.S4_H2'), spot_t('LOX.S4_H3'), spot_t('LOX.S4_H4'), spot_t('LOX.H_EN'))),
-        array('seite' => 'Spotpreis aWATTar Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 27,
+        array('seite' => 'Spotpreis aWATTar Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 30,
               'schritte' => array(spot_t('LOX.S5_S1'), spot_t('LOX.S5_S2'), spot_t('LOX.S5_S3'), spot_t('LOX.S5_S4'), spot_t('LOX.S5_S5')),
-              'hinweise' => array(spot_t('LOX.S5_H1'), spot_t('LOX.S5_H2'), spot_t('LOX.S5_H3'), spot_t('LOX.S5_H4'))),
+              'hinweise' => array(spot_t('LOX.S5_H1'), spot_t('LOX.S5_H2'), spot_t('LOX.S5_H3'), spot_t('LOX.S5_H4'), spot_t('LOX.S5_H5'), spot_t('LOX.S5_H6'))),
     );
     $aus = array();
     foreach ($seiten as $s) {
@@ -5443,6 +5675,13 @@ function spot_selbsttest($endpunkt_pruefen = false)
         $add('PRUEF.VORLAGE', $ok ? 1 : 0,
             $ok ? sprintf(spot_t('PRUEFTEXT.VORLAGE_OK'), strlen($v[1]))
                 : spot_t('PRUEFTEXT.VORLAGE_KAPUTT'));
+    }
+    /* Gruppe 1 / MQTT (1.2.38, Nachtrag 19.10.): unter Gateway V2 die Haken in subscriptions.json - jeder Datenpunkt
+     * der Hakenliste angehakt, die Stundenthemen "Noncached" (spot_mqtt_v2_haken_lage()). Unter V1 oder ohne
+     * lesbare Datei ein Strich. */
+    if (function_exists('spot_mqtt_v2_haken_lage')) {
+        list($v2ok, $v2text) = spot_mqtt_v2_haken_lage($cfg);
+        $add('PRUEF.V2_HAKEN', $v2ok, $v2text);
     }
 
     /* Zeitumstellung. Zwei Tage im Jahr hat ein Tag nicht 24 Stunden; das

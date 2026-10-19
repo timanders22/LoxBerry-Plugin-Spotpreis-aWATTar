@@ -998,6 +998,9 @@ ob_start();
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Gruppe 1 / MQTT (1.2.38, Nachtrag 3): kleiner Kopierknopf in der Namenstabelle - .sm-btn ist sonst 250 px breit. */
+.sm-wrap .sm-btn.sm-klein { width: auto !important; min-width: 0 !important; padding: 1px 8px !important;
+    margin: 0 0 0 6px !important; font-size: .85em !important; }
 
 </style>
 <div class="sm-wrap">
@@ -1842,12 +1845,20 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 <h2><?php echo spot_t('EM.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('EM.EINLEITUNG'); ?></div>
 
+<?php /* Gruppe 1 / MQTT (1.2.38): zuerst die Namen des MQTT-Gateways (spot_mqtt_gateway_name(), Praefix
+ * wie eingestellt), darunter die HTTP-Namen fuer bestehende Anlagen. Ueber MQTT gibt es kein relatives
+ * Profil (PR00..PR23, E2). R1..R4 der HTTP-Zeile = regel/<n>/aktiv der Sendefunktion. */
+$sp_empf = spot_mqtt_praefix($sp_cfg);
+$sp_em_ph = sp_e(spot_mqtt_gateway_name($sp_empf, 'stunde/0/ct')) . ' &hellip; ' . sp_e(spot_mqtt_gateway_name($sp_empf, 'stunde/23/ct'));
+$sp_em_r = sp_e(spot_mqtt_gateway_name($sp_empf, 'regel/1/aktiv')) . ' &hellip; ' . sp_e(spot_mqtt_gateway_name($sp_empf, 'regel/4/aktiv'));
+$sp_em_http = '<br><span class="sm-small">' . spot_t('EM.HTTP_BESTAND') . ' ';
+?>
 <div class="sm-step"><b><?php echo spot_t('EM.H_SPOTOPT'); ?></b><br>
 <?php echo spot_t('EM.SPOTOPT_TEXT'); ?>
 <table class="sm-tbl">
 <tr><th><?php echo spot_t('EM.T_VONHIER'); ?></th><th><?php echo spot_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo spot_t('EM.T_BEDEUTUNG'); ?></th></tr>
-<tr><td><span class="sm-mono">PH00 &hellip; PH23</span></td><td><span class="sm-mono">00:00 &hellip; 23:00</span></td><td><?php echo spot_t('EM.Z_ABSOLUT'); ?></td></tr>
-<tr><td><span class="sm-mono">PR00 &hellip; PR23</span></td><td><span class="sm-mono">+0 &hellip; +23</span></td><td><?php echo spot_t('EM.Z_RELATIV'); ?></td></tr>
+<tr><td><span class="sm-mono"><?= $sp_em_ph ?></span><?= $sp_em_http ?><span class="sm-mono">PH00 &hellip; PH23</span></span></td><td><span class="sm-mono">00:00 &hellip; 23:00</span></td><td><?php echo spot_t('EM.Z_ABSOLUT'); ?></td></tr>
+<tr><td><?php echo spot_t('EM.NUR_HTTP'); ?><?= $sp_em_http ?><span class="sm-mono">PR00 &hellip; PR23</span></span></td><td><span class="sm-mono">+0 &hellip; +23</span></td><td><?php echo spot_t('EM.Z_RELATIV'); ?></td></tr>
 <tr><td><span class="sm-mono">&ndash;</span></td><td><span class="sm-mono">Tr</span></td><td><?php echo spot_t('EM.Z_TRIGGER'); ?></td></tr>
 <tr><td><span class="sm-mono">&ndash;</span></td><td><span class="sm-mono">O</span></td><td><?php echo spot_t('EM.Z_O'); ?></td></tr>
 </table>
@@ -1858,16 +1869,21 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 <?php echo spot_t('EM.EM_TEXT'); ?>
 <table class="sm-tbl">
 <tr><th><?php echo spot_t('EM.T_VONHIER'); ?></th><th><?php echo spot_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo spot_t('EM.T_BEDEUTUNG'); ?></th></tr>
-<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">Prio</span></td><td><?php echo spot_t('EM.Z_PRIO'); ?></td></tr>
-<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">O</span></td><td><?php echo spot_t('EM.Z_OFFSET'); ?></td></tr>
-<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">MinSoc</span></td><td><?php echo spot_t('EM.Z_MINSOC'); ?></td></tr>
-<tr><td><span class="sm-mono">R1 &hellip; R4</span></td><td><span class="sm-mono">Off</span></td><td><?php echo spot_t('EM.Z_OFF'); ?></td></tr>
+<tr><td><span class="sm-mono"><?= $sp_em_r ?></span><?= $sp_em_http ?><span class="sm-mono">R1 &hellip; R4</span></span></td><td><span class="sm-mono">Prio</span></td><td><?php echo spot_t('EM.Z_PRIO'); ?></td></tr>
+<tr><td><span class="sm-mono"><?= $sp_em_r ?></span><?= $sp_em_http ?><span class="sm-mono">R1 &hellip; R4</span></span></td><td><span class="sm-mono">O</span></td><td><?php echo spot_t('EM.Z_OFFSET'); ?></td></tr>
+<tr><td><span class="sm-mono"><?= $sp_em_r ?></span><?= $sp_em_http ?><span class="sm-mono">R1 &hellip; R4</span></span></td><td><span class="sm-mono">MinSoc</span></td><td><?php echo spot_t('EM.Z_MINSOC'); ?></td></tr>
+<tr><td><span class="sm-mono"><?= $sp_em_r ?></span><?= $sp_em_http ?><span class="sm-mono">R1 &hellip; R4</span></span></td><td><span class="sm-mono">Off</span></td><td><?php echo spot_t('EM.Z_OFF'); ?></td></tr>
 </table>
 <div class="sm-hinweis"><?php echo spot_t('EM.EM_HINWEIS'); ?></div>
 </div>
 
 <h2><?php echo spot_t('REGEL.H_VORLAGE'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('REGEL.H_VORLAGE_TEXT'); ?></div>
+<?php /* Gruppe 1 / MQTT (1.2.38, Nachtrag 3 vom 19.10.): fuer Werte ueber das MQTT-Gateway gibt es keine
+ * Importvorlage mehr (Entscheidung Hausherr) - der Satz verweist auf die Namenstabelle in Schritt 2; der
+ * Knopf darunter bleibt fuer bestehende Anlagen (HTTP). */ ?>
+<div class="sm-small"><?php echo spot_t('REGEL.VORLAGE_MQTT_TEXT'); ?></div>
+<div class="sm-small"><?php echo spot_t('REGEL.VORLAGE_HTTP_TEXT'); ?></div>
 <form action="index.php" method="post" style="margin-bottom:14px;">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <?php echo spot_fmt(); ?>
@@ -1910,6 +1926,170 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 </div>
 
 <h2><?php echo spot_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
+<?php
+/* Gruppe 1 / MQTT (1.2.38, Hausherr 18.10.2026: Musterprojekt, Vorlagen und Haus nutzen nur MQTT; die
+ * HTTP-Wege bleiben fuer bestehende Anlagen). Vorn stehen die drei MQTT-Schritte - einschalten, Vorlage,
+ * Gateway (bis 1.2.37 Schritt 6, Fassungsweiche bleibt) -, dann die Seiten (Schritt 4) und Schritt 5;
+ * die HTTP-Schritte 1-3 stehen jetzt unter "Fuer bestehende Anlagen: HTTP" am Ende des Reiters.
+ * $sp_haken: die Datenpunkte fuer Gateway V2, $sp_nt: die Namenstabelle (Nachtrag 3: keine MQTT-Vorlage;
+ * beide aus spot_mqtt_eingang_felder()). */
+$sp_haken = function_exists('spot_mqtt_hakenliste') ? spot_mqtt_hakenliste($sp_cfg) : array();
+$sp_nt = function_exists('spot_mqtt_namentabelle') ? spot_mqtt_namentabelle($sp_cfg) : array();
+?>
+<p><?php echo spot_t('LOX.MQ_EINLEITUNG'); ?></p>
+
+<div class="sm-step"><b><?php echo spot_t('LOX.MQ_S1_TITEL'); ?></b><br>
+<?php echo spot_t('LOX.MQ_S1_TEXT'); ?>
+<?php if (!empty($sp_cfg['mqtt_enabled'])) { ?>
+<div class="sm-alert sm-ok"><?php echo spot_t('LOX.MQ_S1_EIN'); ?></div>
+<?php } else { ?>
+<div class="sm-alert sm-warn"><?php echo spot_t('LOX.MQ_S1_AUS'); ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?php echo spot_t('LOX.MQ_S2_TITEL'); ?></b><br>
+<?php echo sprintf(spot_t('LOX.MQ_S2_TEXT'), count($sp_nt)); ?>
+<div class="sm-hinweis"><?php echo spot_t('LOX.NT_RECHTE'); ?> <?php echo spot_t('LOX.NT_MUSTER'); ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+</div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('LOX.NT_NAME'); ?></th><th><?php echo spot_t('LOX.NT_BEDEUTUNG'); ?></th><th><?php echo spot_t('LOX.NT_BEREICH'); ?></th><th><?php echo spot_t('LOX.NT_ART'); ?></th></tr>
+<?php foreach ($sp_nt as $sp_r) { ?>
+<tr><td><span class="sm-mono"><?= sp_e($sp_r['name']) ?></span> <button data-role="none" type="button" class="sm-btn sm-b-lesen sm-klein" data-name="<?= sp_e($sp_r['name']) ?>" data-ok="<?= sp_e(spot_t('LOX.NT_KOPIERT')) ?>" data-fehl="<?= sp_e(spot_t('LOX.NT_NICHT_KOPIERT')) ?>" onclick="return spNameKopieren(this);"><?= sp_e(spot_t('LOX.NT_KOPIEREN')) ?></button></td><td><?= sp_e($sp_r['text']) ?></td><td><?= $sp_r['analog'] ? sp_e(trim($sp_r['einheit'] . ' ' . $sp_r['min'] . ' … ' . $sp_r['max'])) : '0/1' ?></td><td><?= sp_e(spot_t('LOX.NT_ZAHL')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+</div>
+
+<?php
+/* ===================================================================
+ * Schritt 3: Abo bzw. Haken im MQTT-Gateway - der Schritt, der bis 1.2.12 GANZ FEHLTE
+ * ===================================================================
+ *
+ * Wer MQTT einschaltete, bekam die Themenliste und sonst nichts. Unter
+ * Gateway V1 - der Vorgabe - kam damit am Miniserver kein einziger Wert
+ * an, ohne dass irgendwo stand, warum. Das ist die haeufigste
+ * Fehlerursache ueberhaupt, und sie war hier nicht einmal erwaehnt.
+ *
+ * Der Satz haengt an Mqtt.Gatewayversion und wird NICHT unbedingt
+ * hingeschrieben: unter V2 schaltet der LoxBerry-Kern die Eingabeknoepfe
+ * auf der Abonnement-Seite ausdruecklich ab. Wer dort den V1-Satz liest,
+ * sucht ein Eingabefeld, das es nicht mehr gibt.
+ *
+ * Ist die Fassung nicht lesbar, stehen BEIDE Saetze da. Einen von beiden
+ * zu behaupten waere fuer die Haelfte der Anlagen falsch - und eine stille
+ * Falschaussage in genau der Zeile, die als haeufigste Fehlerursache gilt.
+ *
+ * Gruppe 1 / MQTT (1.2.38): jetzt Schritt 3 (MQTT ist der Hauptweg). Unter V2 die Hakenliste aus
+ * spot_mqtt_hakenliste() - EINE Quelle mit der Namenstabelle; der Bestand hat am Geraet gelesen, dass V2 nur
+ * angehakte Datenpunkte abonniert, je Thema einzeln (MQTT_UMSTELLUNG_BESTAND.md). Das Praefix kommt aus
+ * spot_mqtt_praefix() (bis 1.2.37 der rohe Konfigwert - leer ergab "/#").
+ * =================================================================== */
+$sp_gw = function_exists('spot_mqtt_gateway_info') ? spot_mqtt_gateway_info() : null;
+$sp_gwf = ($sp_gw === null) ? 0 : (int) $sp_gw['fassung'];
+$sp_pf = spot_mqtt_praefix($sp_cfg);
+/* Nachtrag 19.10.: die 24 Stundenthemen tragen in der Hakenliste "[Noncached]" (spot_mqtt_noncached()) - V2
+ * reicht gleiche Werte sonst nicht weiter, und das Plugin sendet sie jede Stunde unveraendert neu. Unter V2
+ * steht darunter, was die Selbstpruefung in subscriptions.json gefunden hat (spot_mqtt_v2_haken_lage()). */
+$sp_nc = function_exists('spot_mqtt_noncached') ? array_flip(spot_mqtt_noncached()) : array();
+$sp_hz = array();
+foreach ($sp_haken as $sp_h) {
+    $sp_hz[] = $sp_h . (isset($sp_nc[substr($sp_h, strlen($sp_pf) + 1)]) ? '   [Noncached]' : '');
+}
+$sp_v2l = ($sp_gwf >= 2 && function_exists('spot_mqtt_v2_haken_lage')) ? spot_mqtt_v2_haken_lage($sp_cfg) : null;
+$sp_haken_html = '<div class="sm-small">' . sprintf(spot_t('LOX.HAKEN_TITEL'), count($sp_haken)) . '</div>'
+    . '<pre class="sm-pre">' . sp_e(implode("\n", $sp_hz)) . '</pre>'
+    . '<div class="sm-small">' . spot_t('LOX.HAKEN_NONCACHED') . ' ' . spot_t('LOX.HAKEN_RESET') . ' '
+    . spot_t('LOX.HAKEN_PROFIL') . '</div>'
+    . ($sp_v2l !== null ? '<div class="' . ($sp_v2l[0] === 1 ? 'sm-alert sm-ok' : ($sp_v2l[0] === 0 ? 'sm-alert sm-warn' : 'sm-small'))
+        . '">' . sp_e($sp_v2l[1]) . '</div>' : '');
+?>
+<div class="sm-step"><b><?php echo spot_t('LOX.H_ABO'); ?></b><br>
+<?php echo spot_t('LOX.ABO_EINLEITUNG'); ?>
+<pre class="sm-pre"><?= sp_e($sp_pf) ?>/#</pre>
+<!-- Welche Themen zurueckbehalten hinausgehen. Die Liste wird NICHT
+     abgeschrieben, sondern aus spot_retain_liste() gebildet - zwei
+     Listen liefen sonst auseinander, und die Oberflaeche behauptete
+     etwas anderes, als der Dienst sendet. -->
+<div class="sm-small"><?php echo spot_t('LOX.RETAIN_TEXT'); ?></div>
+<div class="sm-pre"><?php
+    $sp_rt = array_keys(spot_retain_liste());
+    sort($sp_rt);
+    $sp_rz = array();
+    foreach ($sp_rt as $sp_r) { $sp_rz[] = $sp_pf . '/' . $sp_r; }
+    echo sp_e(implode('   ', $sp_rz));
+?></div>
+<?php if ($sp_gwf >= 2) { ?>
+<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
+<?php echo $sp_haken_html; ?>
+<?php } elseif ($sp_gwf === 1) { ?>
+<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
+<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
+<?php echo $sp_haken_html; ?>
+<div class="sm-small"><?php echo spot_t('LOX.ABO_UNBEKANNT'); ?></div>
+<?php } ?>
+<div class="sm-small"><?php echo spot_t('LOX.RECONNECT'); ?></div>
+<div class="sm-small"><?= sprintf(spot_t('LOX.ABO_FASSUNG'),
+      $sp_gwf > 0 ? (string) $sp_gwf : spot_t('LOX.ABO_FASSUNG_UNBEKANNT')) ?></div>
+<?php if ($sp_gw !== null && !$sp_gw['autostart']) { ?>
+<div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
+<?php
+/* Welle Bild 16 (1.2.37, Hausherr 11.10./17.10.2026): fuenf Seiten aus dem LoxBerry-Plugins Musterprojekt
+ * (spot_bausteinseiten()), alle immer sichtbar: Ueberschrift = Seitenname, Kasten "So uebernehmen Sie diese Seite",
+ * Tabelle (eine Zeile je Baustein, deutsch wortgleich mit der Liste des Musterprojekts), Hinweise, Bild und Link.
+ * Jede Zelle und jeder Satz ist reiner Text und wird maskiert; nur MUSTERPROJEKT traegt Auszeichnung (den Link).
+ * Bis 1.2.36 stand hier die Liste $sp_bl mit 51 Zeilen (X-8): sechs Schwellwertschalter an digitalen Eingaengen
+ * (Impuls je Abfrage, Regeln/09), invertierte Schwellen an LEVEL/WININ (schalteten bei -1 ein), eine Zeitformel an
+ * TS, ein Monatsimpuls, den "Impuls um" nicht kann, und keine Schaltregeln. */
+$sp_bs = spot_bausteinseiten();
+?>
+<p class="sm-small"><?php echo sp_e(spot_t('LOX.BS_VORTEXT')); ?></p>
+<?php foreach ($sp_bs as $sp_s) { ?>
+<h4 class="sm-h4"><?php echo sp_e($sp_s['seite']); ?></h4>
+<div class="sm-hinweis"><b><?php echo sp_e(spot_t('LOX.SCHRITTE_TITEL')); ?></b>
+<ol class="sm-schritte">
+<?php foreach ($sp_s['schritte'] as $sp_x) { ?>
+<li><?php echo sp_e($sp_x); ?></li>
+<?php } ?>
+</ol></div>
+<table class="sm-tbl">
+<tr><th>#</th><th><?php echo spot_t('TEXT.BL_H_TYP'); ?></th><th><?php echo spot_t('TEXT.BL_H_NAME'); ?></th><th><?php echo spot_t('TEXT.BL_H_PARAM'); ?></th><th><?php echo spot_t('TEXT.BL_H_EIN'); ?></th></tr>
+<?php foreach ($sp_s['zeilen'] as $sp_z) { ?>
+<tr><td><?php echo (int) $sp_z[0]; ?></td><td><?php echo sp_e($sp_z[1]); ?></td><td><?php echo sp_e($sp_z[2]); ?></td><td><?php echo sp_e($sp_z[3]); ?></td><td><?php echo sp_e($sp_z[4]); ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-warnung"><b><?php echo sp_e(spot_t('LOX.HINWEISE_TITEL')); ?></b>
+<ul class="sm-schritte">
+<?php foreach ($sp_s['hinweise'] as $sp_x) { ?>
+<li><?php echo sp_e($sp_x); ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?php echo sp_e($sp_s['bild']); ?>" alt="<?php echo sp_e(sprintf(spot_t('LOX.BILD_ALT'), $sp_s['seite'])); ?>" loading="lazy">
+<figcaption><?php echo sp_e(sprintf(spot_t('LOX.BILD_UNTERSCHRIFT'), $sp_s['seite'])); ?></figcaption>
+</figure>
+<p class="sm-small"><?php echo spot_t('LOX.MUSTERPROJEKT'); ?></p>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_5_MQTT_ALTERNATIVE_JSON'); ?></b><br>
+<?php echo spot_t('TEXT.ALLE_WERTE_GIBT_ES_AUCH_BER_DAS_LO'); ?>
+<span class="sm-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/...</span> <?php echo spot_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE_INKL'); ?> <b><?php echo spot_t('TEXT.ALLER_STUNDENWERTE'); ?></b> <?php echo spot_t('TEXT.FR_EIGENE_DIAGRAMME'); ?>
+<span class="sm-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?><?php echo spot_t('TEXT.SPOT_PHP_JSON_1'); ?><?= $sp_tk2 ?></span>
+</div>
+
+<?php /* Gruppe 1 / MQTT (1.2.38): der HTTP-Weg fuer bestehende Anlagen - die Schritte 1-3 bis 1.2.37,
+         unveraendert bis auf die Ueberschriften (HTTP 1-3). */ ?>
+<h3 class="sm-h3"><?php echo spot_t('LOX.HTTP_TITEL'); ?></h3>
+<p><?php echo spot_t('LOX.HTTP_TEXT'); ?></p>
 <p><?php echo spot_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_AL'); ?> <b><?php echo spot_t('TEXT.ENDPREISE'); ?></b>
 <?php echo spot_t('TEXT.INKL_NETZENTGELTE_ABGABEN_UND_UMSA'); ?> <b><?php echo spot_t('TEXT.ANSAGE'); ?></b> <?php echo spot_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_DEN'); ?> <b><?php echo spot_t('TEXT.PUSH_2'); ?></b> <?php echo spot_t('TEXT.VERSCHICKT_DER_MINISERVER'); ?></p>
 
@@ -1962,104 +2142,6 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 <?php echo spot_t('TEXT.CUR_NEXT_HAVG_MINP_MAXP_ALS_ANALOG'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span><?php echo spot_t('TEXT.MINH_MAXH_WINH_MIT'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.V_0_UHR'); ?></span><?php echo spot_t('TEXT.RANK_OHNE_EINHEIT_VISUALISIERUNG_F'); ?>
 </div>
 
-<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
-<?php
-/* Welle Bild 16 (1.2.37, Hausherr 11.10./17.10.2026): fuenf Seiten aus dem LoxBerry-Plugins Musterprojekt
- * (spot_bausteinseiten()), alle immer sichtbar: Ueberschrift = Seitenname, Kasten "So uebernehmen Sie diese Seite",
- * Tabelle (eine Zeile je Baustein, deutsch wortgleich mit der Liste des Musterprojekts), Hinweise, Bild und Link.
- * Jede Zelle und jeder Satz ist reiner Text und wird maskiert; nur MUSTERPROJEKT traegt Auszeichnung (den Link).
- * Bis 1.2.36 stand hier die Liste $sp_bl mit 51 Zeilen (X-8): sechs Schwellwertschalter an digitalen Eingaengen
- * (Impuls je Abfrage, Regeln/09), invertierte Schwellen an LEVEL/WININ (schalteten bei -1 ein), eine Zeitformel an
- * TS, ein Monatsimpuls, den "Impuls um" nicht kann, und keine Schaltregeln. */
-$sp_bs = spot_bausteinseiten();
-?>
-<p class="sm-small"><?php echo sp_e(spot_t('LOX.BS_VORTEXT')); ?></p>
-<?php foreach ($sp_bs as $sp_s) { ?>
-<h4 class="sm-h4"><?php echo sp_e($sp_s['seite']); ?></h4>
-<div class="sm-hinweis"><b><?php echo sp_e(spot_t('LOX.SCHRITTE_TITEL')); ?></b>
-<ol class="sm-schritte">
-<?php foreach ($sp_s['schritte'] as $sp_x) { ?>
-<li><?php echo sp_e($sp_x); ?></li>
-<?php } ?>
-</ol></div>
-<table class="sm-tbl">
-<tr><th>#</th><th><?php echo spot_t('TEXT.BL_H_TYP'); ?></th><th><?php echo spot_t('TEXT.BL_H_NAME'); ?></th><th><?php echo spot_t('TEXT.BL_H_PARAM'); ?></th><th><?php echo spot_t('TEXT.BL_H_EIN'); ?></th></tr>
-<?php foreach ($sp_s['zeilen'] as $sp_z) { ?>
-<tr><td><?php echo (int) $sp_z[0]; ?></td><td><?php echo sp_e($sp_z[1]); ?></td><td><?php echo sp_e($sp_z[2]); ?></td><td><?php echo sp_e($sp_z[3]); ?></td><td><?php echo sp_e($sp_z[4]); ?></td></tr>
-<?php } ?>
-</table>
-<div class="sm-warnung"><b><?php echo sp_e(spot_t('LOX.HINWEISE_TITEL')); ?></b>
-<ul class="sm-schritte">
-<?php foreach ($sp_s['hinweise'] as $sp_x) { ?>
-<li><?php echo sp_e($sp_x); ?></li>
-<?php } ?>
-</ul></div>
-<figure class="sm-bild">
-<img src="<?php echo sp_e($sp_s['bild']); ?>" alt="<?php echo sp_e(sprintf(spot_t('LOX.BILD_ALT'), $sp_s['seite'])); ?>" loading="lazy">
-<figcaption><?php echo sp_e(sprintf(spot_t('LOX.BILD_UNTERSCHRIFT'), $sp_s['seite'])); ?></figcaption>
-</figure>
-<p class="sm-small"><?php echo spot_t('LOX.MUSTERPROJEKT'); ?></p>
-<?php } ?>
-</div>
-
-<div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_5_MQTT_ALTERNATIVE_JSON'); ?></b><br>
-<?php echo spot_t('TEXT.ALLE_WERTE_GIBT_ES_AUCH_BER_DAS_LO'); ?>
-<span class="sm-mono"><?= sp_e($sp_cfg['mqtt_topic']) ?>/...</span> <?php echo spot_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE_INKL'); ?> <b><?php echo spot_t('TEXT.ALLER_STUNDENWERTE'); ?></b> <?php echo spot_t('TEXT.FR_EIGENE_DIAGRAMME'); ?>
-<span class="sm-mono">http://<?= $sp_host ?>/plugins/<?= sp_e($sp_plugin) ?><?php echo spot_t('TEXT.SPOT_PHP_JSON_1'); ?><?= $sp_tk2 ?></span>
-</div>
-
-<?php
-/* ===================================================================
- * Das Abo im MQTT-Gateway - der Schritt, der bis 1.2.12 GANZ FEHLTE
- * ===================================================================
- *
- * Wer MQTT einschaltete, bekam die Themenliste und sonst nichts. Unter
- * Gateway V1 - der Vorgabe - kam damit am Miniserver kein einziger Wert
- * an, ohne dass irgendwo stand, warum. Das ist die haeufigste
- * Fehlerursache ueberhaupt, und sie war hier nicht einmal erwaehnt.
- *
- * Der Satz haengt an Mqtt.Gatewayversion und wird NICHT unbedingt
- * hingeschrieben: unter V2 schaltet der LoxBerry-Kern die Eingabeknoepfe
- * auf der Abonnement-Seite ausdruecklich ab. Wer dort den V1-Satz liest,
- * sucht ein Eingabefeld, das es nicht mehr gibt.
- *
- * Ist die Fassung nicht lesbar, stehen BEIDE Saetze da. Einen von beiden
- * zu behaupten waere fuer die Haelfte der Anlagen falsch - und eine stille
- * Falschaussage in genau der Zeile, die als haeufigste Fehlerursache gilt.
- * =================================================================== */
-$sp_gw = function_exists('spot_mqtt_gateway_info') ? spot_mqtt_gateway_info() : null;
-$sp_gwf = ($sp_gw === null) ? 0 : (int) $sp_gw['fassung'];
-?>
-<div class="sm-step"><b><?php echo spot_t('LOX.H_ABO'); ?></b><br>
-<?php echo spot_t('LOX.ABO_EINLEITUNG'); ?>
-<pre class="sm-pre"><?= sp_e($sp_cfg['mqtt_topic']) ?>/#</pre>
-<!-- Welche Themen zurueckbehalten hinausgehen. Die Liste wird NICHT
-     abgeschrieben, sondern aus spot_retain_liste() gebildet - zwei
-     Listen liefen sonst auseinander, und die Oberflaeche behauptete
-     etwas anderes, als der Dienst sendet. -->
-<div class="sm-small"><?php echo spot_t('LOX.RETAIN_TEXT'); ?></div>
-<div class="sm-pre"><?php
-    $sp_rt = array_keys(spot_retain_liste());
-    sort($sp_rt);
-    $sp_rz = array();
-    foreach ($sp_rt as $sp_r) { $sp_rz[] = $sp_cfg['mqtt_topic'] . '/' . $sp_r; }
-    echo sp_e(implode('   ', $sp_rz));
-?></div>
-<?php if ($sp_gwf >= 2) { ?>
-<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
-<?php } elseif ($sp_gwf === 1) { ?>
-<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
-<?php } else { ?>
-<div class="sm-warnung"><?php echo spot_t('LOX.ABO_PFLICHT'); ?></div>
-<div class="sm-hinweis"><?php echo spot_t('LOX.ABO_V2'); ?></div>
-<div class="sm-small"><?php echo spot_t('LOX.ABO_UNBEKANNT'); ?></div>
-<?php } ?>
-<div class="sm-small"><?= sprintf(spot_t('LOX.ABO_FASSUNG'),
-      $sp_gwf > 0 ? (string) $sp_gwf : spot_t('LOX.ABO_FASSUNG_UNBEKANNT')) ?></div>
-<?php if ($sp_gw !== null && !$sp_gw['autostart']) { ?>
-<div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo spot_t('TEXT.W_AUTOSTART'); ?></div>
-<?php } ?>
-</div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -2524,6 +2606,20 @@ function spHours(mode) {
     });
     activate(<?= json_encode($sp_tab) ?>);
 })();
+/* Gruppe 1 / MQTT (1.2.38, Nachtrag 3): ein Name der Namenstabelle (Reiter Einbindung, Schritt 2) in die
+   Zwischenablage. execCommand zuerst: navigator.clipboard gibt es nur in einem sicheren Kontext, der LoxBerry
+   laeuft ueblicherweise mit http im Heimnetz (Bauart WaermepumpeCloud wpAdresseKopieren). */
+function spNameKopieren(k) {
+    var a = k.getAttribute('data-name'), ok = false;
+    try {
+        var t = document.createElement('textarea');
+        t.value = a; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.left = '-9999px';
+        document.body.appendChild(t); t.select(); ok = document.execCommand('copy'); document.body.removeChild(t);
+    } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(a); ok = true; }
+    k.textContent = k.getAttribute(ok ? 'data-ok' : 'data-fehl');
+    return false;
+}
 </script>
 <?php
 /* O1: die Zeile "Passen Reiterleiste und Flaechen zusammen?" verbindet die
