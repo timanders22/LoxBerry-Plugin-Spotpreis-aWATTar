@@ -27,6 +27,10 @@
  *                       das aus wie ein normaler Tag.
  *   ?debug=1         -> alle Stundenpreise heute und morgen
  *   ?json=1          -> kompletter Zustand als JSON (inkl. aller Stundenwerte)
+ *                       Seit 1.2.39 (Gruppe 27) gelten diese drei Leseaufrufe nur mit
+ *                       endpunkt_ein = 1 (Update: an, Neuinstallation: aus; Reiter Einbindung),
+ *                       sonst HTTP 403 SPOT;OK=0;GRUND=ENDPUNKT_AUS. ?selftest=1 und die
+ *                       ausloesenden Aufrufe darunter bleiben offen.
  *
  *   Die folgenden Aufrufe LOESEN ETWAS AUS und verlangen deshalb seit
  *   1.2.13 IMMER ein Token (siehe unten):
@@ -35,6 +39,8 @@
  *   ?say=1           -> Test: Ansage sofort abspielen
  *   ?saytomorrow=1   -> Test: Ansage "Preise fuer morgen" abspielen
  *   ?ptest=1         -> Test-Pushnachricht ausloesen (setzt PTEST fuer 5 Minuten)
+ *   Seit 1.2.39 tragen ihre Antworten ;GESPERRT=0|1 (Plugin-Bremse wie die
+ *   Befehlsbruecke: Ansagen 20 s, Test-Push 10 s, Abruf 60 s).
  */
 
 require_once __DIR__ . '/spot_lib.php';
@@ -181,13 +187,69 @@ if ($spot_soll !== '') {
     }
 }
 
-/* ---------- Abruf bestellen (P4) ----------
- * Bis 1.2.31 rief ?refresh=1 hier selbst bei aWATTar ab, waehrend der Aufrufer
- * wartete. Jetzt legt es einen Merker ab, den der naechste Minutenlauf abholt;
- * geantwortet wird mit dem Stand des Zwischenspeichers wie bei jedem Lesen. */
+/* ---------- Ausloesende Aufrufe (Token-Pflicht oben) ----------
+ *
+ * Gruppe 27 (1.2.39, V3/E-E6/E-E10): say/saytomorrow, ptest und refresh laufen
+ * ueber DIESELBE Funktion wie die Befehlsbruecke (spot_befehl_ausfuehren() in
+ * spot_lib.php, Quelle 'http') - mit der Plugin-Bremse (Ansagen 20 s gemeinsam,
+ * Test-Push 10 s, Abruf 60 s) und ";GESPERRT=0|1" in der Zeile. Sie stehen jetzt
+ * VOR dem Tor des Lesezweigs: endpunkt_ein schaltet nur das Lesen fuer Loxone ab,
+ * nicht diese Aufrufe (sie brauchen ohnehin immer das Token).
+ *
+ * Abruf bestellen (P4): bis 1.2.31 rief ?refresh=1 hier selbst bei aWATTar ab,
+ * waehrend der Aufrufer wartete. Jetzt legt es einen Merker ab, den der naechste
+ * Minutenlauf abholt; geantwortet wird mit dem Stand des Zwischenspeichers wie
+ * bei jedem Lesen - ist der Lesezweig aus (endpunkt_ein 0), mit der eigenen Zeile
+ * REFRESH;OK=1;BESTELLT=1 (N6: sonst bestellte der Aufruf und antwortete
+ * trotzdem 403). */
 if (isset($_GET['refresh'])) {
-    @file_put_contents(spot_tmpdir() . '/abruf_bestellt', (string) time());
-    spot_log('Abruf am Endpunkt bestellt (?refresh=1) - der naechste Minutenlauf ruft neu ab.');
+    list($spot_code, $spot_zeile) = spot_befehl_ausfuehren('refresh', 'http');
+    if ($spot_code !== 200 || (int) spot_cfg_wert('endpunkt_ein', 0) !== 1) {
+        http_response_code($spot_code);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo $spot_zeile . "\n";
+        exit;
+    }
+}
+
+/* ---------- Test-Ansagen ---------- */
+if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
+    /* Bis 1.2.12 stand der Satz fuer "kein Ansagetext" fest auf Deutsch im
+     * Quelltext; seit 1.2.39 steht der Ablauf in spot_befehl_ausfuehren(). */
+    list($spot_code, $spot_zeile) = spot_befehl_ausfuehren(isset($_GET['saytomorrow']) ? 'saytomorrow' : 'say', 'http');
+    http_response_code($spot_code);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo $spot_zeile . "\n";
+    exit;
+}
+
+/* ---------- Test-Pushnachricht ---------- */
+if (isset($_GET['ptest'])) {
+    /* Der Ausloeser meldet SOFORT (Regeln/07) - bis 1.2.26 kam PTEST=1 ueber
+     * MQTT erst mit dem naechsten Minutenlauf (spot_befehl_ausfuehren()). */
+    list($spot_code, $spot_zeile) = spot_befehl_ausfuehren('ptest', 'http');
+    http_response_code($spot_code);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo $spot_zeile . "\n";
+    if (strpos($spot_zeile, 'PTEST;OK=1;') === 0) {
+        echo "Hinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 4) verdrahtet ist.\n";
+    }
+    exit;
+}
+
+/* ---------- Tor des Lesezweigs (Gruppe 27, 1.2.39; E3, E-E10) ----------
+ * endpunkt_ein = 0 sperrt den Lesezweig fuer Loxone (die Zeile ohne Parameter,
+ * ?debug=1, ?json=1): neue Anlagen holen ihre Werte ueber MQTT (Namenstabelle im
+ * Reiter Einbindung) und loesen ueber die Befehlsbruecke aus. Ab Werk 0 fuer neue
+ * Anlagen; ein Update setzt 1 (postupgrade.sh und die Lese-Regel in
+ * spot_config_normalisieren()). Offen bleiben ?selftest=1 und die ausloesenden
+ * Aufrufe darueber. Die Protokollzeile kommt nur beim Wechsel. */
+if ((int) spot_cfg_wert('endpunkt_ein', 0) !== 1) {
+    spot_log_if_changed('endpunkt_aus', 'Endpunkt: Lesezweig abgewiesen (endpunkt_ein = 0) - einschalten im Reiter Einbindung');
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "SPOT;OK=0;GRUND=ENDPUNKT_AUS\n";
+    exit;
 }
 
 /* ---------- JSON ---------- */
@@ -209,35 +271,6 @@ if (isset($_GET['json'])) {
 
 header('Content-Type: text/plain; charset=utf-8');
 
-/* ---------- Test-Ansagen ---------- */
-if (isset($_GET['say']) || isset($_GET['saytomorrow'])) {
-    $st = spot_state();
-    $text = isset($_GET['saytomorrow']) ? spot_tomorrow_text($st) : spot_announce_text($st);
-    if ($text === '') {
-        // Bis 1.2.12 stand dieser Satz fest auf Deutsch im Quelltext - in
-        // einem Plugin, dessen Ansagen seit 1.1.2 aus den Sprachdateien
-        // kommen. Wer die Oberflaeche auf Englisch fuehrt, bekam eine
-        // deutsche Testansage.
-        $text = spot_t('SPOT_ANSAGE.TEST_LEER');
-    }
-    $ok = spot_say($text);
-    /* Seit 1.2.33 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
-    echo 'SAY;OK=' . ($ok ? 1 : 0) . ';' . spot_say_feld($text) . "\n";
-    exit;
-}
-
-/* ---------- Test-Pushnachricht ---------- */
-if (isset($_GET['ptest'])) {
-    @file_put_contents(spot_tmpdir() . '/ptest', '1');
-    spot_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten)');
-    /* Der Ausloeser meldet SOFORT (Regeln/07) - bis 1.2.26 kam PTEST=1 ueber
-     * MQTT erst mit dem naechsten Minutenlauf. Gesendet wird nur, was sich
-     * geaendert hat, also im Regelfall genau dieses eine Thema. */
-    spot_mqtt_publish(null, false);
-    echo "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 4) verdrahtet ist.\n";
-    exit;
-}
-
 /* ---------- Zustand ---------- */
 $st = spot_state();
 $cfg = spot_config();
@@ -257,10 +290,16 @@ if (isset($_GET['debug'])) {
         printf("Par.-14a-Preissatz (%s): Aufschlaege %.3f ct -> jetzt %.3f ct/kWh\n",
             $st['wp_name'], $st['wp_addon'], $st['wp_cur']);
     }
+    /* Gruppe 27 (1.2.39, E1): am Monatsersten bis zur ersten Tageszeile (23:50) gibt es den laufenden Monat noch
+     * nicht - die Monatswerte stehen dann auf 0, und die Zeile sagt es. */
+    if (isset($st['monat_werte']) && empty($st['monat_werte'])) {
+        echo "Tarifvergleich laufender Monat: noch keine Werte (erste Tageszeile um 23:50)\n";
+    } else {
     printf("Tarifvergleich laufender Monat: dynamisch (lastprofil-gewichtet) %.3f ct <-> fest %.3f ct -> %s %.3f ct/kWh (%.2f EUR)\n",
         $st['dyn_monat'], $st['fix'],
         $st['diff_monat'] >= 0 ? 'dynamisch guenstiger um' : 'fest guenstiger um',
         abs($st['diff_monat']), abs($st['euro_monat']));
+    }
     printf("Verschiebe-Potenzial (7 Tage): %.3f ct/kWh Spanne -> rund %.2f EUR im Jahr bei %.1f kWh/Tag\n\n",
         $st['shift_ct'], $st['shift_jahr'], (float) $cfg['shift_kwh']);
     foreach (array('heute' => 'HEUTE', 'morgen' => 'MORGEN') as $k => $label) {

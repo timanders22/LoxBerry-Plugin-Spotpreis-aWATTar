@@ -87,6 +87,23 @@ sp_inhalt() {
     [ "$sp_rc" = 0 ] || [ "$sp_rc" = 1 ] || return 2
     return "$sp_rc"
 }
+# W4 (Gruppe 27, 1.2.39): eine Konfiguration nie halb kopieren. Bis 1.2.38 stand hier "cp -p" direkt auf das
+# Ziel - brach die Kopie ab (volle Platte), lag eine abgeschnittene spot.json mit dem Token da. Jetzt in eine Datei
+# daneben (umask 077, also 0600 von Anfang an), Gegenprobe mit cmp, dann mv -f (unteilbar im selben Verzeichnis).
+# Die Rechte setzt weiter der Block am Ende (chmod 600). Rueckgabe 0 nur, wenn das Ziel die Quelle traegt.
+sp_kopie() {
+    sp_neu="$2.neu.$$"
+    rm -f "${sp_neu:?}" 2>/dev/null
+    if ! ( umask 077; cp "$1" "$sp_neu" ) 2>/dev/null || ! cmp -s "$1" "$sp_neu"; then
+        rm -f "${sp_neu:?}" 2>/dev/null
+        return 1
+    fi
+    if ! mv -f "$sp_neu" "$2" 2>/dev/null; then
+        rm -f "${sp_neu:?}" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
 # Zurueckgespielt wird nur, wenn spot.json KEINEN und die Zweitschrift EINEN
 # Inhalt traegt. Eine verdraengte spot.json, die nicht leer und nicht "{}"
 # ist, bleibt als spot.json.kaputt.<zeit> mit 0600 daneben liegen.
@@ -101,7 +118,7 @@ sp_zurueckspielen() {
                 echo "<INFO> Die bisherige spot.json trug keine Einstellungen; sie liegt als $(basename "$sp_weg") daneben."
             fi
         fi
-        cp -p "$BK" "$CF" && echo "$1"
+        sp_kopie "$BK" "$CF" && echo "$1"
     elif [ "$sp_cf" = 1 ] && [ "$sp_bk" = 1 ]; then
         echo "<INFO> Die Zweitschrift $(basename "$BK") traegt keine Einstellungen - nicht zurueckgespielt."
     elif [ "$sp_cf" = 2 ] || [ "$sp_bk" = 2 ]; then
@@ -254,6 +271,23 @@ if [ "$SP_MARKE" = "1" ] && [ -d "$LANG_SICHER" ]; then
     if [ "$GERETTET" = "1" ]; then
         case "$LANG_SICHER" in
             */data/plugins/?*.upgrade_sicherung) rm -rf "${LANG_SICHER:?}" 2>/dev/null ;;
+        esac
+    fi
+fi
+
+# Gruppe 27 (1.2.39): nur bei einer NEUINSTALLATION hier (dort ist der Haken ab Werk aus, also praktisch nie ein
+# Start); bei einer Aktualisierung startet postupgrade.sh die Bruecke nach dem Entfernen der Marke.
+if [ "$SP_MARKE" = "0" ]; then
+    # Gruppe 27 (1.2.39, V3): die Befehlsbruecke starten - befehlsbruecke.sh startet nur mit dem Haken "Befehle ueber
+    # MQTT annehmen" (ab Werk aus) und MQTT, und nicht, solange eine frische Upgrade-Marke liegt. Der Waechter im
+    # Minutenlauf holt einen ausgelassenen Start binnen einer Minute nach.
+    BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+    if [ -f "$BBSH" ]; then
+        BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+        case "$BB_AUS" in
+            *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+            "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+            *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
         esac
     fi
 fi

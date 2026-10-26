@@ -1,5 +1,5 @@
 #!/bin/sh
-# Spotpreis aWATTar - minutlicher Cron (Preisabruf, stuendliche Ansage/Push, MQTT)
+# Spotpreis aWATTar - minutlicher Cron (Preisabruf, stuendliche Ansage/Push, MQTT, Haus-Themen)
 #
 # Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
 # Bis 1.1.0 stand hier der HTML-Pfad des Plugins - das Skript lag also im
@@ -10,4 +10,26 @@
 # "spot_lib.php nicht gefunden - Plugin neu installieren." Der
 # Abfahrts-Assistent lief so von 1.5.0 bis 1.5.7 kein einziges Mal, und
 # acht Fassungen sind daran vorbeigelaufen. REGELN_2.
-php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron_fehler.log"
+#
+# Gruppe 27 (1.2.39, W9; Bauform Ferien 1.2.28 / Abfuhr 1.4.26, Root-Abwurf wie ACTiKamera 1.9.32):
+# Protokollordner anlegen (sonst scheitert schon die Umlenkung "2>>" und cron.php laeuft gar nicht),
+# touch pruefen, ab 256 kB die letzten 300 Zeilen behalten; scheitert touch, laeuft cron.php trotzdem,
+# nur ohne Fehlerdatei. Ruft jemand diese Datei als root auf, laeuft cron.php als loxberry (der
+# LoxBerry-Cron selbst startet als loxberry, /etc/cron.d/lbdefaults - der Zweig ist eine Haertung).
+# Die Upgrade-Marke prueft bin/cron.php selbst (W19), nicht diese Datei. Der Dateiname
+# cron_fehler.log bleibt (Reiter Logdateien).
+ERR="REPLACELBPLOGDIR/cron_fehler.log"
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+if touch "$ERR" 2>/dev/null; then
+    if [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+        tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+    fi
+else
+    ERR=/dev/null
+fi
+if command -v su >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+    su loxberry -s /bin/sh -c 'php "REPLACELBPBINDIR/cron.php"' >/dev/null 2>>"$ERR"
+else
+    php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"$ERR"
+fi
+exit 0

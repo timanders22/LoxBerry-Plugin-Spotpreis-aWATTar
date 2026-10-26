@@ -1,0 +1,7 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - als root, waehrend der Plugin-Installation
+# (postinstall.sh laeuft als loxberry und koennte es nicht).
+#
+# Gruppe 27 (1.2.39, V3): mosquitto_sub/_pub fuer die Befehlsbruecke (im LoxBerry-Grundabbild ohnehin vorhanden;
+# Hausform). Die Haus-Themen (haus/strompreis, haus/speicher) brauchen es nicht - sie gehen ueber eine kurze
+# PHP-Sitzung direkt an den Broker.
+mosquitto-clients

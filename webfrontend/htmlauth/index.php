@@ -188,6 +188,27 @@ $sp_mqtt_wechsel = function ($alt_an, $alt_pf, $neu_an, $neu_pf) {
     return $saetze;
 };
 
+/* Gruppe 27 (1.2.39, V3): die Befehlsbruecke nach einer Aenderung von MQTT oder dem Haken "Befehle ueber MQTT
+ * annehmen" sofort schalten (spot_bruecke_schalten(); der Waechter im Minutenlauf holt einen ausgelassenen Start
+ * nach). Rueckgabe: Saetze fuer die Meldung; ein gescheiterter Start/Stopp geht in die Beanstandungen. */
+$sp_bruecke_folgen = function () use (&$sp_fehler) {
+    $saetze = array();
+    list($sp_ba, $sp_bt) = spot_bruecke_schalten();
+    if ($sp_ba === 'ein') { $saetze[] = spot_t('BEFEHL.M_EIN'); }
+    elseif ($sp_ba === 'aus') { $saetze[] = spot_t('BEFEHL.M_AUS'); }
+    elseif ($sp_ba === 'start_fehl') { $sp_fehler[] = sprintf(spot_t('BEFEHL.M_START_FEHL'), substr((string) $sp_bt, 0, 200)); }
+    elseif ($sp_ba === 'stop_fehl') { $sp_fehler[] = sprintf(spot_t('BEFEHL.M_STOP_FEHL'), substr((string) $sp_bt, 0, 200)); }
+    return $saetze;
+};
+/* Gruppe 27 (1.2.39, E-E2): Folgen fuer den Anbieter haus/strompreis (spot_haus_folgen(): Merker verwerfen bzw.
+ * abraeumen mit Ruecklesen); eine Warnung geht in die Beanstandungen. */
+$sp_haus_folgen = function ($alt, $neu) use (&$sp_fehler) {
+    list($sp_hm, $sp_ha) = spot_haus_folgen($alt, $neu);
+    if ($sp_hm === '') { return array(); }
+    if ($sp_ha === 'warn') { $sp_fehler[] = $sp_hm; return array(); }
+    return array($sp_hm);
+};
+
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
  * ==================================================================
@@ -209,6 +230,7 @@ $sp_mqtt_wechsel = function ($alt_an, $alt_pf, $neu_an, $neu_pf) {
 // Vor jeder Ausgabe, sonst stehen HTML-Reste in der XML-Datei.
 if ($sp_ist_post && isset($_POST['vorlage']) && function_exists('spot_vorlage')) {
     list($sp_vname, $sp_vinhalt) = spot_vorlage();
+    while (ob_get_level() > 0) { ob_end_clean(); }   // W2 (1.2.39): nichts Gepuffertes vor dem Kopf
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $sp_vname . '"');
     echo $sp_vinhalt;
@@ -216,13 +238,53 @@ if ($sp_ist_post && isset($_POST['vorlage']) && function_exists('spot_vorlage'))
 }
 
 // ---------- Protokoll leeren ----------
+/* W5 (Gruppe 27, 1.2.39; Regeln/04 :289, wie Anker K4): ein Haekchen zur Bestaetigung, sonst passiert nichts; der
+ * Knopf ist orange. Der Rueckgabewert wird geprueft - bis 1.2.38 hiess es auch dann "geleert", wenn die Datei
+ * nicht schreibbar war. */
 if ($sp_ist_post && isset($_POST['clearlog'])) {
-    @mkdir(dirname($sp_logfile), 0775, true);
-    // Der Satz kommt aus der Sprachdatei - bis 1.2.19 stand er fest auf
-    // Deutsch im Quelltext.
-    @file_put_contents($sp_logfile, '[' . date('Y-m-d H:i:s') . '] '
-        . spot_t('TEXT.LOG_GELEERT') . "\n");
+    if (empty($_POST['clearlog_ok'])) {
+        $sp_fehler[] = spot_t('TEXT.LOG_LEEREN_HAKEN');
+    } else {
+        @mkdir(dirname($sp_logfile), 0775, true);
+        // Der Satz kommt aus der Sprachdatei - bis 1.2.19 stand er fest auf
+        // Deutsch im Quelltext.
+        if (@file_put_contents($sp_logfile, '[' . date('Y-m-d H:i:s') . '] '
+                . spot_t('TEXT.LOG_GELEERT') . "\n") === false) {
+            $sp_fehler[] = spot_t('TEXT.LOG_NICHT_GELEERT');
+        } else {
+            $sp_note = spot_t('TEXT.LOG_GELEERT_MELDUNG');
+        }
+    }
     $sp_tab = 'tab-log';
+}
+
+// ---------- Vorlage der MQTT-Befehle (Gruppe 27, 1.2.39, V3) ----------
+/* Eigener Virtueller Ausgang an den UDP-Eingang des Gateways aus der Tabelle der Befehlsbruecke (bb_vorlage(),
+ * spot_befehle_vorlage()). Liest nur. */
+if ($sp_ist_post && isset($_POST['vorlage_bb'])) {
+    $sp_bv = spot_befehle_vorlage();
+    if (is_array($sp_bv)) {
+        while (ob_get_level() > 0) { ob_end_clean(); }   // W2 (1.2.39): nichts Gepuffertes vor dem Kopf
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $sp_bv[0] . '"');
+        echo $sp_bv[1];
+        exit;
+    }
+    $sp_fehler[] = spot_t('BEFEHL.FEHLER_VORLAGE');
+    $sp_tab = 'tab-loxone';
+}
+
+// ---------- HTTP-Lesezweig (Gruppe 27, 1.2.39; E3, E-E10) ----------
+if ($sp_ist_post && isset($_POST['endpunkt_save'])) {
+    $sp_ec = spot_config();
+    $sp_ec['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (spot_config_save($sp_ec)) {
+        $sp_saved = true;
+        $sp_note = spot_t($sp_ec['endpunkt_ein'] ? 'LOX.EP_M_EIN' : 'LOX.EP_M_AUS');
+    } else {
+        $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), $sp_cfgfile);
+    }
+    $sp_tab = 'tab-loxone';
 }
 
 // ---------- Jetzt abrufen ----------
@@ -285,6 +347,7 @@ if ($sp_ist_post && isset($_POST['mqtt_save'])) {
      * Rand geht still weg. Bei einer Beanstandung wird nichts gespeichert
      * (auch der Haken nicht), die Eingaben kommen zurueck (X-2). */
     $sp_mq = spot_config();
+    $sp_mq_alt = $sp_mq;   // Gruppe 27: fuer spot_haus_folgen() (mit _haus_frueher)
     $sp_mq_alt_an = !empty($sp_mq['mqtt_enabled']);
     $sp_mq_alt_pf = spot_mqtt_praefix($sp_mq);
     $sp_mq_an = isset($_POST['mqtt_enabled']) ? 1 : 0;
@@ -298,9 +361,15 @@ if ($sp_ist_post && isset($_POST['mqtt_save'])) {
     } else {
         $sp_mq['mqtt_enabled'] = $sp_mq_an;
         $sp_mq['mqtt_topic'] = $sp_mq_pf;
+        /* Gruppe 27 (1.2.39): Anbieter haus/strompreis und Befehlsbruecke - beide ab Werk aus. */
+        $sp_mq['haus_strompreis_ein'] = isset($_POST['haus_strompreis_ein']) ? 1 : 0;
+        $sp_mq['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
         if (spot_config_save($sp_mq)) {
             $sp_saved = true;
             $sp_mq_s = $sp_mqtt_wechsel($sp_mq_alt_an, $sp_mq_alt_pf, (bool) $sp_mq_an, $sp_mq_pf);
+            $sp_mq_s = array_merge($sp_mq_s, $sp_haus_folgen($sp_mq_alt, $sp_mq));
+            if ($sp_mq_an) { spot_abo_datei(true); }   // W16
+            $sp_mq_s = array_merge($sp_mq_s, $sp_bruecke_folgen());
             if ($sp_mq_s) {
                 $sp_note = implode(' ', $sp_mq_s);
             }
@@ -398,14 +467,19 @@ if ($sp_ist_post && isset($_POST['save'])) {
             ? $sp_rr['energie'] / $sp_rr['leistung'] : $sp_rr['n'];
         if ($sp_rr['aktiv'] && $sp_rr['frist'] >= 0 && $sp_lauf > 24) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_FRIST'), $sp_i + 1);
+            $sp_feldfehler[] = 'r_frist[' . $sp_i . ']';   // W6 (1.2.39)
         }
         if ($sp_rr['aktiv'] && $sp_rr['energie'] > 0 && $sp_rr['leistung'] <= 0) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $sp_i + 1);
+            $sp_feldfehler[] = 'r_energie[' . $sp_i . ']';
+            $sp_feldfehler[] = 'r_leistung[' . $sp_i . ']';
         }
         // MIT der Frage nach 'aktiv': eine abgeschaltete Regel hindert nichts.
         if ($sp_rr['aktiv'] && $sp_rr['soc_min'] > 0 && $sp_rr['soc_max'] > 0
             && $sp_rr['soc_min'] >= $sp_rr['soc_max']) {
             $sp_fehler[] = sprintf(spot_t('REGEL.FEHLER_SOC_REIHE'), $sp_i + 1);
+            $sp_feldfehler[] = 'r_soc_min[' . $sp_i . ']';
+            $sp_feldfehler[] = 'r_soc_max[' . $sp_i . ']';
         }
     }
     // ---- Fahrplaner, global ----
@@ -423,20 +497,32 @@ if ($sp_ist_post && isset($_POST['save'])) {
     if ($sp_new['last_quelle'] === 'liste'
         && ($sp_new['last_zeitfeld'] === '' || $sp_new['last_wertfeld'] === '')) {
         $sp_fehler[] = spot_t('LAST.FEHLER_FELDNAMEN');
+        $sp_feldfehler[] = 'last_zeitfeld';
+        $sp_feldfehler[] = 'last_wertfeld';
     }
     if ($sp_new['last_quelle'] !== '' && $sp_new['last_pfad'] === '') {
         $sp_fehler[] = spot_t('LAST.FEHLER_PFAD');
+        $sp_feldfehler[] = 'last_pfad';
     }
     if ($sp_new['last_quelle'] !== '' && $sp_new['last_url'] === '') {
         $sp_fehler[] = spot_t('LAST.FEHLER_URL_FEHLT');
+        $sp_feldfehler[] = 'last_url';
+    }
+    /* W6 (Gruppe 27, 1.2.39): eine PV-Quelle ohne Adresse liefert nichts - wie beim Lastgang beanstandet. */
+    if ($sp_new['pv_quelle'] !== '' && $sp_new['pv_url'] === '') {
+        $sp_fehler[] = spot_t('PLAN.FEHLER_URL_FEHLT');
+        $sp_feldfehler[] = 'pv_url';
     }
     if ($sp_new['pv_quelle'] === 'liste'
         && ($sp_new['pv_zeitfeld'] === '' || $sp_new['pv_wertfeld'] === '')) {
         $sp_fehler[] = spot_t('PLAN.FEHLER_FELDNAMEN');
+        $sp_feldfehler[] = 'pv_zeitfeld';
+        $sp_feldfehler[] = 'pv_wertfeld';
     }
     if ($sp_new['pv_quelle'] !== '' && $sp_new['pv_quelle'] !== 'forecast_solar'
         && $sp_new['pv_pfad'] === '') {
         $sp_fehler[] = spot_t('PLAN.FEHLER_PFAD');
+        $sp_feldfehler[] = 'pv_pfad';
     }
     $sp_new['wp_enabled'] = isset($_POST['wp_enabled']) ? 1 : 0;
     $sp_new['wp_name'] = $sp_pruef($sp_txt($sp_post('wp_name')), $sp_s['wp_name'], 'wp_name', 'wp_name');
@@ -595,6 +681,17 @@ if ($sp_ist_post && isset($_POST['save'])) {
     }
     // Das Token des Endpunkts gehoert nicht ins Formular (eigene Knoepfe).
     $sp_new['token'] = isset($sp_alt['token']) ? $sp_alt['token'] : '';
+    /* Gruppe 27 (1.2.39): haus_speicher_ein steht in diesem Formular (V1, E-E5); die Haken des Reiters MQTT, der
+     * Schalter des HTTP-Lesezweigs (Reiter Einbindung) und die Merker (_...) kommen aus dem Bestand - fehlte
+     * endpunkt_ein, gaebe die Lese-Regel einer eingerichteten Datei 1, und ein Speichern hier schaltete den
+     * Lesezweig still wieder ein. */
+    $sp_new['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
+    foreach (array('haus_strompreis_ein', 'befehle_mqtt_ein', 'endpunkt_ein') as $sp_k) {
+        $sp_new[$sp_k] = !empty($sp_alt[$sp_k]) ? 1 : 0;
+    }
+    foreach ($sp_alt as $sp_k => $sp_w) {
+        if (is_string($sp_k) && $sp_k !== '' && $sp_k[0] === '_') { $sp_new[$sp_k] = $sp_w; }
+    }
 
     // Ein eingetipptes Token kommt nach einer Beanstandung nicht wieder ins
     // Formular (Kennwortfeld) - das muss dastehen.
@@ -633,6 +730,7 @@ if ($sp_ist_post && isset($_POST['save'])) {
 if ($sp_ist_post && isset($_POST['spot_sichern'])) {
     list($sp_sname, $sp_sinhalt) = spot_sicherung_schreiben();
     if ($sp_sname !== '') {
+        while (ob_get_level() > 0) { ob_end_clean(); }   // W2 (1.2.39): nichts Gepuffertes vor dem Kopf
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $sp_sname . '"');
         echo $sp_sinhalt;
@@ -645,6 +743,7 @@ if ($sp_ist_post && isset($_POST['spot_sichern'])) {
  * Auch ein Download, also auch hier oben - und mit exit. */
 if ($sp_ist_post && isset($_POST['spot_csv'])) {
     list($sp_cname, $sp_cinhalt) = spot_history_csv();
+    while (ob_get_level() > 0) { ob_end_clean(); }   // W2 (1.2.39): nichts Gepuffertes vor dem Kopf
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $sp_cname . '"');
     echo $sp_cinhalt;
@@ -666,17 +765,28 @@ if ($sp_ist_post && isset($_POST['spot_zurueck'])) {
         $sp_fehler[] = spot_t('TEXT.SICH_ZU_GROSS');
     } else {
         $sp_rs_alt = spot_config();
-        list($spot_neu, $spot_mangel, $spot_n) = spot_sicherung_lesen(
+        list($spot_neu, $spot_mangel, $spot_n, $spot_spaet) = spot_sicherung_lesen(
             (string) @file_get_contents($_FILES['spot_sicherung']['tmp_name']));
+        /* Gruppe 27 (1.2.39): der Merker "war Anbieter" gehoert zur Anlage, nicht zur Sicherung - er bleibt. */
+        if ($spot_neu !== null && !empty($sp_rs_alt['_haus_frueher'])) {
+            $spot_neu['_haus_frueher'] = 1;
+        }
         if ($spot_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
             $sp_fehler[] = spot_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $spot_mangel);
         } elseif (spot_config_save($spot_neu)) {
             $sp_note = sprintf(spot_t('TEXT.SICH_UEBERNOMMEN'), $spot_n);
+            if ($spot_spaet) {
+                $sp_note .= ' ' . implode(' ', $spot_spaet);
+            }
             /* M1: auch eine Sicherung kann das Praefix wechseln oder MQTT ausschalten. */
             $sp_rs_s = $sp_mqtt_wechsel(!empty($sp_rs_alt['mqtt_enabled']), spot_mqtt_praefix($sp_rs_alt),
                 !empty($spot_neu['mqtt_enabled']), spot_mqtt_praefix($spot_neu));
+            /* Gruppe 27 (1.2.39): dieselben Folgen wie beim Reiter MQTT - haus/strompreis, Abo-Datei, Bruecke. */
+            $sp_rs_s = array_merge($sp_rs_s, $sp_haus_folgen($sp_rs_alt, $spot_neu));
+            if (!empty($spot_neu['mqtt_enabled'])) { spot_abo_datei(true); }
+            $sp_rs_s = array_merge($sp_rs_s, $sp_bruecke_folgen());
             if ($sp_rs_s) {
                 $sp_note .= ' ' . implode(' ', $sp_rs_s);
             }
@@ -704,6 +814,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         spot_log('Die Einmalmeldung liess sich nicht schreiben - das Ergebnis des letzten Knopfdrucks '
             . 'ist nach der Umleitung nicht zu sehen.');
     }
+    while (ob_get_level() > 0) { ob_end_clean(); }   // W2 (1.2.39): nichts Gepuffertes vor dem Kopf
     header('Location: index.php?form=' . substr($sp_tab, 4), true, 303);
     exit;
 }
@@ -857,7 +968,9 @@ if ($sp_fmt_fehlt) {
 }
 
 if ($sp_frame) {
-    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/', 'help.html');
+    /* W8 (Gruppe 27, 1.2.39): der Hilfelink fuehrt auf die Seite des Plugins im LoxBerry-Wiki, nicht auf die
+     * Startseite. */
+    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/plugins/spotpreis_awattar/start', 'help.html');
 }
 /* O1: die Seite wird gepuffert, damit die Selbstpruefung im Reiter Test die
  * Verschachtelung der Flaechen am FERTIGEN HTML messen kann (ganz unten). */
@@ -916,6 +1029,9 @@ ob_start();
 
 .sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
 .sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+/* Gruppe 27 (1.2.39, E-E10): der zugeklappte Abschnitt "Bestehende Anlagen: HTTP-Endpunkt" im Reiter Einbindung. */
+.sm-aufklapp { margin: 14px 0 6px; }
+.sm-aufklapp > summary { cursor: pointer; font-size: 1.08em; padding: 6px 0; }
 .sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
 .sm-wrap .sm-btn.sm-b-lesen   { background: #6dac20 !important; }
 .sm-wrap .sm-btn.sm-b-technik { background: #546e7a !important; }
@@ -1027,10 +1143,10 @@ ob_start();
 <?php if (!empty($sp_st['wp_on'])) { ?><br><?= sp_e($sp_st['wp_name']) ?> <?php echo spot_t('TEXT.14A'); ?> <b><?= sp_n($sp_st['wp_cur'], 2) ?> ct/kWh</b> <?php echo spot_t('TEXT.NCHSTE_STUNDE'); ?> <?= sp_n($sp_st['wp_next'], 2) ?> ct<?php } ?>
 <?php if (!empty($sp_st['co2_ok'])) { ?><br><?php echo spot_t('TEXT.CO_8322_INTENSITT'); ?> <b><?= (int) $sp_st['co2'] ?> <?php echo spot_t('TEXT.G_KWH'); ?></b><?= !empty($sp_st['co2_clean']) ? ' <b>' . spot_t('TEXT.SAUBER') . '</b> ' : ' ' ?>
 &middot; <?php echo spot_t('TEXT.SAUBERSTE_STUNDE'); ?> <?= (int) $sp_st['co2_minh'] ?> <?php echo spot_t('TEXT.UHR_MIT'); ?> <?= (int) $sp_st['co2_min'] ?> <?php echo spot_t('TEXT.G_SCHNITT'); ?> <?= (int) $sp_st['co2_avg'] ?> g<?php } ?>
-<br><?php echo spot_t('TEXT.TARIFVERGLEICH_LAUFENDER_MONAT_DYN'); ?> <b><?= sp_n($sp_st['dyn_monat'], 2) ?> ct</b> <?php echo spot_t('TEXT.GEGEN_FEST'); ?> <b><?= sp_n($sp_st['fix'], 2) ?> ct</b>
+<?php if (isset($sp_st['monat_werte']) && empty($sp_st['monat_werte'])) { /* E1 (1.2.39) */ ?><br><?php echo spot_t('MONAT.KEINE_WERTE'); ?><?php } else { ?><br><?php echo spot_t('TEXT.TARIFVERGLEICH_LAUFENDER_MONAT_DYN'); ?> <b><?= sp_n($sp_st['dyn_monat'], 2) ?> ct</b> <?php echo spot_t('TEXT.GEGEN_FEST'); ?> <b><?= sp_n($sp_st['fix'], 2) ?> ct</b>
 <?php echo spot_t('TEXT.TEXT'); ?> <?= $sp_st['diff_monat'] >= 0 ? spot_t('TEXT.DYN_WAERE_GUENSTIGER_UM') . ' '
       : '<b>' . spot_t('TEXT.FESTER_TARIF_IST_GNSTIGER_UM') . '</b> ' ?>
-<?= sp_n(abs($sp_st['diff_monat']), 2) ?> <?php echo spot_t('TEXT.CT_KWH_2'); ?><?= sp_n(abs($sp_st['euro_monat']), 2) ?> <?php echo spot_t('TEXT.TEXT_2'); ?>
+<?= sp_n(abs($sp_st['diff_monat']), 2) ?> <?php echo spot_t('TEXT.CT_KWH_2'); ?><?= sp_n(abs($sp_st['euro_monat']), 2) ?> <?php echo spot_t('TEXT.TEXT_2'); ?><?php } ?>
 <br><?php echo spot_t('TEXT.VERSCHIEBE_POTENZIAL_7_TAGE'); ?> <?= sp_n($sp_st['shift_ct'], 2) ?> <?php echo spot_t('TEXT.CT_KWH_SPANNE_RUND'); ?> <b><?= sp_n($sp_st['shift_jahr'], 2) ?> <?php echo spot_t('TEXT.IM_JAHR'); ?></b>
 <div style="margin-top:8px;"><?= sp_chart($sp_st) ?></div>
 <?php } else { ?>
@@ -1457,6 +1573,16 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <div class="sm-small"><?php echo spot_t('PLAN.H_SOC_PFAD'); ?></div>
   </div>
 </div>
+<?php /* Gruppe 27 (1.2.39, V1; E-E5): Speicherstand vom Speicher-Plugin ueber haus/speicher - ab Werk aus, wirkt
+         ohne "Werte ueber MQTT"; die Speicher-Adresse darueber bleibt der Rueckfall. */ ?>
+<div class="sm-row">
+  <div>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
+    <input data-role="none" type="checkbox" name="haus_speicher_ein" value="1" <?= !empty($sp_cfg['haus_speicher_ein']) ? 'checked' : '' ?>><?php echo spot_t('HAUS.L_SPEICHER'); ?>
+    </label>
+    <div class="sm-small"><?php echo spot_t('HAUS.H_SPEICHER'); ?></div>
+  </div>
+</div>
 
 <h2><?php echo spot_t('LAST.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('LAST.ERKLAERUNG'); ?></div>
@@ -1518,7 +1644,7 @@ if ($sp_cfg['last_quelle'] !== '' && trim((string) $sp_cfg['last_url']) !== '') 
 <?php } ?>
 <?php
 $sp_umw = spot_umwelt();
-if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
+if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '' || !empty($sp_cfg['haus_speicher_ein'])) { ?>
 <div class="sm-alert <?= (!empty($sp_umw['pv_meldung']) || !empty($sp_umw['soc_meldung'])) ? 'sm-err' : 'sm-info' ?>">
   <?php /* OHNE sp_e(): der Wert traegt <b>-Auszeichnung, und beide
          eingesetzten Werte sind Zahlen aus sp_n() oder ein fester
@@ -1532,6 +1658,9 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '') { ?>
 <?php } ?>
 <?php if (!empty($sp_umw['soc_meldung'])) { ?>
   <br><?php echo spot_t('PLAN.SPEICHER'); ?>: <?= sp_e(spot_t('PLANMELD.' . $sp_umw['soc_meldung'])) ?>
+<?php } ?>
+<?php if (isset($sp_umw['soc_quelle']) && $sp_umw['soc_quelle'] === 'haus') { ?>
+  <br><?php echo spot_t('HAUS.STAND_HAUS'); ?>
 <?php } ?>
 </div>
 <?php } ?>
@@ -1794,6 +1923,27 @@ if ($sp_gw_mq !== null && !$sp_gw_mq['autostart']) { ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($sp_cfg['mqtt_enabled']) ? 'checked' : '' ?>><?php echo spot_t('TEXT.PREISE_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
+<?php /* Gruppe 27 (1.2.39): Anbieter haus/strompreis (E-E1/E-E2, Nr. 15) und Befehlsbruecke (V3, E-E7) - beide ab
+         Werk aus, beide wirken nur mit "Werte ueber MQTT"; die Abo-Datei des Gateways V1 (W16). */ ?>
+<div style="margin-top:8px;">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="haus_strompreis_ein" <?= !empty($sp_cfg['haus_strompreis_ein']) ? 'checked' : '' ?>><?php echo spot_t('HAUS.L_STROMPREIS'); ?>
+</label>
+<div class="sm-small"><?php echo spot_t('HAUS.H_STROMPREIS'); ?></div>
+</div>
+<div style="margin-top:8px;">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" <?= !empty($sp_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>><?php echo spot_t('BEFEHL.L_ANNEHMEN'); ?>
+</label>
+<div class="sm-small"><?php echo spot_t('BEFEHL.H_ANNEHMEN'); ?></div>
+</div>
+<?php if (empty($sp_cfg['mqtt_enabled'])) { ?>
+<div class="sm-small"><?php echo spot_t('HAUS.H_MQTT_AUS'); ?></div>
+<?php } ?>
+<?php $sp_abo = function_exists('spot_abo_datei') ? spot_abo_datei(false) : null;
+if ($sp_abo !== null) { ?>
+<div class="sm-small"><?php echo sprintf(spot_t($sp_abo[1] ? 'MQTT.ABO_LIEGT' : 'MQTT.ABO_FEHLT'), '<span class="sm-mono">' . sp_e(spot_mqtt_praefix($sp_cfg) . '/#') . '</span>'); ?></div>
+<?php } ?>
 <div class="sm-row" style="margin-top:6px;">
     <div>
         <label><?php echo spot_t('TEXT.TOPIC_PRFIX'); ?></label>
@@ -1844,6 +1994,13 @@ foreach (spot_mqtt_themenliste($sp_st ? $sp_st : null) as $sp_mt) { ?>
 <div class="sm-seite<?php echo $sp_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo spot_t('EM.H_TITEL'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('EM.EINLEITUNG'); ?></div>
+<?php /* Gruppe 27 (1.2.39, E-E14): EINE Legende oben im Reiter (Regeln/04) - gruen die Kopierknoepfe, grau die
+         Vorlagen, orange Token und Speichern. Bis 1.2.38 standen hier drei. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
+</div>
 
 <?php /* Gruppe 1 / MQTT (1.2.38): zuerst die Namen des MQTT-Gateways (spot_mqtt_gateway_name(), Praefix
  * wie eingestellt), darunter die HTTP-Namen fuer bestehende Anlagen. Ueber MQTT gibt es kein relatives
@@ -1888,18 +2045,12 @@ $sp_em_http = '<br><span class="sm-small">' . spot_t('EM.HTTP_BESTAND') . ' ';
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <?php echo spot_fmt(); ?>
   <input data-role="none" type="hidden" name="vorlage" value="1">
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
-</div>
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?php echo spot_t('REGEL.K_VORLAGE'); ?></button>
 </form>
 
 <?php /* O5 (Pruefbericht oberflaeche, Befund 10): der Token-Block steht im
          Reiter Einbindung - dorthin verweisen die Texte des Endpunkts, und dorthin
          springen seine Knoepfe (activetab). Bis 1.2.31 stand er im Reiter Test. */ ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
-</div>
 <div class="sm-step">
 <b><?php echo spot_t('TEXT.TOKEN_TITEL'); ?></b><br><br>
 <?php echo spot_t('TEXT.TOKEN_ERKLAERUNG'); ?>
@@ -1950,9 +2101,6 @@ $sp_nt = function_exists('spot_mqtt_namentabelle') ? spot_mqtt_namentabelle($sp_
 <div class="sm-step"><b><?php echo spot_t('LOX.MQ_S2_TITEL'); ?></b><br>
 <?php echo sprintf(spot_t('LOX.MQ_S2_TEXT'), count($sp_nt)); ?>
 <div class="sm-hinweis"><?php echo spot_t('LOX.NT_RECHTE'); ?> <?php echo spot_t('LOX.NT_MUSTER'); ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
-</div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo spot_t('LOX.NT_NAME'); ?></th><th><?php echo spot_t('LOX.NT_BEDEUTUNG'); ?></th><th><?php echo spot_t('LOX.NT_BEREICH'); ?></th><th><?php echo spot_t('LOX.NT_ART'); ?></th></tr>
@@ -1961,6 +2109,36 @@ $sp_nt = function_exists('spot_mqtt_namentabelle') ? spot_mqtt_namentabelle($sp_
 <?php } ?>
 </table>
 </div>
+</div>
+
+<?php /* Gruppe 27 (1.2.39, V3; Entwurf 3.1, E-E16): Befehle aus Loxone ueber die Befehlsbruecke. Die Tabelle kommt
+ * aus bb_liste() (EINE Quelle mit der Vorlage); je Befehl die Zeile fuer den Virtuellen Ausgang Befehl am Ausgang
+ * "LoxBerry MQTT-Gateway". Der HTTP-Weg (?say=1 ...) bleibt fuer bestehende Anlagen. */
+$sp_gbef = function_exists('spot_befehle_liste') ? spot_befehle_liste() : null; ?>
+<div class="sm-step"><b><?php echo spot_t('BEFEHL.T_SCHRITT'); ?></b><br>
+<?php echo sprintf(spot_t('BEFEHL.T_TEXT'), '<span class="sm-mono">' . sp_e(spot_mqtt_praefix($sp_cfg)) . '/befehl/#</span>'); ?>
+<?php if ($sp_gbef === null) { ?>
+<div class="sm-warnung"><?php echo spot_t('BEFEHL.T_KEINE'); ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?php echo spot_t('BEFEHL.T_BEDEUTUNG'); ?></th><th><?php echo spot_t('BEFEHL.T_LOXONE'); ?></th><th><?php echo spot_t('BEFEHL.T_SPERRE'); ?></th></tr>
+<?php foreach ($sp_gbef['befehle'] as $sp_bb) { ?>
+<tr><td><?= sp_e(spot_t($sp_bb['kachel'])) ?></td><td><span class="sm-mono"><?= sp_e($sp_bb['loxone']['ein']) ?></span> <button data-role="none" type="button" class="sm-btn sm-b-lesen sm-klein" data-name="<?= sp_e($sp_bb['loxone']['ein']) ?>" data-ok="<?= sp_e(spot_t('LOX.NT_KOPIERT')) ?>" data-fehl="<?= sp_e(spot_t('LOX.NT_NICHT_KOPIERT')) ?>" onclick="return spNameKopieren(this);"><?= sp_e(spot_t('LOX.NT_KOPIEREN')) ?></button></td><td><?= (int) $sp_bb['sperre_s'] ?> s</td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo spot_t('BEFEHL.T_NIE_RETAIN'); ?> <?php echo spot_t('BEFEHL.T_QUITTUNG'); ?></div>
+<?php } ?>
+<?php if (empty($sp_cfg['befehle_mqtt_ein']) || empty($sp_cfg['mqtt_enabled'])) { ?>
+<div class="sm-warnung"><?php echo spot_t('BEFEHL.T_HAKEN'); ?></div>
+<?php } ?>
+<form action="index.php" method="post" style="margin-top:8px;">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?php echo spot_fmt(); ?>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_bb" value="1"><?php echo spot_t('BEFEHL.K_VORLAGE'); ?></button>
+</form>
+<div class="sm-small"><?php echo spot_t('BEFEHL.H_VORLAGE'); ?></div>
 </div>
 
 <?php
@@ -2088,7 +2266,25 @@ $sp_bs = spot_bausteinseiten();
 
 <?php /* Gruppe 1 / MQTT (1.2.38): der HTTP-Weg fuer bestehende Anlagen - die Schritte 1-3 bis 1.2.37,
          unveraendert bis auf die Ueberschriften (HTTP 1-3). */ ?>
-<h3 class="sm-h3"><?php echo spot_t('LOX.HTTP_TITEL'); ?></h3>
+<?php /* Gruppe 27 (1.2.39, E3/E-E10): zugeklappt, offen bei endpunkt_ein 1. Der Haken schaltet nur den Lesezweig
+         fuer Loxone (Zeile, ?debug=1, ?json=1); ausloesende Aufrufe und ?selftest=1 bleiben mit Token. */ ?>
+<details class="sm-aufklapp"<?= !empty($sp_cfg['endpunkt_ein']) ? ' open' : '' ?>>
+<summary><b><?php echo spot_t('LOX.HTTP_TITEL'); ?></b></summary>
+<div class="sm-step"><b><?php echo spot_t('LOX.EP_TITEL'); ?></b><br>
+<?php echo spot_t('LOX.EP_TEXT'); ?>
+<form action="index.php" method="post" style="margin-top:6px;">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<input data-role="none" type="hidden" name="endpunkt_save" value="1">
+<?php echo spot_fmt(); ?>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= !empty($sp_cfg['endpunkt_ein']) ? 'checked' : '' ?>><?php echo spot_t('LOX.EP_HAKEN'); ?>
+</label>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
+</form>
+<?php if (empty($sp_cfg['endpunkt_ein'])) { ?>
+<div class="sm-warnung"><?php echo spot_t('LOX.EP_AUS'); ?></div>
+<?php } ?>
+</div>
 <p><?php echo spot_t('LOX.HTTP_TEXT'); ?></p>
 <p><?php echo spot_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_AL'); ?> <b><?php echo spot_t('TEXT.ENDPREISE'); ?></b>
 <?php echo spot_t('TEXT.INKL_NETZENTGELTE_ABGABEN_UND_UMSA'); ?> <b><?php echo spot_t('TEXT.ANSAGE'); ?></b> <?php echo spot_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_DEN'); ?> <b><?php echo spot_t('TEXT.PUSH_2'); ?></b> <?php echo spot_t('TEXT.VERSCHICKT_DER_MINISERVER'); ?></p>
@@ -2141,12 +2337,19 @@ $sp_bs = spot_bausteinseiten();
 <div class="sm-step"><b><?php echo spot_t('TEXT.SCHRITT_3_KACHELN_FR_DIE_APP'); ?></b><br>
 <?php echo spot_t('TEXT.CUR_NEXT_HAVG_MINP_MAXP_ALS_ANALOG'); ?> <span class="sm-mono">&lt;v.1&gt; ct</span><?php echo spot_t('TEXT.MINH_MAXH_WINH_MIT'); ?> <span class="sm-mono"><?php echo spot_t('TEXT.V_0_UHR'); ?></span><?php echo spot_t('TEXT.RANK_OHNE_EINHEIT_VISUALISIERUNG_F'); ?>
 </div>
+</details>
 
 </div>
 
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-seite<?php echo $sp_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2><?php echo spot_t('TEXT.TEST'); ?></h2>
+<?php /* Gruppe 27 (1.2.39, E-E14): EINE Legende oben im Reiter - bis 1.2.38 standen hier drei. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
+</div>
 
 <?php
 /* ===================================================================
@@ -2197,9 +2400,6 @@ foreach ($sp_pruefungen as $sp_z) {
 <?php } ?>
 </table>
 <div class="sm-small"><?php echo spot_t('PRUEF.STRICH_ERKLAERUNG'); ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -2305,9 +2505,6 @@ $sp_budget = (float) $sp_cfg['budget_kw'];
 
 <h3 class="sm-h3"><?php echo spot_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo spot_t('PLAN.SELBSTTEST_TEXT'); ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('PLAN.LEGENDE_TECHNIK'); ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -2361,12 +2558,6 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
          spot_selbsttest() aufgegangen (Zeilen PRUEF.FELDER und
          PRUEF.VORLAGE, oben in der Tabelle). Zwei Stellen, die dasselbe
          messen, laufen auseinander - und dann glaubt man der bequemeren. */ ?>
-
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo spot_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo spot_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
-</div>
 
 <h3 class="sm-h3"><?php echo spot_t('TEXT.ANSEHEN'); ?></h3>
 <div class="sm-knopfreihe">
@@ -2517,7 +2708,11 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo spot_t('LEGENDE.AKTION'); ?></span>
 </div>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:10px;">
+        <input data-role="none" type="checkbox" name="clearlog_ok" value="1"><?php echo spot_t('TEXT.LOG_LEEREN_BESTAETIGEN'); ?>
+    </label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.LOG_LEEREN'); ?></button>
+    <div class="sm-small"><?php echo spot_t('TEXT.LOG_LEEREN_HINWEIS'); ?></div>
 </form>
 </div>
 

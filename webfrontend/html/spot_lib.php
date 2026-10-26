@@ -335,6 +335,15 @@ function spot_vorgaben()
     'profil_ein' => 'absolut',
     'mqtt_enabled' => 0,
     'mqtt_topic' => 'spot_awattar',
+    /* Gruppe 27 (1.2.39, Entwurf 2.9): vier neue Schalter, ab Werk aus. haus_strompreis_ein: Anbieter
+     * haus/strompreis (wirkt nur mit mqtt_enabled). haus_speicher_ein: Speicherstand vom Speicher-Plugin ueber
+     * haus/speicher lesen (V1, wirkt ohne mqtt_enabled). befehle_mqtt_ein: Befehlsbruecke (V3, wirkt nur mit
+     * mqtt_enabled). endpunkt_ein: Lesezweig des HTTP-Endpunkts - ab Werk aus fuer NEUE Anlagen; bestehende
+     * Anlagen bekommen 1 (Lese-Regel in spot_config_normalisieren() und postupgrade.sh, E-E10). */
+    'haus_strompreis_ein' => 0,
+    'haus_speicher_ein' => 0,
+    'befehle_mqtt_ein' => 0,
+    'endpunkt_ein' => 0,
     'notify' => array(),
     'tts' => array(),
     // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
@@ -525,6 +534,20 @@ function spot_frisch_installiert() {
  * Wege von spot_config() dieselbe Rechnung.
  */
 function spot_config_normalisieren($cfg) {
+    /* Gruppe 27 (1.2.39, E-E10, N5): Lese-Regel fuer endpunkt_ein. Eine Datei, die schon etwas ausser token und
+     * Merkern (_...) traegt, ist eine BESTEHENDE Anlage - ohne den Schluessel gilt dort 1, der HTTP-Lesezweig fuer
+     * Loxone bleibt erreichbar. Keine Datei oder "{}" (Neuinstallation): die Vorgabe 0. Die Regel steht VOR den
+     * Vorgaben, damit auch spot_config_vervollstaendigen() beim ersten Minutenlauf nach dem Update 1 schreibt und
+     * nicht die Vorgabe - sonst verloere der Bestand fuer immer seinen Lesezweig, auch wenn postupgrade.sh
+     * scheiterte. */
+    if (!array_key_exists('endpunkt_ein', $cfg)) {
+        $sp_eingerichtet = 0;
+        foreach (array_keys($cfg) as $sp_k) {
+            $sp_k = (string) $sp_k;
+            if ($sp_k !== 'token' && !($sp_k !== '' && $sp_k[0] === '_')) { $sp_eingerichtet = 1; break; }
+        }
+        $cfg['endpunkt_ein'] = $sp_eingerichtet;
+    }
     $cfg += spot_vorgaben();
     // Alte Konfigurationen trugen hier 0/1 - auf die neuen Namen heben.
     if ($cfg['profil_ein'] === 1 || $cfg['profil_ein'] === '1' || $cfg['profil_ein'] === true) {
@@ -657,7 +680,9 @@ function spot_config_normalisieren($cfg) {
     }
     /* Seit 1.2.34 (Sprachausgabe Stufe 2, Nr. 36 b): Vorgaben des Blocks tts aus der gemeinsamen
      * Sprachausgabe - EINE Vorgabeliste (spot_tts()). Die Ausgabeart ab Werk bleibt musicserver wie bis
-     * 1.2.33 (mit leerer IP spricht sie nicht). Neu im Block: alexa_laut (-1 = Ansagelautstaerke von
+     * 1.2.33 (mit leerer IP spricht sie nicht). Gruppe 27 (1.2.39, Modul 1.1.4): die Linie bietet jetzt auch
+     * Sonos4Lox und SonoX an (spot_ansage_modi()); ihre Schluessel kommen aus dem Modul. Bis 1.2.38 stand hier
+     * "Sonos4Lox bietet diese Linie nicht an". Neu im Block seit 1.2.34: alexa_laut (-1 = Ansagelautstaerke von
      * Alexa-NG), sonos_zone und sonos_laut (vom Modul vorgegeben; Sonos4Lox bietet diese Linie nicht an).
      *
      * S1 (Ansage-2/Ansage-3, 01.10.2026): Ein Token in fremder Form gilt als "keines" (es ginge sonst nie
@@ -673,6 +698,10 @@ function spot_config_normalisieren($cfg) {
     foreach (array('alexa_laut', 'google_laut') as $sp_k) {
         $sp_l = $cfg['tts'][$sp_k];
         $cfg['tts'][$sp_k] = (is_int($sp_l) && $sp_l >= 0 && $sp_l <= 100) ? $sp_l : -1;
+    }
+    // Gruppe 27 (1.2.39): die vier neuen Schalter tragen 0 oder 1.
+    foreach (array('haus_strompreis_ein', 'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein') as $sp_k) {
+        $cfg[$sp_k] = empty($cfg[$sp_k]) ? 0 : 1;
     }
     return $cfg;
 }
@@ -1264,14 +1293,19 @@ function spot_umwelt($force = false) {
     $leer = array('pv' => null, 'pv_summe' => null, 'soc' => null,
                   'pv_meldung' => '', 'soc_meldung' => '', 'ts' => 0);
     $cache = spot_tmpdir() . '/umwelt.json';
+    /* Gruppe 27 (1.2.39, V1; Entwurf 2.7, E-E5): die Speicherquelle haus/speicher gilt NACH dem Zwischenspeicher - sie
+     * ist eine Dateilesung (haus_quellen.json des abgekoppelten Lesers), kein Netz, und gilt damit auch im Endpunkt.
+     * Frisch genommen wird sie in jedem Aufruf (spot_speicher_quelle()); schweigt sie, gilt die Speicher-Adresse wie
+     * bisher (Rueckfall, Meldung HAUS_SCHWEIGT). Solange sie frisch ist, wird die Speicher-Adresse nicht abgerufen. */
+    $q = spot_speicher_quelle($cfg);
     if (spot_nur_zwischenspeicher()) {
         // P4: der Stand des Minutenlaufs, gleich welchen Alters - oder nichts.
         $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
-        return is_array($c) ? $c + $leer : $leer;
+        return spot_speicher_einsetzen(is_array($c) ? $c + $leer : $leer, $q);
     }
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $c = json_decode((string) @file_get_contents($cache), true);
-        if (is_array($c)) { return $c + $leer; }
+        if (is_array($c)) { return spot_speicher_einsetzen($c + $leer, $q); }
     }
     $erg = $leer;
     $erg['ts'] = time();
@@ -1292,7 +1326,7 @@ function spot_umwelt($force = false) {
         }
     }
 
-    if (trim((string) $cfg['soc_url']) !== '') {
+    if ($q[0] !== 'haus' && trim((string) $cfg['soc_url']) !== '') {
         $roh = spot_holen($cfg['soc_url']);
         if ($roh === null) {
             $erg['soc_meldung'] = 'NICHT_ERREICHBAR';
@@ -1304,7 +1338,7 @@ function spot_umwelt($force = false) {
     }
 
     spot_write_json_atomic($cache, $erg);
-    return $erg;
+    return spot_speicher_einsetzen($erg, $q);
 }
 
 /* ==================================================================
@@ -1390,10 +1424,27 @@ function spot_holen($url) {
     $url = trim((string) $url);
     if ($url === '' || !preg_match('#^https?://#i', $url)) { return null; }
     $ctx = stream_context_create(array('http' => array(
-        'timeout' => 12, 'user_agent' => 'LoxBerry Spotpreis', 'ignore_errors' => true)));
-    $r = @file_get_contents($url, false, $ctx);
-    if ($r === false) { return null; }
-    $d = json_decode($r, true);
+        'timeout' => 12, 'user_agent' => 'LoxBerry Spotpreis', 'ignore_errors' => true, 'follow_location' => 0)));
+    $fh = @fopen($url, 'rb', false, $ctx);
+    if ($fh === false) { return null; }
+    $meta = @stream_get_meta_data($fh);
+    $r = @stream_get_contents($fh, 1048576 + 1);
+    @fclose($fh);
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    $code = 0;
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    if ($code !== 200 || $r === false) { return null; }
+    if (strlen((string) $r) > 1048576) {
+        spot_log_if_changed('holen_groesse', 'GROESSE: eine Antwort war groesser als 1 MB und wurde verworfen ('
+            . (string) parse_url($url, PHP_URL_HOST) . ')');
+        return null;
+    }
+    $d = json_decode((string) $r, true);
     return is_array($d) ? $d : null;
 }
 
@@ -1780,6 +1831,10 @@ function spot_state($force = false) {
         'vat' => (float) $cfg['vat'],
         'ts' => time(),
     );
+    /* Gruppe 27 (1.2.39, E-E1): die Endpreise aller bekannten Stunden (ct/kWh, Schluessel echter Zeitstempel) fuer
+     * den Anbieter haus/strompreis (spot_haus_werte()) - aus DIESEM Lauf, ohne zweiten Abruf und ohne zweites
+     * spot_endprice(). Nicht profil_relativ und nicht cur: beide tragen an einer Luecke einen Ersatzwert. */
+    $st['haus_preise'] = $all;
     // Zweiter Preissatz (Par. 14a: Waermepumpe/Wallbox mit eigenem Zaehlpunkt)
     $st['wp_on'] = empty($cfg['wp_enabled']) ? 0 : 1;
     $st['wp_name'] = (string) $cfg['wp_name'];
@@ -1800,8 +1855,13 @@ function spot_state($force = false) {
     $st['co2_avg'] = $co2['avg'];
     $st['co2_clean'] = ($co2['ok'] && $co2['now'] > 0 && $co2['now'] <= (float) $cfg['co2_clean']) ? 1 : 0;
     // Tarifvergleich (laufender Monat) und Verschiebe-Potenzial
-    $mc = spot_month_compare(1);
-    $cur_m = $mc ? reset($mc) : null;
+    /* Gruppe 27 (1.2.39, E1; E-E9): der LAUFENDE Monat am Schluessel (spot_laufender_monat()). Bis 1.2.38 nahm
+     * spot_month_compare(1) den juengsten Monat der Historie - am Monatsersten bis zur ersten Tageszeile um 23:50
+     * also den VORMONAT, und dyn_monat/diff_monat/euro_monat trugen ihn als "laufenden Monat". Jetzt steht dort
+     * 0; monat_werte sagt, ob es den laufenden Monat schon gibt (Endpunkt ?debug=1, Oberflaeche). Kein neues
+     * MQTT-Thema (E-E9). */
+    $cur_m = spot_laufender_monat();
+    $st['monat_werte'] = $cur_m ? 1 : 0;
     $st['fix'] = (float) $cfg['fixed_price'];
     $st['dyn_monat'] = $cur_m ? $cur_m['dynp'] : 0;
     $st['diff_monat'] = $cur_m ? $cur_m['diff'] : 0;
@@ -1968,6 +2028,10 @@ function spot_co2($force = false) {
     }
     ksort($buckets);
     $now = time(); $hstart = $now - ($now % 3600);
+    /* Gruppe 27 (1.2.39, W10): die Stundenwerte liegen nach ZEITSTEMPEL, nicht nach Uhrzeit-Stunde. Bis 1.2.38 war der
+     * Schluessel date('G') - am Tag der Zeitumstellung im Herbst traegt die Uhr zweimal 2 Uhr, und die zweite Stunde
+     * ueberschrieb die erste (und nach dem Stundenwechsel las spot_co2_aus_speicher() die falsche). minh/maxh bleiben
+     * Stundenzahlen der Uhr (date('G') erst bei der Ausgabe). */
     $hours = array(); $min = null; $max = null; $sum = 0; $n = 0; $cur = 0;
     foreach ($buckets as $hts => $b) {
         $g = round($b[0] / max(1, $b[1]));
@@ -1977,18 +2041,17 @@ function spot_co2($force = false) {
         if ($hts < $hstart || $hts >= $hstart + 24 * 3600) {
             continue; // Fenster: naechste 24 h
         }
-        $h = (int) date('G', $hts);
-        $hours[$h] = $g;
+        $hours[$hts] = $g;
         $sum += $g; $n++;
-        if ($min === null || $g < $min[1]) { $min = array($h, $g); }
-        if ($max === null || $g > $max[1]) { $max = array($h, $g); }
+        if ($min === null || $g < $min[1]) { $min = array($hts, $g); }
+        if ($max === null || $g > $max[1]) { $max = array($hts, $g); }
     }
     if (!$n) {
         return $off;
     }
-    $out = array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => $min[0],
-                 'max' => $max[1], 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => time(),
-                 'hstart' => $hstart);
+    $out = array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => (int) date('G', $min[0]),
+                 'max' => $max[1], 'maxh' => (int) date('G', $max[0]), 'avg' => round($sum / $n), 'hours' => $hours,
+                 'ts' => time(), 'hstart' => $hstart);
     spot_write_json_atomic($cache, $out);
     spot_log_if_changed('co2', 'jetzt ' . $out['now'] . ' g/kWh, sauberste Stunde ' . $out['minh'] . ' Uhr mit ' . $out['min'] . ' g');
     return $out;
@@ -2008,6 +2071,11 @@ function spot_co2_aus_speicher($c) {
     if (!is_array($c) || empty($c['ok']) || !isset($c['hours']) || !is_array($c['hours'])) {
         return null;
     }
+    foreach (array_keys($c['hours']) as $k) {
+        if ((int) $k < 100000) {
+            return null;
+        }
+    }
     $ts = isset($c['ts']) ? (int) $c['ts'] : 0;
     $jetzt = time();
     if ($ts <= 0 || $jetzt - $ts > 3600 || $ts > $jetzt + 300) {
@@ -2019,29 +2087,26 @@ function spot_co2_aus_speicher($c) {
         return $c;
     }
     $hours = array(); $min = null; $max = null; $sum = 0; $n = 0; $cur = null;
-    for ($k = 0; $k < 24; $k++) {
-        $hts = $c_h + $k * 3600;
-        if ($hts < $hstart) {
+    foreach ($c['hours'] as $hts => $g) {
+        $hts = (int) $hts;
+        if ($hts < $hstart || $hts >= $hstart + 24 * 3600 || !is_numeric($g)) {
             continue;
         }
-        $h = (int) date('G', $hts);
-        if (!isset($c['hours'][$h]) || !is_numeric($c['hours'][$h])) {
-            continue;
-        }
-        $g = (float) $c['hours'][$h];
+        $g = (float) $g;
         if ($hts === $hstart) {
             $cur = $g;
         }
-        $hours[$h] = $g;
+        $hours[$hts] = $g;
         $sum += $g; $n++;
-        if ($min === null || $g < $min[1]) { $min = array($h, $g); }
-        if ($max === null || $g > $max[1]) { $max = array($h, $g); }
+        if ($min === null || $g < $min[1]) { $min = array($hts, $g); }
+        if ($max === null || $g > $max[1]) { $max = array($hts, $g); }
     }
     if ($cur === null || !$n) {
         return null;
     }
-    return array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => $min[0], 'max' => $max[1],
-                 'maxh' => $max[0], 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => $ts, 'hstart' => $hstart);
+    return array('ok' => 1, 'now' => $cur, 'min' => $min[1], 'minh' => (int) date('G', $min[0]), 'max' => $max[1],
+                 'maxh' => (int) date('G', $max[0]), 'avg' => round($sum / $n), 'hours' => $hours, 'ts' => $ts,
+                 'hstart' => $hstart);
 }
 
 /* ---------------- Tarifvergleich fest <-> dynamisch ---------------- */
@@ -4486,7 +4551,7 @@ function spot_bausteinseiten() {
 /** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 1.2.33 nicht angeboten). 'aus' ist
  *  neu waehlbar; ab Werk bleibt es musicserver (spot_tts()). */
 function spot_ansage_modi() {
-    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen: die erlaubten Arten und die POST-Namen der
@@ -4955,6 +5020,8 @@ function spot_schranken() {
         'marstek_neg' => array('schalter'), 'marstek_fremd_beanstanden' => array('schalter'),
         'profil_ein' => array('wahl', array('aus', 'absolut', 'relativ', 'beides')),
         'mqtt_enabled' => array('schalter'), 'mqtt_topic' => array('thema'),
+        'haus_strompreis_ein' => array('schalter'), 'haus_speicher_ein' => array('schalter'),
+        'befehle_mqtt_ein' => array('schalter'), 'endpunkt_ein' => array('schalter'),
         'pv_quelle' => array('wahl', array('', 'forecast_solar', 'objekt', 'liste')),
         'pv_url' => array('adresse'), 'pv_pfad' => $text_feld, 'pv_zeitfeld' => $text_feld,
         'pv_wertfeld' => $text_feld, 'pv_einheit' => array('wahl', array('wh', 'w', 'kw')),
@@ -4984,9 +5051,18 @@ function spot_schranken() {
     );
 }
 
-/** Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt (aeltere Sicherungen tragen sie nicht). */
+/** Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt (aeltere Sicherungen tragen sie nicht). Fehlen sie,
+ *  gilt die Vorgabe (ab Werk aus). */
 function spot_sicherung_neue_schluessel() {
     return array('marstek_fremd_beanstanden');
+}
+
+/** Gruppe 27 (1.2.39, E-E2/E-E13, N8): die Schluessel seit 1.2.39. Fehlen sie in einer Sicherung (aelter als
+ *  1.2.39), gilt der GELTENDE Wert, nicht die Vorgabe - sonst schaltete ein Zurueckspielen einen laufenden Anbieter,
+ *  die Bruecke oder den Lesezweig des Endpunkts ab (Spaetschluessel-Hausform G19/G26). Die Oberflaeche sagt es
+ *  (TEXT.SICH_SPAET_BEHALTEN). */
+function spot_sicherung_spaete_schluessel() {
+    return array('haus_strompreis_ein', 'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
 }
 
 /** Ein Wert gegen seine Schranke. Rueckgabe null (in Ordnung) oder array(Kennwort[, a, b]). */
@@ -5254,6 +5330,7 @@ function spot_sicherung_lesen($roh)
         // Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt, fehlen in
         // jeder aelteren Sicherung; sie sind ab Werk aus und gelten dann so.
         if ($fk !== 'marstek_token' && !in_array($fk, spot_sicherung_neue_schluessel(), true)
+            && !in_array($fk, spot_sicherung_spaete_schluessel(), true)
             && !array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
@@ -5265,6 +5342,15 @@ function spot_sicherung_lesen($roh)
     /* Zurueckspielen behaelt das geltende Marstek-Token (Energie-1 C2): die
      * Datei traegt keines, und die Vorgabe '' haette es sonst still geloescht. */
     $sp_jetzt = spot_config();
+    /* Gruppe 27 (1.2.39): fehlt ein Spaetschluessel in der Datei, gilt der geltende Wert (siehe
+     * spot_sicherung_spaete_schluessel()). Die Namen gehen als Hinweis (vierter Rueckgabewert) an die Oberflaeche. */
+    $sp_spaet = array();
+    foreach (spot_sicherung_spaete_schluessel() as $sp_sk) {
+        if (!array_key_exists($sp_sk, $daten)) {
+            $neu[$sp_sk] = isset($sp_jetzt[$sp_sk]) ? (int) $sp_jetzt[$sp_sk] : $neu[$sp_sk];
+            $sp_spaet[] = $sp_sk;
+        }
+    }
     $neu['marstek_token'] = isset($sp_jetzt['marstek_token']) ? (string) $sp_jetzt['marstek_token'] : '';
     /* S1: ebenso die beiden Sprechtoken (Alexa-NG, Chromecast 4 Lox NG). Eine
      * Datei MIT Token hat spot_wert_mangel() schon abgewiesen. */
@@ -5278,7 +5364,8 @@ function spot_sicherung_lesen($roh)
     if (!$sp_tok_aus_datei) {
         $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl,
+                 $sp_spaet ? array(sprintf(spot_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $sp_spaet))) : array());
 }
 
 /**
@@ -5496,21 +5583,33 @@ function spot_endpunkt_probe($force = false)
     }
     $p = spot_paths();
     $ordner = basename(dirname($p['config']));
-    $port = 80;
-    if ($p['lbhome'] !== '') {
-        $g = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
-        if (isset($g['Webserver']['Port'])) { $port = (int) $g['Webserver']['Port']; }
-    }
+    /* Gruppe 27 (1.2.39, W14): der Port aus spot_webport() - EINE Stelle (lbwebserverport(), sonst general.json, sonst
+     * 80). Bis 1.2.38 las diese Funktion general.json selbst. */
+    $port = spot_webport();
     if ($port < 1 || $port > 65535) { $port = 80; }
     $tok = spot_cfg_wert('token', '');
     $tok = spot_endpunkt_token_form_ok($tok) ? $tok : '';
+    /* Gruppe 27 (1.2.39, E-E10): ist der Lesezweig abgeschaltet (endpunkt_ein 0), wird nur ?selftest=1 geprueft - die
+     * Zeile antwortete dann mit 403 ENDPUNKT_AUS, und das ist kein Befund. */
+    $lesen = ((int) spot_cfg_wert('endpunkt_ein', 0) === 1);
     $url = 'http://127.0.0.1:' . $port . '/plugins/' . rawurlencode($ordner) . '/spot.php'
-         . ($tok !== '' ? '?token=' . rawurlencode($tok) : '');
+         . ($lesen ? ($tok !== '' ? '?token=' . rawurlencode($tok) : '')
+                   : '?selftest=1' . ($tok !== '' ? '&token=' . rawurlencode($tok) : ''));
     $ctx = stream_context_create(array('http' => array(
         'timeout' => 5, 'user_agent' => 'LoxBerry Spotpreis Selbsttest', 'ignore_errors' => true)));
     $r = @file_get_contents($url, false, $ctx);
     if ($r === false) {
         $erg = array(2, 'ENDPUNKT_UNKLAR');
+    } elseif (!$lesen) {
+        if (strpos($r, 'SELFTEST;OK=1') === 0) {
+            $erg = array(1, 'ENDPUNKT_SELFTEST_OK');
+        } elseif (strpos($r, 'ERR=KEIN_TOKEN_EINGERICHTET') !== false) {
+            $erg = array(2, 'ENDPUNKT_SELFTEST_OHNE_TOKEN');
+        } elseif (strpos($r, 'ERR=TOKEN') !== false || strpos($r, 'GRUND=TOKEN') !== false) {
+            $erg = array(0, 'ENDPUNKT_TOKEN');
+        } else {
+            $erg = array(0, 'ENDPUNKT_FALSCH');
+        }
     } elseif (strpos($r, 'GRUND=TOKEN') !== false) {
         $erg = array(0, 'ENDPUNKT_TOKEN');
     } elseif (strpos($r, 'GRUND=KEINE_PREISE') !== false) {
@@ -5833,6 +5932,15 @@ function spot_selbsttest($endpunkt_pruefen = false)
         list($sp_sok, $sp_stext) = spot_ansage_pruefzeile($endpunkt_pruefen);
         $add('PRUEF.SPRECHEN', $sp_sok, $sp_stext);
     }
+    /* Gruppe 27 (1.2.39): Anbieter haus/strompreis, Speicherstand aus dem Haus (V1) und Befehlsbruecke (V3) - nur hier,
+     * also nur im geoeffneten Reiter Test und auf ?selftest=1 (Regeln/04 :397). Hinten angehaengt; "aus" ist ein
+     * Strich, kein Kreuz. Der healthcheck liest dieselben Zeilen (spot_gesundheit()). */
+    list($sp_hok, $sp_htext) = spot_haus_testzeile($cfg);
+    $add('PRUEF.HAUS', $sp_hok, $sp_htext);
+    list($sp_qok, $sp_qtext) = spot_speicher_testzeile($cfg);
+    $add('PRUEF.SPEICHER', $sp_qok, $sp_qtext);
+    list($sp_bok, $sp_btext) = spot_pruef_bruecke();
+    $add('PRUEF.BRUECKE', $sp_bok, $sp_btext);
     return $z;
 }
 
@@ -6147,3 +6255,990 @@ function spot_flaechen_schachtel($html, array $ids) {
  * index.php: sonst steht er dem Endpunkt und jedem weiteren
  * Aufrufer nicht zur Verfuegung (Hausform, REGELN_2). */
 function sp_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+
+/* ==================================================================
+ * Gruppe 27 (1.2.39, 26.10.2026): Haus-Themen, Befehlsbruecke, Abo-Datei,
+ * Monatswerte am Schluessel, Gesundheit
+ *
+ * Entscheidungen ENTSCHEIDUNGEN_GRUPPE27_AWATTAR.md 1-3 und Entwurf
+ * entwurf_gruppe27_aw.txt (E-E1 bis E-E17). Abschriften: die Haus-Sitzung von
+ * marstek_haus_sitzung() (Marstek Venus E 1.1.27/1.1.28), die uebrigen
+ * Haus-Bausteine von fer_haus_*() (Ferien und Feiertage 1.2.28), die
+ * Befehlsfunktionen von oc_befehl_*() und oc_bruecke_*() (Spotpreis Octopus
+ * 1.1.27) - dieselbe Ueberlegung soll in den Linien nicht verschieden
+ * aussehen.
+ * ================================================================== */
+
+/* ---------- Anbieter haus/strompreis/* (Regeln/07 Nr. 15; Entwurf 2.2-2.6) ----------
+ * Ab Werk aus (Haken haus_strompreis_ein im Reiter MQTT, wirkt nur mit "Werte ueber MQTT"). Gesendet ueber eine kurze
+ * TCP-Sitzung direkt am Broker, nicht ueber den UDP-Eingang des Gateways (Verluste; das Abraeumen braucht ohnehin das
+ * Ruecklesen). Die Haus-Themen sind fuer Plugins, nicht fuer den Miniserver: sie stehen in keiner Hakenliste, keiner
+ * Namenstabelle und nicht in der Abo-Datei. Nur EIN Spotpreis-Plugin im Haus ist Anbieter (N4). */
+
+/** Die eigenen Haus-Themen, Thema => retained (true) / fluechtig (false). Reihenfolge = Sendereihenfolge. EINE Liste
+ *  fuer Senden, Abraeumen und Reiter Test. */
+function spot_haus_themen()
+{
+    return array('haus/strompreis/vorschau' => true, 'haus/strompreis/ab' => true, 'haus/strompreis/raster' => true,
+                 'haus/strompreis/aktuell' => true, 'haus/strompreis/anbieter' => true,
+                 'haus/strompreis/zaehler' => false);
+}
+
+/** Die fuenf retained Themen (ohne den Zaehler) - abgeraeumt werden nur diese. */
+function spot_haus_retained()
+{
+    return array_keys(array_filter(spot_haus_themen()));
+}
+
+/** Eine Zahl fuer haus/strompreis: Punkt, hoechstens drei Nachkommastellen, Nullen abgeschnitten, nie Exponent, nie
+ *  Komma, "-0" -> "0" (Gegenprobe gegen marstek_haus_preisliste(): 25,1 / 1.0E-5 / 25.1234 verwirft der Abnehmer). */
+function spot_haus_zahl($v)
+{
+    $s = sprintf('%.3F', round((float) $v, 3));
+    if (strpos($s, '.') !== false) { $s = rtrim(rtrim($s, '0'), '.'); }
+    return ($s === '-0' || $s === '') ? '0' : $s;
+}
+
+/**
+ * Die Werte der Haus-Themen aus dem Zustand des Laufs (E-E1). Quelle ist $st['haus_preise'] (Endpreise ct/kWh heute +
+ * morgen, Schluessel echter Zeitstempel, spot_state()) - nicht profil_relativ und nicht cur (beide tragen an einer
+ * Luecke einen Ersatzwert). vorschau ab der laufenden Stunde lueckenlos bis zur ersten fehlenden Stunde, hoechstens 36
+ * Werte; ab = Beginn der laufenden Stunde; aktuell = erster Vorschauwert. Ohne Preise fuer heute (ok = 0) oder ohne
+ * Preis der laufenden Stunde: vorschau/aktuell/anbieter "-", ab/raster -1 (ein Preis kann -1 sein, deshalb "-"). Der
+ * Zaehler laeuft immer weiter: er sagt "der Anbieter lebt", nicht "er hat Preise".
+ */
+function spot_haus_werte($st, $zaehler)
+{
+    $all = (isset($st['haus_preise']) && is_array($st['haus_preise'])) ? $st['haus_preise'] : array();
+    $hstart = isset($st['hstart']) ? (int) $st['hstart'] : 0;
+    $w = array();
+    for ($ts = $hstart; $hstart > 0 && isset($all[$ts]) && is_numeric($all[$ts]) && count($w) < 36; $ts += 3600) {
+        $w[] = spot_haus_zahl($all[$ts]);
+    }
+    $leer = empty($st['ok']) || !$w;
+    return array(
+        'haus/strompreis/vorschau' => $leer ? '-' : implode(';', $w),
+        'haus/strompreis/ab'       => $leer ? '-1' : (string) $hstart,
+        'haus/strompreis/raster'   => $leer ? '-1' : '3600',
+        'haus/strompreis/aktuell'  => $leer ? '-' : $w[0],
+        'haus/strompreis/anbieter' => $leer ? '-' : 'awattar',
+        'haus/strompreis/zaehler'  => (string) ((((int) $zaehler) % 1000 + 1000) % 1000),
+    );
+}
+
+/** Was geht in diesem Lauf hinaus? Vollversand (ohne Merker, nach dem Einschalten, alle 30 min) oder nur Geaendertes;
+ *  zaehler immer und nie retained. $merker = Thema => zuletzt erfolgreich gesendeter Wert. Rueckgabe Thema =>
+ *  array(Wert, retain). Abschrift fer_haus_auswahl(). */
+function spot_haus_auswahl($werte, $merker, $voll)
+{
+    $th = spot_haus_themen();
+    $aus = array();
+    foreach ($werte as $t => $v) {
+        if (empty($th[$t])) { $aus[$t] = array((string) $v, false); continue; }
+        if ($voll || !is_array($merker) || !array_key_exists($t, $merker) || (string) $merker[$t] !== (string) $v) {
+            $aus[$t] = array((string) $v, true);
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Eine kurze Sitzung am Broker (E-E3): Abschrift von marstek_haus_sitzung() (Marstek Venus E, selbst Abschrift von
+ * abfahrt_haus_sitzung() aus dem Abfahrts-Assistenten 1.6.31). EINE Funktion fuer den Anbieter (senden) und den
+ * Abnehmer haus/speicher (lesen mit Fenster); ohne $warten endet das Lesen 1 s nach dem SUBACK.
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung (>= 0x80 abgelehnt)
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden, hoechstens 66
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
+ * 'gesendet' => n). MQTT 3.1.1 von Hand, saubere Sitzung, Client-ID 'spothaus<pid>'. Zugang aus general.json
+ * (Mqtt.Brokerhost/-port/-user/-pass); das Kennwort steht nur im CONNECT-Paket, nie in einem Protokoll und nie auf
+ * einer Befehlszeile (Regeln/05).
+ */
+function spot_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = spot_paths();
+    $gj = $p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '';
+    if ($gj === '' || !is_file($gj)) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $schreib = function ($daten) use ($s) {
+        $daten = (string) $daten;
+        return @fwrite($s, $daten) === strlen($daten);
+    };
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    /* Ein PUBLISH merken: Wert und, ohne Retain-Bit, "live gesehen". */
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('spothaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (!$schreib(chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $sub = pack('n', 1);
+        foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+        $schreib(chr(0x82) . $laenge(strlen($sub)) . $sub);
+        $lage = 'zeit';
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($soll)) { break; }
+                $lage = 'ok';
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+                }
+                break;
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        $suback_zeit = microtime(true);
+    }
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if ($schreib(chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf)) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll) {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    $schreib(chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/** Merker des Anbieters (Thema => zuletzt erfolgreich gesendeter Wert, Zeit des letzten Vollversands) und der letzten
+ *  Sitzung - im Zwischenordner (fluechtig: nach einem Neustart geht der volle Satz hinaus). */
+function spot_haus_merker_datei()
+{
+    return spot_tmpdir() . '/haus_letzte.json';
+}
+
+function spot_haus_sitzung_datei()
+{
+    return spot_tmpdir() . '/haus_sitzung.json';
+}
+
+/** Den Merker "war Anbieter" (_haus_frueher) in der Konfiguration setzen oder entfernen - mit Zweitschrift
+ *  (spot_config_save()). Unterstrich: spot_sicherung_lesen() uebergeht ihn, spot_sicherung_schreiben() schreibt nur
+ *  Vorgabeschluessel. Rueckgabe true, wenn geschrieben wurde. Abschrift fer_haus_frueher_setzen(). */
+function spot_haus_frueher_setzen($ja)
+{
+    if (spot_nur_lesen()) { return false; }
+    $c = spot_config();
+    if ((int) !empty($c['_haus_frueher']) === ($ja ? 1 : 0)) { return false; }
+    if ($ja) { $c['_haus_frueher'] = 1; } else { unset($c['_haus_frueher']); }
+    return spot_config_save($c);
+}
+
+/**
+ * Anbieter haus/strompreis im Minutenlauf (bin/cron.php nach dem Lebenszeichen; E-E1). Nur mit haus_strompreis_ein = 1
+ * UND mqtt_enabled = 1 UND erkannter Wurzel; sonst wird der Merker verworfen (das Einschalten schickt dann den vollen
+ * Satz), und war diese Installation Anbieter (_haus_frueher), raeumt der Lauf hoechstens alle 10 Minuten die fuenf
+ * retained Themen ab. Gesendet werden die geaenderten Themen, der volle Satz ohne Merker (erster Lauf, Neustart,
+ * Update, nach dem Einschalten) und alle 30 Minuten, dazu in JEDER Sitzung haus/strompreis/zaehler (nicht retained,
+ * derselbe Zaehler wie status/zaehler). Der Merker wird NUR nach einer Sitzung mit Lage ok fortgeschrieben.
+ * Rueckgabe: Ergebnis der Sitzung oder null. Abschrift fer_haus_lauf().
+ */
+function spot_haus_lauf($st, $cfg)
+{
+    $p = spot_paths();
+    $mf = spot_haus_merker_datei();
+    if (empty($cfg['haus_strompreis_ein']) || empty($cfg['mqtt_enabled']) || $p['lbhome'] === '') {
+        if (is_file($mf)) { @unlink($mf); }
+        if (!empty($cfg['_haus_frueher']) && $p['lbhome'] !== '') {
+            $vf = spot_tmpdir() . '/haus_leeren_versuch';
+            clearstatcache(true, $vf);
+            $alt = is_file($vf) ? (int) filemtime($vf) : 0;
+            if ($alt <= 0 || $alt > time() || time() - $alt >= 600) {
+                @touch($vf);
+                $e = spot_haus_leeren();
+                spot_log('Haus-Themen haus/strompreis: Abraeumen im Minutenlauf - ' . $e['lage']
+                    . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+                if (in_array($e['lage'], array('geleert', 'nichts'), true)) { spot_haus_frueher_setzen(false); }
+            }
+        }
+        return null;
+    }
+    $werte = spot_haus_werte($st, spot_lauf_stand());
+    $vorher = null;
+    $voll_zeit = 0;
+    if (is_file($mf)) {
+        $d = json_decode((string) @file_get_contents($mf), true);
+        if (is_array($d) && isset($d['werte'], $d['voll']) && is_array($d['werte'])) {
+            $vorher = $d['werte'];
+            $voll_zeit = (int) $d['voll'];
+        }
+    }
+    $voll = ($vorher === null || $voll_zeit <= 0 || $voll_zeit > time() || time() - $voll_zeit > 1800);
+    $r = spot_haus_sitzung(spot_haus_auswahl($werte, $vorher, $voll), array(), array(), 0);
+    if ($r['lage'] === 'ok') {
+        $merk = $werte;
+        unset($merk['haus/strompreis/zaehler']);
+        spot_write_json_atomic($mf, array('werte' => $merk, 'voll' => $voll ? time() : $voll_zeit, 'zeit' => time()));
+        if (empty($cfg['_haus_frueher'])) { spot_haus_frueher_setzen(true); }
+    }
+    $n = ($werte['haus/strompreis/vorschau'] === '-') ? 0 : count(explode(';', $werte['haus/strompreis/vorschau']));
+    spot_write_json_atomic(spot_haus_sitzung_datei(), array('zeit' => time(), 'lage' => $r['lage'],
+        'gesendet' => (int) $r['gesendet'], 'voll' => $voll ? 1 : 0, 'n' => $n,
+        'ab' => (int) $werte['haus/strompreis/ab']));
+    spot_log_if_changed('haus', $r['lage'] === 'ok' ? 'Haus-Themen haus/strompreis: Sitzung am Broker ok'
+        : 'Haus-Themen haus/strompreis: Broker nicht erreichbar (' . $r['lage'] . ') - naechster Versuch in einer Minute');
+    return $r;
+}
+
+/**
+ * Die fuenf retained Themen abraeumen (E-E2, Nr. 15): erst zuruecklesen; ist nichts belegt -> 'nichts'. Sonst leere
+ * Nutzlast mit Retain-Bit fuer die belegten Themen und danach in einer EIGENEN Sitzung zuruecklesen (nicht in
+ * derselben: dort kaemen die eigenen Loeschungen als Live-Werte zurueck), bis zu drei Runden. Nur die eigenen Namen
+ * aus spot_haus_themen(), nie haus/#, nie fremde Themen. Rueckgabe array('lage' => geleert | nichts | rest |
+ * kein_broker, 'offen' => belegte Themen, 'grund' => Lage der gescheiterten Sitzung). Abschrift fer_haus_leeren().
+ */
+function spot_haus_leeren($runden = 3)
+{
+    $th = spot_haus_retained();
+    $belegt = function ($w) {
+        $o = array();
+        foreach ($w as $t => $v) { if ((string) $v !== '') { $o[] = $t; } }
+        return $o;
+    };
+    $r = spot_haus_sitzung(array(), $th, array(), 0);
+    if ($r['lage'] !== 'ok') { return array('lage' => 'kein_broker', 'offen' => array(), 'grund' => $r['lage']); }
+    $offen = $belegt($r['werte']);
+    if (!$offen) { return array('lage' => 'nichts', 'offen' => array(), 'grund' => ''); }
+    $lage = 'rest';
+    $grund = '';
+    for ($i = 1; $i <= max(1, (int) $runden); $i++) {
+        $senden = array();
+        foreach ($offen as $t) { $senden[$t] = array('', true); }
+        $r = spot_haus_sitzung($senden, array(), array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        usleep(300000);
+        $r = spot_haus_sitzung(array(), $th, array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        $offen = $belegt($r['werte']);
+        if (!$offen) { return array('lage' => 'geleert', 'offen' => array(), 'grund' => ''); }
+        $lage = 'rest';
+    }
+    return array('lage' => $lage, 'offen' => $offen, 'grund' => $grund);
+}
+
+/**
+ * Folgen einer Aenderung von haus_strompreis_ein/mqtt_enabled (Reiter MQTT, Zurueckspielen einer Sicherung; E-E2):
+ * wird die Installation Anbieter, verfaellt der Merker (der naechste Minutenlauf schickt den vollen Satz); hoert sie
+ * auf, Anbieter zu sein, und war sie es (Haken und MQTT an) oder traegt sie _haus_frueher, raeumt sie die fuenf Themen
+ * mit Ruecklesen ab und fuehrt den Merker "war Anbieter" nach (geleert/nichts: weg; sonst gesetzt - der Minutenlauf
+ * versucht es alle 10 Minuten). Rueckgabe array(Meldung oder '', 'ok'|'warn'). Abschrift fer_haus_folgen().
+ */
+function spot_haus_folgen($alt, $neu)
+{
+    $war = !empty($alt['haus_strompreis_ein']) && !empty($alt['mqtt_enabled']);
+    $frueher = !empty($alt['_haus_frueher']);
+    $ist = !empty($neu['haus_strompreis_ein']) && !empty($neu['mqtt_enabled']);
+    @unlink(spot_haus_merker_datei());
+    if ($ist || (!$war && !$frueher)) { return array('', 'ok'); }
+    $e = spot_haus_leeren();
+    spot_log('Haus-Themen haus/strompreis: Abraeumen ' . $e['lage']
+        . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+    if ($e['lage'] === 'geleert' || $e['lage'] === 'nichts') {
+        spot_haus_frueher_setzen(false);
+        return array($e['lage'] === 'geleert' ? sprintf(spot_t('HAUS.M_GELEERT'), count(spot_haus_retained()))
+                                              : spot_t('HAUS.M_NICHTS'), 'ok');
+    }
+    spot_haus_frueher_setzen(true);
+    if ($e['lage'] === 'rest') { return array(sprintf(spot_t('HAUS.M_REST'), implode(', ', $e['offen'])), 'warn'); }
+    return array(spot_t('HAUS.M_KEIN_BROKER'), 'warn');
+}
+
+/** Deinstallation (cron.php --haus-leeren): nur, wenn diese Installation Anbieter ist oder war. Ausgabe fuer das
+ *  Installationsprotokoll; Rueckgabe immer 0 - die Deinstallation laeuft weiter. Abschrift fer_haus_leeren_ausgabe(). */
+function spot_haus_leeren_ausgabe()
+{
+    $cfg = spot_config();
+    if (empty($cfg['haus_strompreis_ein']) && empty($cfg['_haus_frueher'])) {
+        echo "<INFO> haus/strompreis: diese Installation war nie Anbieter - nichts zu leeren.\n";
+        return 0;
+    }
+    $e = spot_haus_leeren();
+    if ($e['lage'] === 'geleert') {
+        echo "<OK> haus/strompreis: geleert (vom Broker bestaetigt, " . count(spot_haus_retained()) . " Themen).\n";
+    } elseif ($e['lage'] === 'nichts') {
+        echo "<INFO> haus/strompreis: nichts zu leeren (der Broker haelt keines der Themen zurueck).\n";
+    } elseif ($e['lage'] === 'rest') {
+        echo "<WARNING> haus/strompreis: noch zurueckbehalten - bitte von Hand leeren: " . implode(', ', $e['offen'])
+           . " (mosquitto_pub -r -n -t <thema>)\n";
+    } else {
+        echo "<WARNING> haus/strompreis: der Broker war nicht erreichbar (" . $e['grund'] . ") - bitte von Hand leeren: "
+           . implode(', ', spot_haus_retained()) . " (mosquitto_pub -r -n -t <thema>)\n";
+    }
+    return 0;
+}
+
+/** Die Zeile "Haus-Themen haus/strompreis" der Selbstpruefung (Reiter Test): array(2 aus, 1 ok, 0 gescheitert,
+ *  Text). Aus haus_sitzung.json; ohne Kennwort, ohne Werte. */
+function spot_haus_testzeile($cfg)
+{
+    if (empty($cfg['haus_strompreis_ein'])) { return array(2, spot_t('HAUS.T_AUS')); }
+    if (empty($cfg['mqtt_enabled'])) { return array(2, spot_t('HAUS.T_MQTT_AUS')); }
+    $sz = json_decode((string) @file_get_contents(spot_haus_sitzung_datei()), true);
+    if (!is_array($sz) || !isset($sz['lage'], $sz['zeit'])) { return array(2, spot_t('HAUS.T_NIE')); }
+    $alter = max(0, time() - (int) $sz['zeit']);
+    if ((string) $sz['lage'] !== 'ok') { return array(0, sprintf(spot_t('HAUS.T_BROKER'), (string) $sz['lage'], $alter)); }
+    $n = isset($sz['n']) ? (int) $sz['n'] : 0;
+    $ab = isset($sz['ab']) ? (int) $sz['ab'] : -1;
+    return array($alter <= 150 ? 1 : 0, $n > 0
+        ? sprintf(spot_t('HAUS.T_OK'), $alter, $n, date('H:i', $ab))
+        : sprintf(spot_t('HAUS.T_OHNE_PREISE'), $alter));
+}
+
+/* ---------- V1: Abnehmer haus/speicher (Entwurf 2.7; E-E4/E-E5) ----------
+ * Gelesen werden nur haus/speicher/soc und haus/speicher/zaehler - fuer die SoC-Grenzen der Schaltregeln. Der Zaehler
+ * kommt am Geraet fest in Sekunde ~36 jeder Minute und ist nicht retained (Gedaechtnis abnehmer-phasenfalle): eine
+ * kurze Lesesitzung im Minutenlauf saehe ihn nie live. Deshalb ein abgekoppelter Leser (cron.php --haus-lesen) wie
+ * Marstek 1.1.28, der bis zu 65 s auf einen live gesehenen Zaehler wartet. aWATTar liest NIE haus/strompreis und
+ * schreibt NIE unter haus/speicher. */
+
+/** Frist fuer eine frische Quelle (Nr. 15). */
+define('SPOT_HAUS_FRIST', 120);
+
+/** Die Ablage des Lesers (Zwischenordner) - der Leser schreibt, Minutenlauf, Endpunkt und Oberflaeche lesen. */
+function spot_haus_quellen_datei()
+{
+    return spot_tmpdir() . '/haus_quellen.json';
+}
+
+/** Der Stand des Lesers - bei jedem Aufruf frisch aus der Datei. */
+function spot_haus_quellen()
+{
+    $f = spot_haus_quellen_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/**
+ * Das Ergebnis einer Lesesitzung einarbeiten (Abschrift marstek_haus_merken(), nur die Quelle 'speicher'): soc
+ * (retained gelesen; ein bestaetigtes Abo ohne retained Wert heisst ''), der zuletzt LIVE gesehene Zaehler und 'seit' =
+ * Zeitpunkt der letzten Aenderung des Zaehlers. Ein live gesehener, aber unveraenderter Zaehler verlaengert nichts
+ * (Anbieter klemmt). 'beginn' = erster Leseversuch (fuer die Bremse).
+ */
+function spot_haus_merken(array $alt, array $erg, $jetzt)
+{
+    $e = (isset($alt['speicher']) && is_array($alt['speicher'])) ? $alt['speicher'] : array();
+    $e += array('werte' => array(), 'zaehler' => null, 'seit' => 0, 'beginn' => (int) $jetzt);
+    $tz = 'haus/speicher/zaehler';
+    if (array_key_exists($tz, $erg['werte']) && !empty($erg['live'][$tz])
+            && (string) $erg['werte'][$tz] !== (string) $e['zaehler']) {
+        $e['zaehler'] = (string) $erg['werte'][$tz];
+        $e['seit'] = (int) $jetzt;
+    }
+    if (array_key_exists('haus/speicher/soc', $erg['werte'])) {
+        $e['werte']['soc'] = (string) $erg['werte']['haus/speicher/soc'];
+    } elseif ($erg['lage'] === 'ok') {
+        $e['werte']['soc'] = '';
+    }
+    $alt['speicher'] = $e;
+    return $alt;
+}
+
+/** Ist die Quelle frisch? 0 < jetzt - seit <= 120 und seit nicht in der Zukunft (Uhr zurueck = nicht frisch). */
+function spot_haus_frisch(array $c, $jetzt)
+{
+    $seit = isset($c['speicher']['seit']) ? (int) $c['speicher']['seit'] : 0;
+    return $seit > 0 && $seit <= (int) $jetzt && (int) $jetzt - $seit <= SPOT_HAUS_FRIST;
+}
+
+/** Auf den Zaehler warten? Immer - ausser die Quelle schweigt seit mehr als 10 min: dann nur in jedem zehnten Lauf
+ *  (Minute durch 10 teilbar; Bremse wie Marstek E-E3). Die retained soc wird trotzdem gelesen. */
+function spot_haus_wartethemen(array $c, $jetzt)
+{
+    $seit = isset($c['speicher']['seit']) ? (int) $c['speicher']['seit'] : 0;
+    $beginn = isset($c['speicher']['beginn']) ? (int) $c['speicher']['beginn'] : (int) $jetzt;
+    $ab = ($seit > 0 && $seit <= (int) $jetzt) ? $seit : $beginn;
+    $still = isset($c['speicher']) && (int) $jetzt - $ab > 600;
+    if ($still && ((int) floor($jetzt / 60)) % 10 !== 0) { return array(); }
+    return array('haus/speicher/zaehler');
+}
+
+/**
+ * Eine Lesesitzung des Abnehmers (nur aus dem abgekoppelten Leser): Fenster bis $fenster s auf den live gesehenen
+ * Zaehler. haus_speicher_ein aus: die Ablage verfaellt. Rueckgabe das Sitzungsergebnis oder null.
+ */
+function spot_haus_abnehmer(array $cfg, $fenster)
+{
+    $datei = spot_haus_quellen_datei();
+    if (empty($cfg['haus_speicher_ein'])) {
+        if (is_file($datei)) { @unlink($datei); }
+        return null;
+    }
+    $c = spot_haus_quellen();
+    $erg = spot_haus_sitzung(array(), array('haus/speicher/soc', 'haus/speicher/zaehler'),
+                             spot_haus_wartethemen($c, time()), (float) $fenster);
+    $c = spot_haus_merken($c, $erg, time());
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
+    spot_log_if_changed('haus_abnehmer', $erg['lage'] === 'ok' ? 'Haus-Thema haus/speicher lesen: Sitzung am Broker ok'
+        : 'Haus-Thema haus/speicher lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
+    spot_write_json_atomic($datei, $c);
+    return $erg;
+}
+
+/** Die Sperre des abgekoppelten Lesers (cron.php --haus-lesen). */
+function spot_haus_leser_sperre()
+{
+    return spot_tmpdir() . '/haus_lesen.lock';
+}
+
+/**
+ * Den abgekoppelten Leser starten (Abschrift marstek_haus_abnehmer_starten()): der Minutenlauf startet hoechstens EINEN
+ * und wartet nie darauf. Der Kindprozess erbt keine Deskriptoren (N2): die Schale schliesst vor dem exec jede Nummer
+ * ueber 2, und die Sperre des Minutenlaufs ist mit 'ce' (close-on-exec) geoeffnet - sonst hielte das Kind 65 s lang
+ * jeden folgenden Minutenlauf an (Gedaechtnis sperre-vererbt-sich-an-kinder). Haken aus: Ablage weg, kein Leser.
+ * Rueckgabe: aus | laeuft | gestartet | kein_start.
+ */
+function spot_haus_abnehmer_starten(array $cfg, $skript)
+{
+    if (empty($cfg['haus_speicher_ein'])) {
+        $datei = spot_haus_quellen_datei();
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $fh = @fopen(spot_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der abgekoppelte Leser selbst (cron.php --haus-lesen): eigene Sperre (close-on-exec), sonst still beenden. */
+function spot_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(spot_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) {
+        return 'laeuft';
+    }
+    $erg = spot_haus_abnehmer(spot_config(), $fenster);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg === null ? 'aus' : $erg['lage'];
+}
+
+/**
+ * Welche Speicherquelle gilt (E-E5)? array(art, grund, soc): art 'haus' (soc aus haus/speicher, frisch und 0...100),
+ * 'url' (Rueckfall auf soc_url) oder 'keine'; grund aus | schweigt | unbrauchbar | ok. Frisch = Zaehler binnen 120 s
+ * live gewechselt; soc ausserhalb 0...100, -1 und "-" sind ohne Aussage (wie plan_soc_lesen()). Eine Funktion fuer
+ * spot_umwelt(), die Selbstpruefung und den healthcheck.
+ */
+function spot_speicher_quelle($cfg, $c = null, $jetzt = null)
+{
+    $rueck = trim((string) $cfg['soc_url']) !== '' ? 'url' : 'keine';
+    if (empty($cfg['haus_speicher_ein'])) { return array($rueck, 'aus', null); }
+    if ($c === null) { $c = spot_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!spot_haus_frisch($c, $jetzt)) { return array($rueck, 'schweigt', null); }
+    $soc = isset($c['speicher']['werte']['soc']) ? trim((string) $c['speicher']['werte']['soc']) : '';
+    if ($soc === '' || !is_numeric($soc) || (float) $soc < 0 || (float) $soc > 100) {
+        return array($rueck, 'unbrauchbar', null);
+    }
+    return array('haus', 'ok', round((float) $soc, 1));
+}
+
+/** Die Speicherquelle in das Ergebnis von spot_umwelt() einsetzen: 'haus' ersetzt soc; schweigt die eingeschaltete
+ *  Quelle, gilt die Speicher-Adresse (Meldung HAUS_SCHWEIGT) bzw. kein Wert (HAUS_SCHWEIGT_OHNE). Ein Wechsel der Quelle
+ *  geht einmal ins Protokoll - nicht aus dem Endpunkt (der schreibt nichts). */
+function spot_speicher_einsetzen(array $erg, array $q)
+{
+    $erg['soc_quelle'] = $q[0];
+    if ($q[0] === 'haus') {
+        $erg['soc'] = $q[2];
+        $erg['soc_meldung'] = '';
+    } elseif ($q[1] === 'schweigt' || $q[1] === 'unbrauchbar') {
+        if ($q[0] === 'keine') {
+            $erg['soc'] = null;
+            $erg['soc_meldung'] = 'HAUS_SCHWEIGT_OHNE';
+        } elseif ((string) $erg['soc_meldung'] === '') {
+            $erg['soc_meldung'] = 'HAUS_SCHWEIGT';
+        }
+    }
+    if (!spot_nur_lesen() && !spot_nur_zwischenspeicher()) {
+        spot_log_if_changed('soc_quelle', 'Speicherstand: Quelle ' . $q[0] . ' (' . $q[1] . ')');
+    }
+    return $erg;
+}
+
+/** Die Zeile "Speicherstand aus dem Haus" der Selbstpruefung: array(1 haus, 2 aus/Rueckfall, Text). */
+function spot_speicher_testzeile($cfg)
+{
+    if (empty($cfg['haus_speicher_ein'])) { return array(2, spot_t('HAUS.S_AUS')); }
+    $c = spot_haus_quellen();
+    $q = spot_speicher_quelle($cfg, $c);
+    $seit = isset($c['speicher']['seit']) ? (int) $c['speicher']['seit'] : 0;
+    if ($q[0] === 'haus') {
+        return array(1, sprintf(spot_t('HAUS.S_HAUS'), spot_num($q[2], 0), max(0, time() - $seit)));
+    }
+    $wie = $seit > 0 ? sprintf(spot_t('HAUS.S_SEIT'), (int) round(max(0, time() - $seit) / 60)) : spot_t('HAUS.S_NIE');
+    return array(2, sprintf(spot_t($q[0] === 'url' ? 'HAUS.S_URL' : 'HAUS.S_KEINE'), $wie));
+}
+
+/* ---------- W16: Abo-Datei des Gateways V1 (Entwurf 2.8; Bauart oc_abo_datei(), Octopus 1.1.27) ---------- */
+
+/**
+ * config/plugins/<ordner>/mqtt_subscriptions.cfg traegt "<praefix>/#" (ohne Zeilenende, wie mitgeliefert); das Gateway
+ * V1 liest die Plugin-Abos selbst. Mitgeliefert mit "spot_awattar/#", nachgefuehrt im Minutenlauf (nur mit MQTT) und
+ * beim Speichern des Reiters MQTT. Eine Zeile, eine Wahrheit: ein anderes Praefix ersetzt die alte Zeile. Die
+ * Haus-Themen gehoeren NICHT hinein. Rueckgabe array(Pfad, liegt richtig); null ohne LoxBerry-Wurzel.
+ */
+function spot_abo_datei($schreiben = false)
+{
+    $p = spot_paths();
+    if ($p['lbhome'] === '') { return null; }
+    $dir = dirname($p['config']);
+    $pfad = $dir . '/mqtt_subscriptions.cfg';
+    $soll = spot_mqtt_praefix() . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && trim($roh) !== $soll && is_dir($dir) && !spot_nur_lesen()) {
+        if (spot_write_atomic($pfad, $soll)) {
+            spot_log('Gateway-Abo (mqtt_subscriptions.cfg) gesetzt: ' . $soll);
+            $da = true;
+        }
+    }
+    return array($pfad, $da);
+}
+
+/* ---------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke (V3; Entwurf 3.1; E-E6) ----------
+ * Bis 1.2.38 standen say/saytomorrow, ptest und refresh in webfrontend/html/spot.php. Seit 1.2.39 rufen der
+ * HTTP-Endpunkt (Quelle 'http', Antwort wie bisher plus ";GESPERRT=") und die Befehlsbruecke (Quelle 'mqtt',
+ * bin/befehle_zuordnung.php) dieselbe Funktion: Plugin-Bremse (Ansagen 20 s gemeinsam, Test-Push 10 s, Abruf 60 s),
+ * Merker, Ansage. Das Token prueft weiter nur der Endpunkt; auf dem MQTT-Weg ersetzen es die Anmeldung am Broker und der
+ * Haken. Bauart oc_befehl_ausfuehren() (Octopus 1.1.27). */
+
+/** Die Wiederholsperre: eine Datei je Name im Zwischenordner. Ist sie nicht schreibbar, wird der Aufruf abgewiesen,
+ *  damit der Schutz nicht offen ausfaellt. */
+function spot_sperre_frei($name, $sekunden)
+{
+    $f = spot_tmpdir() . '/sperre_' . preg_replace('/[^a-z0-9_]/i', '', (string) $name);
+    clearstatcache(true, $f);
+    if (is_file($f) && time() - (int) filemtime($f) < (int) $sekunden && (int) filemtime($f) <= time()) { return false; }
+    if (@file_put_contents($f, (string) time()) === false) {
+        spot_log_if_changed('sperre', 'Wiederholsperre nicht schreibbar (' . $f
+            . ') - der Aufruf wird abgewiesen, damit der Schutz nicht offen ausfaellt');
+        return false;
+    }
+    @touch($f);
+    return true;
+}
+
+/**
+ * Einen Befehl ausfuehren: 'ptest', 'say', 'saytomorrow' oder 'refresh'. Rueckgabe array(HTTP-Code, Antwortzeile ohne
+ * Zeilenende). 'refresh' ruft NIE selbst ab: es bestellt den Abruf beim naechsten Minutenlauf (Merker abruf_bestellt,
+ * wie ?refresh=1 seit dem Durchgang 01.10.2026). Auf dem MQTT-Weg liest die Funktion nur (spot_nur_lesen(),
+ * spot_nur_zwischenspeicher()): die Bruecke heilt und schreibt keine Konfiguration und ruft nirgends ab.
+ */
+function spot_befehl_ausfuehren($aktion, $quelle = 'http')
+{
+    $mqtt = ($quelle === 'mqtt');
+    $vorher = spot_nur_lesen();
+    $vorher_z = spot_nur_zwischenspeicher();
+    if ($mqtt) {
+        spot_nur_lesen(true);
+        spot_nur_zwischenspeicher(true);
+    }
+    try {
+        if ($aktion === 'ptest') {
+            if (!spot_sperre_frei('ptest', 10)) { return array(200, 'PTEST;OK=1;DAUER=300;GESPERRT=1'); }
+            /* N6: den Rueckgabewert ansehen - bis 1.2.38 meldete diese Aktion OK=1, auch wenn der Merker gar nicht
+             * geschrieben werden konnte. */
+            if (@file_put_contents(spot_tmpdir() . '/ptest', '1') === false) {
+                spot_log('Test-Pushnachricht angefordert, aber der Merker liess sich nicht schreiben ('
+                    . spot_tmpdir() . '/ptest)');
+                return array(500, 'PTEST;OK=0;ERR=MERKER');
+            }
+            spot_log($mqtt ? 'Test-Pushnachricht ueber MQTT angefordert (PTEST=1 fuer 5 Minuten)'
+                           : 'Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten)');
+            /* Der Ausloeser meldet SOFORT (Regeln/07) - gesendet wird nur, was sich geaendert hat. */
+            spot_mqtt_publish(null, false);
+            return array(200, 'PTEST;OK=1;DAUER=300;GESPERRT=0');
+        }
+        if ($aktion === 'say' || $aktion === 'saytomorrow') {
+            /* 20 Sekunden, gemeinsam fuer beide Ansagen. */
+            if (!spot_sperre_frei('say', 20)) { return array(200, 'SAY;OK=0;GESPERRT=1;' . spot_say_feld('')); }
+            $st = spot_state();
+            $text = $aktion === 'saytomorrow' ? spot_tomorrow_text($st) : spot_announce_text($st);
+            if ($text === '') { $text = spot_t('SPOT_ANSAGE.TEST_LEER'); }
+            if ($mqtt) {
+                spot_log(($aktion === 'saytomorrow' ? 'Ansage der Preise fuer morgen' : 'Preisansage')
+                    . ' ueber MQTT angefordert.');
+            }
+            $ok = spot_say($text);
+            /* Seit 1.2.33 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
+            return array(200, 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;' . spot_say_feld($text));
+        }
+        if ($aktion === 'refresh') {
+            if (!spot_sperre_frei('refresh', 60)) { return array(200, 'REFRESH;OK=1;BESTELLT=0;GESPERRT=1'); }
+            if (@file_put_contents(spot_tmpdir() . '/abruf_bestellt', (string) time()) === false) {
+                spot_log('Abruf bestellt, aber der Merker liess sich nicht schreiben (' . spot_tmpdir() . '/abruf_bestellt)');
+                return array(500, 'REFRESH;OK=0;ERR=MERKER');
+            }
+            spot_log($mqtt ? 'Abruf ueber MQTT bestellt - der naechste Minutenlauf ruft neu ab.'
+                           : 'Abruf am Endpunkt bestellt (?refresh=1) - der naechste Minutenlauf ruft neu ab.');
+            return array(200, 'REFRESH;OK=1;BESTELLT=1;GESPERRT=0');
+        }
+        return array(400, 'SPOT;OK=0;ERR=AKTION');
+    } finally {
+        spot_nur_lesen($vorher);
+        spot_nur_zwischenspeicher($vorher_z);
+    }
+}
+
+/** Die Rueckgabe von spot_befehl_ausfuehren() fuer die Bruecke: array(bool, Grund). Angenommen heisst Code 200, OK=1
+ *  und GESPERRT=0; sonst GESPERRT (Plugin-Bremse), MERKER (Merker nicht schreibbar) oder NICHT_GESPROCHEN (Ansage mit
+ *  OK=0: Ausgabeart "aus" bzw. "Original Loxone Audioserver", oder die Sprachausgabe scheiterte - ansage_kurz() steht
+ *  im Protokoll). Abschrift oc_befehl_bruecke(). */
+function spot_befehl_bruecke($r)
+{
+    $z = (is_array($r) && isset($r[1])) ? (string) $r[1] : '';
+    $code = (is_array($r) && isset($r[0])) ? (int) $r[0] : 0;
+    if ($code === 200 && strpos($z, ';OK=1;') !== false && strpos($z, 'GESPERRT=0') !== false) { return array(true, ''); }
+    if (strpos($z, 'GESPERRT=1') !== false) { return array(false, 'GESPERRT'); }
+    if (preg_match('/;ERR=([A-Z0-9_]+)/', $z, $m)) { return array(false, $m[1]); }
+    if (strpos($z, 'SAY;OK=0') === 0) { return array(false, 'NICHT_GESPROCHEN'); }
+    return array(false, 'FEHLER');
+}
+
+/** Einstellungen fuer die Zuordnung: Praefix wie beim Senden, annehmen = Haken "Befehle ueber MQTT annehmen" UND MQTT
+ *  an; kein zweiter Haken - alle vier Befehle sind harmlos (E-E7). */
+function spot_befehle_einstellungen()
+{
+    $c = spot_config(false);
+    $mqtt = !empty($c['mqtt_enabled']);
+    return array('praefix' => spot_mqtt_praefix($c), 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => false, 'mqtt_ein' => $mqtt);
+}
+
+/* ---------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam 1.0.1) ---------- */
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function spot_bruecke_datei()
+{
+    $p = spot_paths();
+    $kand = array();
+    if ($p['lbhome'] !== '') { $kand[] = $p['lbhome'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function spot_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = spot_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Der Waechter der Bruecke aus dem Minutenlauf (bin/cron.php, Entwurf 3.1): startet sie nur mit dem Haken "Befehle
+ * ueber MQTT annehmen" (und MQTT an), haelt sie sonst an und sendet <praefix>/status/befehle. Der Aufrufer faengt jede
+ * Ausnahme. Rueckgabe wie bb_waechter() oder array(null, Grund) ohne Bruecke.
+ */
+function spot_bruecke_waechter()
+{
+    if (!spot_bruecke_laden()) { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    return bb_waechter();
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT und nach dem Zurueckspielen (Bauart oc_bruecke_schalten()):
+ * der Waechter im Minutenlauf holt einen ausgelassenen Start nach. Rueckgabe array(''|'ein'|'aus'|'start_fehl'|
+ * 'stop_fehl', Ausgabe).
+ */
+function spot_bruecke_schalten()
+{
+    if (!spot_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = spot_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            spot_log('Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        spot_log('Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        spot_log('Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function spot_befehle_liste()
+{
+    if (!spot_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "Spotpreis aWATTar MQTT-Befehle" (bb_vorlage()): eigener Virtueller Ausgang an den UDP-Eingang des Gateways
+ *  mit den vier Befehlen (publish <praefix>/befehl/<name> 1). Rueckgabe array(name, inhalt) oder null. */
+function spot_befehle_vorlage()
+{
+    $l = spot_befehle_liste();
+    if ($l === null) { return null; }
+    $port = spot_mqtt_udpport(spot_paths()['lbhome']);
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+        : spot_own_ip();
+    return array('VQ_spotpreis_mqtt.xml', bb_vorlage($l, $host !== '' ? $host : 'loxberry', $port > 0 ? $port : 11884));
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" der Selbstpruefung: array(1|0|2, Text). Gemessen wird das Erzeugnis
+ *  (zustand.json) und ob ein Dienst laeuft - wie der Waechter. Abschrift oc_pruef_bruecke(). */
+function spot_pruef_bruecke()
+{
+    if (!spot_bruecke_laden()) { return array(0, spot_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(spot_t('BEFEHL.P_DEFEKT'), (string) $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(spot_t('BEFEHL.P_DEFEKT'), (string) $f[0])); }
+    $c = spot_config(false);
+    if (empty($c['befehle_mqtt_ein'])) { return array(2, spot_t('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_enabled'])) { return array(2, spot_t('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_pfade()) { return array(2, spot_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, spot_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(spot_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(spot_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(spot_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(spot_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . spot_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/* ---------- W17 + E1: Monatsbericht und Monatswerte am Schluessel (Entwurf 3.3; E-E9; Bauart oc_cron :213-233) ----------
+ * history.csv schreibt die Zeile des Tages erst um 23:50 (bin/cron.php). Am Monatsersten bis 23:50 gibt es deshalb
+ * noch keinen Eintrag fuer den laufenden Monat: spot_month_compare(2) liefert dann Vormonat und Vor-Vormonat, und das
+ * alte array_shift() warf den VORMONAT weg (W17: der Bericht am 01.11. nannte September). Dieselbe Ursache liess die
+ * Monatswerte des laufenden Monats am Ersten den Vormonat tragen (E1). Jetzt wird am SCHLUESSEL gesucht. */
+
+/** Der Eintrag des Vormonats (JJJJMM) aus der Historie oder null - nur wenn es ihn wirklich gibt. */
+function spot_vormonat_eintrag($jetzt = null)
+{
+    $soll = date('Ym', strtotime('first day of last month', $jetzt === null ? time() : (int) $jetzt));
+    foreach (spot_month_compare(3) as $k => $e) {
+        if ((string) $k === $soll) { return $e; }
+    }
+    return null;
+}
+
+/** Der Eintrag des LAUFENDEN Monats oder null (am Monatsersten bis zur ersten Tageszeile um 23:50). */
+function spot_laufender_monat($jetzt = null)
+{
+    $soll = date('Ym', $jetzt === null ? time() : (int) $jetzt);
+    foreach (spot_month_compare(2) as $k => $e) {
+        if ((string) $k === $soll) { return $e; }
+    }
+    return null;
+}
+
+/* ---------- V4: bin/healthcheck (Entwurf 3.5; E-E11) ---------- */
+
+/**
+ * Die Auskunft fuer den LoxBerry-Healthcheck: array(Status, Text). Kein Abruf bei aWATTar, kein Broker, nichts angelegt
+ * (der Aufrufer schaltet spot_nur_lesen() und spot_nur_zwischenspeicher() ein). Stufen nach LoxBerry: 3 Fehler
+ * (Minutenlauf steht laenger als 15 min, Konfiguration kaputt), 4 Warnung (keine Preise fuer heute, ein Kreuz der
+ * Selbstpruefung, Bruecke soll laufen und haengt, Anbieter an und letzte Haus-Sitzung nicht ok), 6 Hinweis (nach 15 Uhr
+ * noch keine Preise fuer morgen, Speicherquelle schweigt), sonst 5.
+ */
+function spot_gesundheit()
+{
+    $cfg = spot_config();
+    $lage = spot_konfig_lage();
+    $puls = spot_cron_puls();
+    if ($lage === 'kaputt' || $lage === 'zweit_kaputt') {
+        return array(3, spot_t('HEALTH.KONFIG'));
+    }
+    if ($puls <= 0 || time() - $puls > 900) {
+        return array(3, $puls <= 0 ? spot_t('HEALTH.NIE') : sprintf(spot_t('HEALTH.STEHT'), (int) round((time() - $puls) / 60)));
+    }
+    $st = spot_state();
+    $warn = array();
+    $hinweis = array();
+    if (empty($st['ok'])) { $warn[] = spot_t('HEALTH.KEINE_PREISE'); }
+    $kreuze = array();
+    foreach (spot_selbsttest(false) as $z) {
+        if ((int) $z['ok'] === 0) { $kreuze[] = spot_t($z['schluessel']); }
+    }
+    if ($kreuze) { $warn[] = sprintf(spot_t('HEALTH.KREUZE'), count($kreuze), implode('; ', $kreuze)); }
+    if (!empty($cfg['haus_strompreis_ein']) && !empty($cfg['mqtt_enabled'])) {
+        $sz = json_decode((string) @file_get_contents(spot_haus_sitzung_datei()), true);
+        if (!is_array($sz) || (string) (isset($sz['lage']) ? $sz['lage'] : '') !== 'ok'
+                || time() - (int) $sz['zeit'] > 300) {
+            $warn[] = spot_t('HEALTH.HAUS');
+        }
+    }
+    if (empty($st['tomorrow_ok']) && (int) date('G') >= 15) { $hinweis[] = spot_t('HEALTH.MORGEN'); }
+    $q = spot_speicher_quelle($cfg);
+    if (!empty($cfg['haus_speicher_ein']) && $q[0] !== 'haus') { $hinweis[] = spot_t('HEALTH.SPEICHER'); }
+    $grund = sprintf(spot_t('HEALTH.OK'), !empty($st['ok']) ? (int) $st['heute']['n'] : 0,
+                     !empty($st['tomorrow_ok']) ? (int) $st['morgen']['n'] : 0, max(0, time() - $puls));
+    if ($warn) { return array(4, implode(' ', $warn) . ' ' . $grund); }
+    if ($hinweis) { return array(6, implode(' ', $hinweis) . ' ' . $grund); }
+    return array(5, $grund);
+}

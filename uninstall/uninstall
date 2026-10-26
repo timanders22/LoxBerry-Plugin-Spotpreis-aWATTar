@@ -108,6 +108,55 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# Gruppe 27 (1.2.39, V3; Muster Ferien 1.2.28 uninstall): die Befehlsbruecke anhalten (stop beendet Dienst und
+# mosquitto_sub, auch ein verwaistes), argumentweise nachzaehlen, die Optionsdateien mit dem Broker-Kennwort
+# ueberschreiben und den Ordner befehle/ entfernen. Im Broker bleibt nichts: Quittungen und status/befehle sind nie
+# zurueckbehalten. Vor allem anderen, gleich nach der Wurzelpruefung.
+case "$PDIR" in
+    */*|*..*)
+        echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - die Befehlsbruecke wurde nicht angehalten." ;;
+    *)
+        BBSH="$BASE/bin/plugins/$PDIR/befehlsbruecke.sh"
+        BBPHP="$BASE/bin/plugins/$PDIR/befehlsbruecke.php"
+        BBDIR="$BASE/data/plugins/$PDIR/befehle"
+        if [ -f "$BBSH" ]; then
+            timeout 40 bash "$BBSH" stop
+        fi
+        BB_REST=0
+        for d in /proc/[0-9]*; do
+            mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+            if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+                kill -9 "${d#/proc/}" 2>/dev/null
+                BB_REST=$((BB_REST + 1))
+            fi
+        done
+        BB_ABOS=0
+        for d in /proc/[0-9]*; do
+            read -r c 2>/dev/null < "$d/comm" || continue
+            [ "$c" = "mosquitto_sub" ] || continue
+            mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+            for x in "${e[@]}"; do
+                if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; BB_ABOS=$((BB_ABOS + 1)); fi
+            done
+        done
+        [ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+        [ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+        if [ -d "$BBDIR" ]; then
+            for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+                if [ -f "$f" ]; then
+                    n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+                    head -c "$n" /dev/zero > "$f" 2>/dev/null
+                fi
+            done
+            rm -rf "${BBDIR:?}"
+        fi
+        if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+            echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+        else
+            echo "<OK> Befehlsbruecke angehalten, ihre Zugangsdaten entfernt."
+        fi ;;
+esac
+
 # Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen der
 # Zweitschrift (fehlt die Konfiguration schon, nennt die Zweitschrift das
 # Praefix). Bis 1.2.27 blieben sie nach dem Deinstallieren im Broker stehen,
@@ -129,6 +178,20 @@ if command -v php >/dev/null 2>&1 && [ -f "$SP_CRON" ]; then
     fi
 else
     echo "<INFO> PHP oder cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
+
+# Gruppe 27 (1.2.39, E-E2): die fuenf zurueckbehaltenen Themen haus/strompreis/* abraeumen (mit Ruecklesen am
+# Broker) - nur, wenn diese Installation Anbieter ist oder war (cron.php --haus-leeren entscheidet das selbst;
+# eine Zweitinstallation raeumt die Themen eines anderen Anbieters nicht ab). Direkt hinter --mqtt-leeren, vor dem
+# Entfernen der Zweitschrift; als loxberry, stdin geschlossen, Rueckgabe egal.
+if command -v php >/dev/null 2>&1 && [ -f "$SP_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 60 php "$SP_CRON" --haus-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 60 php "$SP_CRON" --haus-leeren \
+            < /dev/null 2>&1 || true
+    fi
 fi
 
 BK="$BASE/config/plugins/$PDIR.backup.json"

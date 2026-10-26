@@ -8,6 +8,42 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.39
+
+**Strompreis für andere Plugins (haus/strompreis).** Mit dem Haken „Strompreis an andere Plugins geben“ (Reiter MQTT,
+ab Werk aus, wirkt nur mit MQTT) wird das Plugin **Anbieter** des Haus-Themas `haus/strompreis` (Regeln/07 Nr. 15):
+`vorschau` (Endpreise ab der laufenden Stunde lückenlos, höchstens 36, `;`-getrennt), `ab`, `raster` 3600,
+`aktuell`, `anbieter` awattar – zurückbehalten – und `zaehler` je Minutenlauf (nicht zurückbehalten). Endpreis wie
+im Plugin gezeigt (Netzentgelt, Abgaben, Aufschlag, USt; ohne Grundpreis). Ohne Preise stehen `-` bzw. -1 darin.
+Gesendet über eine kurze Sitzung direkt am Broker (bei Änderung, voll nach Start/Update/Einschalten und alle 30
+Minuten); beim Ausschalten, beim Zurückspielen und bei der Deinstallation räumt das Plugin die fünf Themen mit
+Rücklesen ab – nur, wenn diese Installation Anbieter ist oder war. Nur **ein** Spotpreis-Plugin im Haus darf
+Anbieter sein. Abnehmer sind Marstek Venus E und Anker SOLIX.
+
+**Speicherstand aus dem Haus (haus/speicher).** Mit „Speicherstand vom Speicher-Plugin übernehmen“ (Reiter
+Einstellungen, ab Werk aus) nimmt der Fahrplaner den Speicherstand für die SoC-Grenzen seiner Schaltregeln vom
+Speicher-Plugin (z. B. Marstek Venus E) statt über eine eigene Adresse. Gelesen werden nur `soc` und `zaehler`, über
+einen abgekoppelten Leser, der bis 65 s auf den Zähler wartet. Schweigt die Quelle länger als 2 Minuten, gilt die
+Speicher-Adresse (falls eingetragen); der Reiter Test sagt es.
+
+**Befehle aus Loxone über MQTT.** Die Befehlsbrücke 1.0.1 nimmt `ansage`, `ansage_morgen`, `testpush` und `abruf`
+(Bestellung beim nächsten Minutenlauf, höchstens alle 5 Minuten) unter `<präfix>/befehl/…` an – Haken „Befehle über
+MQTT annehmen“ im Reiter MQTT, ab Werk aus. Tabelle und Vorlage im Reiter Einbindung. Der HTTP-Endpunkt und die
+Brücke rufen dieselbe Funktion; die Antworten von `?say=1`, `?saytomorrow=1`, `?ptest=1` tragen jetzt `;GESPERRT=0|1`
+(Bremse: Ansagen 20 s, Test-Push 10 s, Abruf 60 s).
+
+**HTTP-Lesezweig abschaltbar (`endpunkt_ein`).** Nach einem Update bleibt alles, wie es war (an); bei einer
+Neuinstallation ist der Lesezweig für Loxone aus (403 `GRUND=ENDPUNKT_AUS`) – neue Anlagen holen die Werte über
+MQTT. Ausgelöste Aufrufe und `?selftest=1` bleiben mit Token erreichbar. Schalter im Reiter Einbindung unter
+„Bestehende Anlagen: HTTP-Endpunkt“.
+
+**Berichtigt.** Der Monatsbericht am Ersten nennt den richtigen Vormonat (bisher den Vor-Vormonat); die Monatswerte
+des laufenden Monats stehen am Ersten bis 23:50 auf 0 statt auf dem Vormonat. Kein Minutenlauf während eines
+Updates. CO₂-Stundenwerte nach Zeitstempel (Zeitumstellung). Fremde JSON-Adressen höchstens 1 MB, ohne Umleitung.
+Abo-Datei des Gateways V1 wird gepflegt. Protokoll leeren nur mit Häkchen. cron.01min legt den Protokollordner an.
+Hilfelink auf die Wiki-Seite. Sprachausgabe 1.1.4 mit Sonos4Lox und SonoX (SonoX schickt Ansagetexte an Google).
+Neu: `bin/healthcheck` für die LoxBerry-Systemprüfung.
+
 ## Neu in 1.2.38
 
 Die Werte gehen jetzt über MQTT an Loxone – für neue Anlagen der Hauptweg. Der HTTP-Endpunkt bleibt für bestehende

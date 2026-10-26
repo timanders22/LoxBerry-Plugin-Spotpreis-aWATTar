@@ -109,6 +109,14 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     exit 2
 fi
 
+# Gruppe 27 (1.2.39, V3; Bauform Ferien 1.2.28): die Befehlsbruecke vor dem Austausch der Dateien anhalten. Die
+# Marke liegt schon - der Waechter im Minutenlauf (bin/cron.php) laeuft waehrend der Marke nicht und startet sie bis
+# postupgrade.sh nicht neu. Bis 1.2.38 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
+
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/spotpreis_upgrade"
 else

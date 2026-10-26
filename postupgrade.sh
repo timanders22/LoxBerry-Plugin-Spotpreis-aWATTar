@@ -100,8 +100,26 @@ fi
 mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" \
          "$BASE/data/plugins/$PFOLDER" 2>/dev/null
 
+# W4 (Gruppe 27, 1.2.39): eine Konfiguration nie halb kopieren. Bis 1.2.38 stand hier "cp -p" direkt auf das
+# Ziel - brach die Kopie ab (volle Platte), lag eine abgeschnittene spot.json mit dem Token da. Jetzt in eine Datei
+# daneben (umask 077, also 0600 von Anfang an), Gegenprobe mit cmp, dann mv -f (unteilbar im selben Verzeichnis).
+# Die Rechte setzt weiter der Block am Ende (chmod 600). Rueckgabe 0 nur, wenn das Ziel die Quelle traegt.
+sp_kopie() {
+    sp_neu="$2.neu.$$"
+    rm -f "${sp_neu:?}" 2>/dev/null
+    if ! ( umask 077; cp "$1" "$sp_neu" ) 2>/dev/null || ! cmp -s "$1" "$sp_neu"; then
+        rm -f "${sp_neu:?}" 2>/dev/null
+        return 1
+    fi
+    if ! mv -f "$sp_neu" "$2" 2>/dev/null; then
+        rm -f "${sp_neu:?}" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
 if [ -f "$SICHERUNG/spot.json" ]; then
-    cp -p "$SICHERUNG/spot.json" "$BASE/config/plugins/$PFOLDER/spot.json" && \
+    sp_kopie "$SICHERUNG/spot.json" "$BASE/config/plugins/$PFOLDER/spot.json" && \
         echo "<OK> Konfiguration wiederhergestellt."
 else
     echo "<INFO> Keine gesicherte Konfiguration unter $SICHERUNG - vorhandene bleibt unveraendert."
@@ -156,7 +174,7 @@ sp_zurueckspielen() {
                 echo "<INFO> Die bisherige spot.json trug keine Einstellungen; sie liegt als $(basename "$sp_weg") daneben."
             fi
         fi
-        cp -p "$BK" "$CF" && echo "$1"
+        sp_kopie "$BK" "$CF" && echo "$1"
     elif [ "$sp_cf" = 1 ] && [ "$sp_bk" = 1 ]; then
         echo "<INFO> Die Zweitschrift $(basename "$BK") traegt keine Einstellungen - nicht zurueckgespielt."
     elif [ "$sp_cf" = 2 ] || [ "$sp_bk" = 2 ]; then
@@ -178,6 +196,44 @@ if [ -f "$BK" ]; then
     chmod 600 "$BK" 2>/dev/null
 fi
 
+# ---------- Gruppe 27 (1.2.39): endpunkt_ein=1 fuer bestehende Anlagen (E3; Entwurf 3.4, E-E10, N5) ----------
+# Bis 1.2.38 antwortete spot.php ohne Schalter. Eine bestehende Anlage behaelt den HTTP-Lesezweig: in spot.json und in
+# der Zweitschrift wird endpunkt_ein=1 nachgetragen, wenn die Datei eingerichtet ist (ein Schluessel ausser token und
+# den Merkern _...) und den Schluessel noch nicht kennt. Ueber eine Nebendatei (.neu, umask 077) mit Gegenprobe (gleich
+# bis auf den Schluessel), dann mv, 0600. Scheitert es, gilt die Lese-Regel in spot_config_normalisieren() (dieselbe
+# Bedingung -> 1) - kein Unterschied. Ein zweiter Lauf aendert nichts; eine "{}"-Datei bleibt, wie sie ist (Neuinstallation:
+# endpunkt_ein 0).
+sp_endpunkt_nachtragen() {
+    [ -s "$1" ] || return 0
+    command -v php >/dev/null 2>&1 || { echo "<WARNING> php fehlt - endpunkt_ein in $(basename "$1") nicht nachgetragen; es gilt die Lese-Regel."; return 0; }
+    php -d allow_url_fopen=0 -r 'umask(077); $f = $argv[1]; $roh = (string) @file_get_contents($f); $d = json_decode($roh, true);
+        if (!is_array($d) || array_key_exists("endpunkt_ein", $d)) { exit(3); }
+        $ein = false;
+        foreach (array_keys($d) as $k) { $k = (string) $k; if ($k !== "token" && !($k !== "" && $k[0] === "_")) { $ein = true; break; } }
+        if (!$ein) { exit(3); }
+        $d["endpunkt_ein"] = 1;
+        $js = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($js === false) { exit(1); }
+        $neu = $f . ".neu";
+        if (@file_put_contents($neu, $js) !== strlen($js)) { @unlink($neu); exit(1); }
+        $g = json_decode((string) @file_get_contents($neu), true);
+        if (!is_array($g) || !isset($g["endpunkt_ein"]) || $g["endpunkt_ein"] !== 1) { @unlink($neu); exit(1); }
+        unset($g["endpunkt_ein"]);
+        if ($g !== json_decode($roh, true)) { @unlink($neu); exit(1); }
+        if (!@rename($neu, $f)) { @unlink($neu); exit(1); }
+        exit(0);' -- "$1" 2>/dev/null
+    sp_e=$?
+    if [ "$sp_e" = 0 ]; then
+        chmod 600 "$1" 2>/dev/null
+        echo "<INFO> Konfiguration ergaenzt ($(basename "$1")): endpunkt_ein=1 (bestehende Anlage - der HTTP-Lesezweig fuer Loxone bleibt erreichbar; abschalten im Reiter Einbindung)."
+    elif [ "$sp_e" != 3 ]; then
+        echo "<WARNING> endpunkt_ein liess sich in $(basename "$1") nicht nachtragen - es gilt die Lese-Regel (der Lesezweig bleibt erreichbar)."
+    fi
+    return 0
+}
+sp_endpunkt_nachtragen "$CF"
+sp_endpunkt_nachtragen "$BK"
+
 # Hier stand "rm -f $MERKER". Mit dem Merker ist auch das entfallen - die
 # Variable gab es danach nicht mehr, und "rm -f ''" ist kein Aufraeumen,
 # sondern eine Zeile, die aussieht wie eines.
@@ -187,5 +243,23 @@ case "$SICHERUNG" in
     /*) : ;;
     *)  rm -rf "$SICHERUNG" ;;
 esac
+
+# Gruppe 27 (1.2.39): erst die Marke weg (die Bruecke startet nicht, solange eine frische Marke liegt; der trap am
+# Ende findet sie dann nicht mehr), dann die Befehlsbruecke starten.
+case "$MARKE" in
+    */data/plugins/?*.upgrade_laeuft) rm -f "${MARKE:?}" 2>/dev/null ;;
+esac
+# Gruppe 27 (1.2.39, V3): die Befehlsbruecke starten - befehlsbruecke.sh startet nur mit dem Haken "Befehle ueber
+# MQTT annehmen" (ab Werk aus) und MQTT, und nicht, solange eine frische Upgrade-Marke liegt. Der Waechter im
+# Minutenlauf holt einen ausgelassenen Start binnen einer Minute nach.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
 
 exit 0

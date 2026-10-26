@@ -1,0 +1,59 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Spotpreis aWATTar - Anschluss an den LoxBerry-Healthcheck (Gruppe 27, 1.2.39, V4; Entwurf 3.5, E-E11;
+ * Bauart Marstek Venus E bin/healthcheck)
+ *
+ * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei bin/healthcheck des Plugins auf - einmal mit
+ * 'title', einmal mit 'check' -, und zwar direkt und als Benutzer loxberry (Regeln/02, nie mit bash). Der Installer
+ * legt bin/ rekursiv mit 755 an.
+ *
+ * Antwort: JSON mit desc, status, result, logfile. Status nach der Skala von LoxBerry: 3 = Fehler (rot), 4 = Warnung
+ * (gelb), 5 = in Ordnung (gruen), 6 = Hinweis (blau).
+ *
+ * Kein Abruf bei aWATTar oder energy-charts, kein Broker, nichts angelegt: spot_nur_lesen() und
+ * spot_nur_zwischenspeicher() wie im Endpunkt; gelesen werden nur die Dateien, die der Minutenlauf (ebenfalls als
+ * loxberry) schreibt. Die Stufen rechnet spot_gesundheit() aus spot_selbsttest(false) und diesen Dateien.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$spot_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+
+if ($spot_was === 'title') {
+    echo "Spotpreis aWATTar\n";
+    exit(0);
+}
+
+// Installiert liegen bin/ und webfrontend/html/ in getrennten Baeumen
+// (<home>/bin/plugins/<ordner>/ und <home>/webfrontend/html/plugins/<ordner>/),
+// im ausgepackten Archiv nebeneinander - welcher Fall vorliegt, sagt der
+// Ablageort selbst (wie bin/cron.php).
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $spot_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/spot_lib.php';
+} else {
+    $spot_lib = dirname(__DIR__) . '/webfrontend/html/spot_lib.php';
+}
+if (!is_file($spot_lib)) {
+    // Fail closed, und mit Begruendung.
+    echo json_encode(array(
+        'desc'   => 'Spotpreis aWATTar',
+        'status' => 3,
+        'result' => 'Die Bibliothek spot_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.',
+    )) . "\n";
+    exit(0);
+}
+require_once $spot_lib;
+spot_nur_lesen(true);
+spot_nur_zwischenspeicher(true);
+
+list($spot_status, $spot_text) = spot_gesundheit();
+
+echo json_encode(array(
+    'desc'    => 'Spotpreis aWATTar',
+    'status'  => (int) $spot_status,
+    'result'  => (string) $spot_text,
+    'logfile' => spot_paths()['log'],
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);
