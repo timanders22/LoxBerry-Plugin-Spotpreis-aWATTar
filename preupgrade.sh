@@ -195,7 +195,9 @@ chmod 0700 "$LANG_SICHER" 2>/dev/null
 # Oberflaeche schreibt) gehoert dazu: ohne sie raeumten Abraeumen und
 # Deinstallation nach einem Update nur noch das aktuelle Praefix ab
 # (Bauliste M1).
-for LANG_F in history.csv laufzaehler mqtt_praefixe.json; do
+# Seit dem Nachzug Anbieterregel (1.2.40) auch haus_anbieter.json: ohne sie begaenne die Rolle nach dem Update
+# neu (ein abgeloester Anbieter haette seinen Grund "abgeloest" vergessen).
+for LANG_F in history.csv laufzaehler mqtt_praefixe.json haus_anbieter.json; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
 done

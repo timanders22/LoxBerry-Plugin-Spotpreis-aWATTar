@@ -235,7 +235,8 @@ if [ "$SP_MARKE" = "1" ] && [ -d "$LANG_SICHER" ]; then
     # Dieselbe Menge wie in preupgrade.sh: Historie, Laufzaehler, die Liste
     # der MQTT-Praefixe und die Merker.
     MERKER=$(cd "$LANG_SICHER" 2>/dev/null && ls marke_* 2>/dev/null)
-    for LANG_F in history.csv laufzaehler mqtt_praefixe.json $MERKER; do
+    # Seit dem Nachzug Anbieterregel (1.2.40) auch haus_anbieter.json (Zustand der Anbieterregel).
+    for LANG_F in history.csv laufzaehler mqtt_praefixe.json haus_anbieter.json $MERKER; do
         [ -f "$LANG_SICHER/$LANG_F" ] || continue
         if [ -s "$LANG_ZIEL/$LANG_F" ]; then
             if [ "$LANG_F" = "history.csv" ]; then

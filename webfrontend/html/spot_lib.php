@@ -22,12 +22,17 @@ date_default_timezone_set('Europe/Berlin');
  * Rechenwerk auch im Octopus-Plugin steckt - byteweise gleich. Naeheres im
  * Kopf von planer.php. */
 require_once __DIR__ . '/planer.php';
-/* Die gemeinsame Sprachausgabe (seit 1.2.33, Nr. 36 b). Eigene Datei daneben,
+/* Die gemeinsame Sprachausgabe (seit 1.2.33, Nr. 36 b; seit 1.2.40 Stamm 1.2.1 mit weiteren Ausgabezielen,
+ * spot_mit_zielen(), Welle Mehrfach-Ziele). Eigene Datei daneben,
  * byteweise gleich mit der Stammfassung Werkzeuge/gemeinsam/sprachausgabe.php
  * im Arbeitsordner und mit den Abschriften der anderen Linien; Naeheres im
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
  * anzulegen und antwortet bei direktem Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* Nachzug Anbieterregel (1.2.40, 29.10.2026): das gemeinsame Stueck der Anbieterregel fuer haus/strompreis
+ * (Regeln/07 Nr. 15), byteweise gleich mit der Stammfassung aus Spotpreis Tibber 0.9.33 - nur reine Funktionen
+ * hanb_*(), kein Netz, keine Datei; antwortet bei direktem Aufruf mit 403. */
+require_once __DIR__ . '/haus_anbieter.php';
 
 /** Anzahl der Schaltregeln. Vier decken Wallbox, Speicher, Warmwasser und
  *  Waermepumpe ab - mehr macht die Oberflaeche unuebersichtlich. */
@@ -4549,9 +4554,44 @@ function spot_bausteinseiten() {
  */
 
 /** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 1.2.33 nicht angeboten). 'aus' ist
- *  neu waehlbar; ab Werk bleibt es musicserver (spot_tts()). */
+ *  neu waehlbar; ab Werk bleibt es musicserver (spot_tts()). Weitere Ausgabeziele (Tabelle, 'ziele') seit 1.2.40
+ *  mit Stamm 1.2.1 - spot_mit_zielen() unten; ohne Tabelle wie bisher. */
 function spot_ansage_modi() {
     return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function spot_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Schluessel des Ansageblocks, die diese Linie prueft und aus einer
+ *  Sicherung annimmt - die des Moduls und, wenn die geladene Abschrift sie kann, die Liste der weiteren Ziele. */
+function spot_ansage_schluessel() {
+    $s = array_keys(ansage_vorgaben());
+    if (spot_mit_zielen()) { $s[] = 'ziele'; }
+    return $s;
+}
+
+/** Welle Mehrfach-Ziele (1.2.40), X-2: aus den gesammelten Eingaben (spot_eingaben_sammeln(), Schluessel name[N])
+ *  wieder das POST der Tabelle (ziele_post); null, wenn die Tabelle nicht darin steht (die gespeicherten Ziele bleiben
+ *  sichtbar). */
+function spot_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (1.2.40, E6): der eigene Testweg der Linie - die Preisansage (bzw. "Preise fuer morgen") wie
+ *  hinter dem Knopf "Testansage", ueber spot_say_ergebnis() an alle Ziele. Rueckgabe: das Ergebnis des Moduls. */
+function spot_testansage_eigen($morgen = false) {
+    $st = spot_state();
+    $text = $morgen ? spot_tomorrow_text($st) : spot_announce_text($st);
+    return spot_say_ergebnis($text !== '' ? $text : spot_t('SPOT_ANSAGE.TEST_LEER'));
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen: die erlaubten Arten und die POST-Namen der
@@ -5156,9 +5196,11 @@ function spot_wert_mangel($k, $w) {
             }
             /* Seit 1.2.34 prueft die gemeinsame Sprachausgabe jeden Wert des Blocks tts - dieselbe Pruefung
              * wie das Formular (Heimnetz fuer Adresse und Vorlage, Entscheidung Nr. 40). Ein Eintrag, den das
-             * Modul nicht kennt, bleibt FREMD; genannt werden Name und Grund, nie der Wert. */
+             * Modul nicht kennt, bleibt FREMD; genannt werden Name und Grund, nie der Wert. Seit 1.2.40 (Welle
+             * Mehrfach-Ziele) gehoert die Liste 'ziele' dazu (spot_ansage_schluessel()) - bis dahin wies diese
+             * Stelle die eigene Sicherung mit weiteren Zielen als FREMD ab. */
             if ($k === 'tts') {
-                if (!array_key_exists($uk, ansage_vorgaben())) { $aus[] = array('tts.' . $uk, array('FREMD')); continue; }
+                if (!in_array($uk, spot_ansage_schluessel(), true)) { $aus[] = array('tts.' . $uk, array('FREMD')); continue; }
                 $sp_g = '';
                 if (ansage_wert_pruefen(array($uk => $uw), $sp_g, spot_ansage_modi()) === null) {
                     $aus[] = array('tts.' . $uk, array('ANSAGE', $sp_g));
@@ -5364,8 +5406,19 @@ function spot_sicherung_lesen($roh)
     if (!$sp_tok_aus_datei) {
         $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl,
-                 $sp_spaet ? array(sprintf(spot_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $sp_spaet))) : array());
+    $sp_zspaet = array();
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $sp_spaete = array();
+    if (isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($neu['tts'], $sp_spaete) = ansage_sicherung_spaet($neu['tts'],
+            (isset($sp_jetzt['tts']) && is_array($sp_jetzt['tts'])) ? $sp_jetzt['tts'] : null);
+    }
+    foreach ($sp_spaete as $sp_sn) { $sp_zspaet[] = $sp_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+    return array($mangel ? null : $neu, $mangel, $anzahl, array_merge(
+                 $sp_spaet ? array(sprintf(spot_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $sp_spaet))) : array(),
+                 $sp_zspaet ? array(sprintf(spot_t('TEXT.SICH_SPAET'), implode(', ', $sp_zspaet))) : array()));
 }
 
 /**
@@ -6304,7 +6357,9 @@ function spot_haus_zahl($v)
  * morgen, Schluessel echter Zeitstempel, spot_state()) - nicht profil_relativ und nicht cur (beide tragen an einer
  * Luecke einen Ersatzwert). vorschau ab der laufenden Stunde lueckenlos bis zur ersten fehlenden Stunde, hoechstens 36
  * Werte; ab = Beginn der laufenden Stunde; aktuell = erster Vorschauwert. Ohne Preise fuer heute (ok = 0) oder ohne
- * Preis der laufenden Stunde: vorschau/aktuell/anbieter "-", ab/raster -1 (ein Preis kann -1 sein, deshalb "-"). Der
+ * Preis der laufenden Stunde: vorschau/aktuell "-", ab/raster -1 (ein Preis kann -1 sein, deshalb "-"). anbieter
+ * traegt seit dem Nachzug Anbieterregel (1.2.40) IMMER den eigenen Namen SPOT_HAUS_NAME - der Anspruch muss auch
+ * ohne Preise lesbar bleiben (hanb_lage() der anderen Anbieter). Der
  * Zaehler laeuft immer weiter: er sagt "der Anbieter lebt", nicht "er hat Preise".
  */
 function spot_haus_werte($st, $zaehler)
@@ -6321,7 +6376,7 @@ function spot_haus_werte($st, $zaehler)
         'haus/strompreis/ab'       => $leer ? '-1' : (string) $hstart,
         'haus/strompreis/raster'   => $leer ? '-1' : '3600',
         'haus/strompreis/aktuell'  => $leer ? '-' : $w[0],
-        'haus/strompreis/anbieter' => $leer ? '-' : 'awattar',
+        'haus/strompreis/anbieter' => SPOT_HAUS_NAME,
         'haus/strompreis/zaehler'  => (string) ((((int) $zaehler) % 1000 + 1000) % 1000),
     );
 }
@@ -6567,9 +6622,19 @@ function spot_haus_lauf($st, $cfg)
 {
     $p = spot_paths();
     $mf = spot_haus_merker_datei();
+    $jetzt = time();
+    $z_alt = spot_haus_zustand();
     if (empty($cfg['haus_strompreis_ein']) || empty($cfg['mqtt_enabled']) || $p['lbhome'] === '') {
         if (is_file($mf)) { @unlink($mf); }
-        if (!empty($cfg['_haus_frueher']) && $p['lbhome'] !== '') {
+        /* Nachzug Anbieterregel (1.2.40): abgeraeumt wird nur, wenn diese Installation Anbieter war und nicht
+         * abgeloest wurde (hanb_darf_abraeumen()) - bis hierher raeumte der Lauf mit _haus_frueher auch dann ab, wenn
+         * inzwischen ein anderer Anbieter sendete. */
+        $darf = hanb_darf_abraeumen(array('rolle' => 'aus', 'grund' => $z_alt['grund']), !empty($cfg['_haus_frueher']));
+        if ($z_alt['rolle'] !== 'aus' && $p['lbhome'] !== '') {
+            spot_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => $z_alt['grund'] === 'abgeloest' ? 'abgeloest' : '',
+                                           'fremd' => '', 'seit' => $jetzt));
+        }
+        if ($darf && $p['lbhome'] !== '') {
             $vf = spot_tmpdir() . '/haus_leeren_versuch';
             clearstatcache(true, $vf);
             $alt = is_file($vf) ? (int) filemtime($vf) : 0;
@@ -6581,6 +6646,20 @@ function spot_haus_lauf($st, $cfg)
                 if (in_array($e['lage'], array('geleert', 'nichts'), true)) { spot_haus_frueher_setzen(false); }
             }
         }
+        return null;
+    }
+    /* Nachzug Anbieterregel (1.2.40): die Regel (hanb_lage()) entscheidet nach dem Stand des Lesers (Quelle
+     * 'strompreis'), ob diese Installation sendet. Wartet sie, geht NICHTS hinaus (auch kein Zaehler); wurde sie
+     * abgeloest, faellt der Merker "war Anbieter" - die Themen gehoeren dem neuen, beim Ausschalten bleibt alles. */
+    $c = spot_haus_quellen();
+    $z = hanb_lage(SPOT_HAUS_NAME, (isset($c['strompreis']) && is_array($c['strompreis'])) ? $c['strompreis'] : array(),
+                   $z_alt, $jetzt);
+    spot_haus_zustand_setzen($z);
+    if ($z['rolle'] !== 'anbieter') {
+        if (is_file($mf)) { @unlink($mf); }
+        if ($z['grund'] === 'abgeloest' && !empty($cfg['_haus_frueher'])) { spot_haus_frueher_setzen(false); }
+        spot_write_json_atomic(spot_haus_sitzung_datei(), array('zeit' => $jetzt, 'lage' => 'wartet', 'gesendet' => 0,
+            'voll' => 0, 'n' => 0, 'ab' => -1));
         return null;
     }
     $werte = spot_haus_werte($st, spot_lauf_stand());
@@ -6655,11 +6734,20 @@ function spot_haus_leeren($runden = 3)
  */
 function spot_haus_folgen($alt, $neu)
 {
-    $war = !empty($alt['haus_strompreis_ein']) && !empty($alt['mqtt_enabled']);
     $frueher = !empty($alt['_haus_frueher']);
     $ist = !empty($neu['haus_strompreis_ein']) && !empty($neu['mqtt_enabled']);
     @unlink(spot_haus_merker_datei());
-    if ($ist || (!$war && !$frueher)) { return array('', 'ok'); }
+    if ($ist) { return array('', 'ok'); }
+    /* Nachzug Anbieterregel (1.2.40): nur abraeumen, wenn diese Installation Anbieter ist oder war und nicht
+     * abgeloest wurde (hanb_darf_abraeumen()); wartete sie nur oder wurde sie abgeloest, bleibt alles stehen - die
+     * Themen gehoeren einem anderen. Bis hierher genuegte "Haken und MQTT waren an". */
+    $z = spot_haus_zustand();
+    if (!hanb_darf_abraeumen($z, $frueher)) {
+        spot_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+        if ($frueher && $z['grund'] === 'abgeloest') { spot_haus_frueher_setzen(false); }
+        return array($z['rolle'] === 'wartet' ? spot_t('HAUS.M_WARTETE') : '', 'ok');
+    }
+    spot_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
     $e = spot_haus_leeren();
     spot_log('Haus-Themen haus/strompreis: Abraeumen ' . $e['lage']
         . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
@@ -6678,8 +6766,8 @@ function spot_haus_folgen($alt, $neu)
 function spot_haus_leeren_ausgabe()
 {
     $cfg = spot_config();
-    if (empty($cfg['haus_strompreis_ein']) && empty($cfg['_haus_frueher'])) {
-        echo "<INFO> haus/strompreis: diese Installation war nie Anbieter - nichts zu leeren.\n";
+    if (!hanb_darf_abraeumen(spot_haus_zustand(), !empty($cfg['_haus_frueher']))) {
+        echo "<INFO> haus/strompreis: diese Installation ist nicht Anbieter (oder wurde abgeloest) - nichts zu leeren.\n";
         return 0;
     }
     $e = spot_haus_leeren();
@@ -6703,15 +6791,111 @@ function spot_haus_testzeile($cfg)
 {
     if (empty($cfg['haus_strompreis_ein'])) { return array(2, spot_t('HAUS.T_AUS')); }
     if (empty($cfg['mqtt_enabled'])) { return array(2, spot_t('HAUS.T_MQTT_AUS')); }
+    /* Nachzug Anbieterregel (1.2.40): erst die Rolle (HAUS.A_<GRUND>); wartet die Installation bewusst, ist das ein
+     * Strich, kein Kreuz - nur "fremd_schweigt" und "veraltet" sind rot (dort muss jemand hinsehen). */
+    $z = spot_haus_zustand();
+    $fremd = $z['fremd'] !== '' ? $z['fremd'] : '-';
+    if ($z['rolle'] !== 'anbieter') {
+        $g = $z['grund'] !== '' ? $z['grund'] : 'pruefe';
+        return array(in_array($g, array('fremd_schweigt', 'veraltet'), true) ? 0 : 2,
+                     sprintf(spot_t('HAUS.A_' . strtoupper($g)), $fremd));
+    }
+    $vor = sprintf(spot_t('HAUS.A_' . strtoupper($z['grund'] !== '' ? $z['grund'] : 'frei')), $fremd) . ' ';
     $sz = json_decode((string) @file_get_contents(spot_haus_sitzung_datei()), true);
-    if (!is_array($sz) || !isset($sz['lage'], $sz['zeit'])) { return array(2, spot_t('HAUS.T_NIE')); }
+    if (!is_array($sz) || !isset($sz['lage'], $sz['zeit']) || $sz['lage'] === 'wartet') {
+        return array(2, $vor . spot_t('HAUS.T_NIE'));
+    }
     $alter = max(0, time() - (int) $sz['zeit']);
-    if ((string) $sz['lage'] !== 'ok') { return array(0, sprintf(spot_t('HAUS.T_BROKER'), (string) $sz['lage'], $alter)); }
+    if ((string) $sz['lage'] !== 'ok') {
+        return array(0, $vor . sprintf(spot_t('HAUS.T_BROKER'), (string) $sz['lage'], $alter));
+    }
     $n = isset($sz['n']) ? (int) $sz['n'] : 0;
     $ab = isset($sz['ab']) ? (int) $sz['ab'] : -1;
-    return array($alter <= 150 ? 1 : 0, $n > 0
+    return array(($alter <= 150 && hanb_ampel($z) === 1) ? 1 : 0, $vor . ($n > 0
         ? sprintf(spot_t('HAUS.T_OK'), $alter, $n, date('H:i', $ab))
-        : sprintf(spot_t('HAUS.T_OHNE_PREISE'), $alter));
+        : sprintf(spot_t('HAUS.T_OHNE_PREISE'), $alter)));
+}
+
+/* ---------- Nachzug Anbieterregel (1.2.40, 29.10.2026; Regeln/07 Nr. 15, Stueck haus_anbieter.php) ----------
+ * Muster: tb_haus_*() aus Spotpreis Tibber 0.9.33. Nur EIN Spotpreis-Plugin im Haus sendet haus/strompreis: diese
+ * Installation beginnt von selbst nur, wenn niemand Anspruch erhebt und kein Zaehler lebt; der Knopf "Diese
+ * Installation soll Anbieter sein" uebernimmt; abgeloest hoert sie selbst auf und raeumt nichts ab. */
+
+/** Der eigene Name in haus/strompreis/anbieter. */
+define('SPOT_HAUS_NAME', 'awattar');
+
+/** Der Zustand der Anbieterregel - im Datenordner, uebersteht ein Update (preupgrade.sh/postinstall.sh). */
+function spot_haus_zustand_datei()
+{
+    return spot_datadir() . '/haus_anbieter.json';
+}
+
+/**
+ * Der Zustand (hanb_zustand()). Ohne Datei und mit dem Merker "war Anbieter" (_haus_frueher) bei eingeschaltetem
+ * Haken und MQTT gilt der Bestand: eine Installation, die bis 1.2.39 schon Anbieter war, bleibt es (Rolle anbieter,
+ * Grund eigen) - sonst hielte sie ihren eigenen alten Wert (anbieter "-" ohne Preise) fuer einen fremden Anspruch
+ * und wartete fuer immer. Der erste Lauf schreibt die Datei; danach gilt nur sie.
+ */
+function spot_haus_zustand()
+{
+    $f = spot_haus_zustand_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($d)) {
+        $cfg = spot_config();
+        if (!empty($cfg['_haus_frueher']) && !empty($cfg['haus_strompreis_ein']) && !empty($cfg['mqtt_enabled'])) {
+            return hanb_zustand(array('rolle' => 'anbieter', 'grund' => 'eigen'));
+        }
+        $d = array();
+    }
+    return hanb_zustand($d);
+}
+
+/** Den Zustand ablegen; ein Wechsel von Rolle, Grund oder fremdem Namen geht einmal ins Protokoll. */
+function spot_haus_zustand_setzen(array $z)
+{
+    $alt = spot_haus_zustand();
+    $z = hanb_zustand($z);
+    if ($alt['rolle'] !== $z['rolle'] || $alt['grund'] !== $z['grund'] || $alt['fremd'] !== $z['fremd']) {
+        spot_log('Haus-Themen haus/strompreis: Rolle ' . $z['rolle'] . ($z['grund'] !== '' ? ' (' . $z['grund'] . ')' : '')
+                 . ($z['fremd'] !== '' ? ', Anbieter ' . preg_replace('/[^a-z0-9_.-]/i', '?', $z['fremd']) : '') . '.');
+    }
+    return spot_write_json_atomic(spot_haus_zustand_datei(), $z);
+}
+
+/**
+ * Der Knopf "Diese Installation soll Anbieter sein": schreibt EINMAL haus/strompreis/anbieter = awattar (retained)
+ * und setzt die Rolle anbieter/gewaehlt; der naechste Minutenlauf sendet den vollen Satz. Der bisherige Anbieter
+ * hoert mit seinem naechsten Lauf selbst auf - sofern er die Regel kennt (aWATTar bis 1.2.39 kennt sie nicht: dort
+ * den Haken ausschalten). Rueckgabe array(Meldung, ok|warn). Abschrift tb_haus_waehlen().
+ */
+function spot_haus_waehlen($cfg)
+{
+    if (empty($cfg['haus_strompreis_ein']) || empty($cfg['mqtt_enabled'])) {
+        return array(spot_t('HAUS.W_ERST_HAKEN'), 'warn');
+    }
+    $c = spot_haus_quellen();
+    list($z, $hinweis) = hanb_waehlen(SPOT_HAUS_NAME,
+        (isset($c['strompreis']) && is_array($c['strompreis'])) ? $c['strompreis'] : array(), time());
+    $r = spot_haus_sitzung(array('haus/strompreis/anbieter' => array(SPOT_HAUS_NAME, true)), array(), array(), 0);
+    if ($r['lage'] !== 'ok' || $r['gesendet'] < 1) {
+        return array(sprintf(spot_t('HAUS.W_BROKER'), $r['lage']), 'warn');
+    }
+    spot_haus_zustand_setzen($z);
+    @unlink(spot_haus_merker_datei());
+    $m = sprintf(spot_t('HAUS.W_OK'), $z['fremd'] !== '' ? $z['fremd'] : '-');
+    if ($hinweis === 'fremd_lebt') { return array($m . ' ' . sprintf(spot_t('HAUS.W_FREMD_LEBT'), $z['fremd']), 'warn'); }
+    if ($hinweis === 'bestand') { return array($m . ' ' . spot_t('HAUS.W_BESTAND'), 'warn'); }
+    return array($m, 'ok');
+}
+
+/** Welche Quellen liest der abgekoppelte Leser? 'speicher' (haus_speicher_ein) und - seit dem Nachzug - 'strompreis'
+ *  fuer die Anbieterregel (haus_strompreis_ein und MQTT). */
+function spot_haus_lesequellen($cfg)
+{
+    $q = array();
+    if (!empty($cfg['haus_speicher_ein'])) { $q['speicher'] = true; }
+    if (!empty($cfg['haus_strompreis_ein']) && !empty($cfg['mqtt_enabled'])) { $q['strompreis'] = true; }
+    return $q;
 }
 
 /* ---------- V1: Abnehmer haus/speicher (Entwurf 2.7; E-E4/E-E5) ----------
@@ -6789,17 +6973,40 @@ function spot_haus_wartethemen(array $c, $jetzt)
 function spot_haus_abnehmer(array $cfg, $fenster)
 {
     $datei = spot_haus_quellen_datei();
-    if (empty($cfg['haus_speicher_ein'])) {
+    $q = spot_haus_lesequellen($cfg);
+    if (!$q) {
         if (is_file($datei)) { @unlink($datei); }
         return null;
     }
+    /* Nachzug Anbieterregel (1.2.40): in DERSELBEN Sitzung auch haus/strompreis/anbieter und /zaehler (Quelle
+     * 'strompreis', hanb_merken()/hanb_warten()) - nur mit dem Haken "Strompreis an andere Plugins geben" und MQTT. */
     $c = spot_haus_quellen();
-    $erg = spot_haus_sitzung(array(), array('haus/speicher/soc', 'haus/speicher/zaehler'),
-                             spot_haus_wartethemen($c, time()), (float) $fenster);
-    $c = spot_haus_merken($c, $erg, time());
-    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
-    spot_log_if_changed('haus_abnehmer', $erg['lage'] === 'ok' ? 'Haus-Thema haus/speicher lesen: Sitzung am Broker ok'
-        : 'Haus-Thema haus/speicher lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
+    $lesen = array();
+    $warten = array();
+    if (isset($q['speicher'])) {
+        $lesen = array('haus/speicher/soc', 'haus/speicher/zaehler');
+        $warten = spot_haus_wartethemen($c, time());
+    }
+    if (isset($q['strompreis'])) {
+        $lesen[] = 'haus/strompreis/anbieter';
+        $lesen[] = 'haus/strompreis/zaehler';
+        if (hanb_warten((isset($c['strompreis']) && is_array($c['strompreis'])) ? $c['strompreis'] : array(), time())) {
+            $warten[] = 'haus/strompreis/zaehler';
+        }
+    }
+    $erg = spot_haus_sitzung(array(), $lesen, $warten, (float) $fenster);
+    $jetzt = time();
+    if (isset($q['speicher'])) { $c = spot_haus_merken($c, $erg, $jetzt); } else { unset($c['speicher']); }
+    if (isset($q['strompreis'])) {
+        $c['strompreis'] = hanb_merken((isset($c['strompreis']) && is_array($c['strompreis'])) ? $c['strompreis'] : array(),
+            $erg, 'haus/strompreis/zaehler', array('anbieter' => 'haus/strompreis/anbieter'), $jetzt,
+            in_array('haus/strompreis/zaehler', $warten, true));
+    } else {
+        unset($c['strompreis']);
+    }
+    $c['sitzung'] = array('zeit' => $jetzt, 'lage' => $erg['lage']);
+    spot_log_if_changed('haus_abnehmer', $erg['lage'] === 'ok' ? 'Haus-Themen lesen: Sitzung am Broker ok'
+        : 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
     spot_write_json_atomic($datei, $c);
     return $erg;
 }
@@ -6819,7 +7026,7 @@ function spot_haus_leser_sperre()
  */
 function spot_haus_abnehmer_starten(array $cfg, $skript)
 {
-    if (empty($cfg['haus_speicher_ein'])) {
+    if (!spot_haus_lesequellen($cfg)) {
         $datei = spot_haus_quellen_datei();
         if (is_file($datei)) { @unlink($datei); }
         return 'aus';

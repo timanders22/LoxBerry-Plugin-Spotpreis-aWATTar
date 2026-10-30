@@ -321,6 +321,29 @@ if ($sp_ist_post && isset($_POST['testansage'])) {
     }
     $sp_tab = 'tab-test';
 }
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($sp_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $sp_tk = spot_ansage_k();
+    $sp_tnur = (isset($_POST['ansage_test_ziel']) && spot_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $sp_tnur === 0) {
+        $sp_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($sp_tnur >= 1) {
+        $sp_tr = ansage_testansage(spot_tts(), $sp_tk, $sp_tnur);
+    } else {
+        $sp_tr = spot_testansage_eigen(false);
+    }
+    spot_log('Testansage' . ($sp_tnur >= 1 ? ' an Ziel ' . $sp_tnur : '') . ': ' . ansage_kurz($sp_tr));
+    if ($sp_tr['stand'] === 1) {
+        $sp_note = sprintf(spot_t('TEXT.TESTANSAGE_OK'), sprintf(spot_t('TEXT.TESTANSAGE_WAS'),
+            (int) $sp_tr['zeichen'], (int) $sp_tr['http']) . ($sp_tr['zeile'] !== '' ? ' ' . $sp_tr['zeile'] : ''));
+    } elseif ($sp_tr['stand'] === -1) {
+        $sp_note = sprintf(spot_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($sp_tr['kennung'], $sp_tk));
+    } else {
+        $sp_fehler[] = sprintf(spot_t('TEXT.TESTANSAGE_FEHL'), ansage_kennung_text($sp_tr['kennung'], $sp_tk));
+    }
+    $sp_tab = 'tab-test';
+}
 
 // ---------- Speichern ----------
 if ($sp_ist_post && isset($_POST['token_neu'])) {
@@ -337,6 +360,17 @@ if ($sp_ist_post && isset($_POST['token_weg'])) {
     if (spot_config_save($sp_c)) { $sp_note = spot_t('TEXT.TOKEN_WEG'); }
     else { $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), 'spot.json'); }
     $sp_tab = 'tab-loxone';
+}
+
+// ---------- Nachzug Anbieterregel (1.2.40): Knopf "Diese Installation soll Anbieter sein" ----------
+/* Eigenes Formular, eigener Handler (Abschrift Spotpreis Tibber 0.9.33): schreibt einmal haus/strompreis/anbieter =
+ * awattar; der bisherige Anbieter hoert selbst auf, wenn er die Regel kennt - sonst sagt die Meldung, wo der Haken
+ * auszuschalten ist. */
+if ($sp_ist_post && isset($_POST['haus_anbieter_waehlen'])) {
+    list($sp_wm, $sp_wa) = spot_haus_waehlen(spot_config());
+    if ($sp_wa === 'ok') { $sp_note = $sp_wm; } else { $sp_fehler[] = $sp_wm; }
+    spot_log('Knopf "Diese Installation soll Anbieter sein": ' . $sp_wa . '.');
+    $sp_tab = 'tab-mqtt';
 }
 
 // ---------- MQTT speichern (eigener Reiter seit 1.2.5, Hausstandard) ----------
@@ -669,8 +703,10 @@ if ($sp_ist_post && isset($_POST['save'])) {
     }
     $sp_tmangel = array();
     $sp_tbean = array();
+    $sp_thw = array();         // Welle Mehrfach-Ziele (1.2.40): die Linie hat keine Hinweisliste - die Hinweise gehen an $sp_note
+    $sp_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $sp_new['tts'] = ansage_formular_lesen($sp_tpost, spot_tts($sp_alt), $sp_tmangel, $sp_tbean,
-                                           spot_ansage_opt(), spot_ansage_k());
+        spot_ansage_opt() + array('ziele' => spot_mit_zielen()), spot_ansage_k(), $sp_thinw);
     foreach ($sp_tmangel as $sp_tm) { $sp_fehler[] = $sp_tm['text']; }
     foreach ($sp_tbean as $sp_tb) { $sp_feldfehler[] = $sp_tb; }
     $sp_tok_getippt = false;
@@ -710,6 +746,8 @@ if ($sp_ist_post && isset($_POST['save'])) {
         if ($sp_p6_hinweis !== '') {
             $sp_note = $sp_p6_hinweis;
         }
+        foreach ($sp_thinw as $sp_th) { $sp_thw[] = $sp_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+        if ($sp_thw) { $sp_note = trim($sp_note . ' ' . implode(' ', $sp_thw)); }
     } else {
         $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), $sp_cfgfile);
     }
@@ -1197,9 +1235,16 @@ $sp_k_morgen = !empty($sp_st) && !empty($sp_st['tomorrow_ok']);
                          : spot_t('ALLGEMEIN.KOPF_MORGEN_NOCH') ?></td></tr>
 <tr><td><?php echo spot_t('TEXT.PREISZONE_API'); ?></td>
     <td><?= $sp_cfg['market'] === 'at' ? spot_t('TEXT.OUML_STERREICH_API_AWATTAR_AT') : spot_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE') ?></td></tr>
+<?php /* Nachtwelle N1 (1.2.40): Zeile MQTT in der Hausform der Kopfkachel (Regeln/04 :798, Vorbild MGiSmart
+   1.1.28) - gross der Schalter DIESES Plugins, klein der Autostart des Gateways aus spot_mqtt_gateway_info()
+   (null = general.json ohne Mqtt-Abschnitt: nicht feststellbar, nicht "aus"). */
+$sp_k_gw = function_exists('spot_mqtt_gateway_info') ? spot_mqtt_gateway_info() : null; ?>
 <tr><td><?php echo spot_t('ALLGEMEIN.KOPF_MQTT'); ?></td>
     <td><?= !empty($sp_cfg['mqtt_enabled']) ? '<span class="sm-an">' . spot_t('ALLGEMEIN.KOPF_AN') . '</span>'
-                                             : spot_t('ALLGEMEIN.KOPF_AUS') ?></td></tr>
+                                             : '<span class="sm-aus">' . spot_t('ALLGEMEIN.KOPF_AUS') . '</span>' ?>
+    <div class="sm-hilfe" style="font-weight:400;"><?= sp_e(sprintf(spot_t('ALLGEMEIN.KACHEL_MQTT_HILFE'),
+        $sp_k_gw === null ? spot_t('ALLGEMEIN.KOPF_NICHT_FESTSTELLBAR')
+        : spot_t(!empty($sp_k_gw['autostart']) ? 'ALLGEMEIN.KOPF_AN' : 'ALLGEMEIN.KOPF_AUS'))) ?></div></td></tr>
 </table>
 
 <?php
@@ -1837,7 +1882,10 @@ $sp_th['m'] = function ($n) use ($sp_tnie, $sp_feldfehler) {
     return (in_array($n, $sp_tnie, true) && in_array($n, $sp_feldfehler, true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 };
 ?>
-<?= ansage_formular_html(spot_tts($sp_cfg), $sp_th, spot_ansage_k()) ?>
+<?php echo ansage_formular_html(spot_tts($sp_cfg), $sp_th + array(
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+'ziele' => spot_mit_zielen(),
+'ziele_post' => (is_array($sp_eingaben) && isset($sp_eingaben['formular']) && $sp_eingaben['formular'] === 'save') ? spot_ziele_x2_post($sp_eingaben['werte']) : null), spot_ansage_k()); ?>
 <p class="sm-hilfe"><?php echo sprintf(spot_t('TEXT.ANSAGE_TEST_HINWEIS'), '<b>' . sp_e(spot_t('REITER.TEST')) . '</b>'); ?></p>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
@@ -1974,6 +2022,19 @@ if ($sp_abo !== null) { ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
 </form>
 <?php echo spot_eingaben_einsetzen(ob_get_clean(), 'mqtt_save', $sp_eingaben); ?>
+<?php if (!empty($sp_cfg['haus_strompreis_ein'])) {
+    /* Nachzug Anbieterregel (1.2.40): die Lage der Regel und der Knopf - eigenes Formular, eigener Handler. */
+    list($sp_hz_st, $sp_hz_txt) = spot_haus_testzeile($sp_cfg); ?>
+<h3 class="sm-h3"><?php echo sp_e(spot_t('HAUS.H_ANBIETER')); ?></h3>
+<div class="<?= $sp_hz_st === 1 ? 'sm-hinweis' : 'sm-warnung' ?>"><?= sp_e($sp_hz_txt) ?></div>
+<form action="index.php" method="post" style="margin:8px 0 14px 0;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+  <?php echo spot_fmt(); ?>
+  <input data-role="none" type="hidden" name="haus_anbieter_waehlen" value="1">
+  <div class="sm-small"><?php echo spot_t('HAUS.H_WAEHLEN'); ?></div>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo sp_e(spot_t('HAUS.K_WAEHLEN')); ?></button>
+</form>
+<?php } ?>
 <?php /* O9 (Pruefbericht mqtt, B6): die Themenliste aus spot_mqtt_themenliste() -
          also aus derselben Quelle wie der Versand -, mit Spalte "retained"
          (Entscheidung Nr. 3) und der Bedeutung je Thema. Die Zeile
@@ -2581,6 +2642,9 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
     <?php echo spot_fmt(); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="1"><?php echo spot_t('TEXT.K_TESTANSAGE'); ?></button>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="morgen"><?php echo spot_t('TEXT.TEST_ANSAGE_PREISE_MORGEN'); ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (spot_mit_zielen()) { echo ansage_testknoepfe_html(spot_tts($sp_cfg), spot_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
 </div>
 <div class="sm-small"><?php echo spot_t('TEXT.H_TESTANSAGE'); ?></div>

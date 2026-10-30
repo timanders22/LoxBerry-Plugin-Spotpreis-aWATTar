@@ -8,6 +8,37 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.40
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne Änderung an Preisen; die Ansagen können jetzt an mehrere Lautsprecher
+gleichzeitig gehen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung): Die Vorlage „Spotpreis aWATTar MQTT-Befehle“
+  (`VQ_spotpreis_mqtt.xml`) kommt jetzt mit Windows-Zeilenenden (CRLF) wie die Ausfuhren der Loxone Config. Titel,
+  Adresse und Befehle sind unverändert, ein Neuimport ist nicht nötig.
+* **Sprachausgabe 1.2.1** (gemeinsames Modul): Sichtbar neu sind der Hinweis unter dem Feld „Sprache“, die Bezeichnung
+  „Amazon Echo (Alexa-NG)“ in der Auswahl und die Tabelle der weiteren Ausgabeziele (nächster Punkt).
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 10 s, mit Sonos 30 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  1.2.39. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 1.2.39 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* und *Preise für morgen* sprechen wie bisher die echte Preisansage – jetzt an alle Ziele;
+  die Knöpfe *Testansage an Ziel n* daneben sprechen den festen Testsatz der Sprachausgabe nur an diesem Ziel.
+* **Kopf, Zeile MQTT:** Groß steht weiter der Schalter dieses Plugins, klein darunter jetzt der Autostart des
+  MQTT-Gateways (ein/aus, „nicht feststellbar“ ohne MQTT-Abschnitt in der LoxBerry-Konfiguration) – wie in den
+  übrigen Plugins.
+* **Anbieterregel für `haus/strompreis`** (gemeinsames Stück `haus_anbieter.php`, wie Spotpreis Tibber 0.9.33):
+  Nur EIN Spotpreis-Plugin im Haus sendet die Strompreise an andere Plugins. `haus/strompreis/anbieter` trägt
+  jetzt immer `awattar`, auch ohne Preise. Ist schon ein anderes Plugin Anbieter, wartet diese Installation; der
+  neue Knopf „Diese Installation soll Anbieter sein“ (Reiter MQTT) übernimmt. Wird aWATTar so abgelöst, hört es
+  selbst auf und räumt die Themen des anderen beim Ausschalten oder Deinstallieren **nicht** mehr ab (bis 1.2.39
+  geschah das auch dann, wenn inzwischen ein anderer sendete). Wer bisher schon Anbieter war, bleibt es.
+
 ## Neu in 1.2.39
 
 **Strompreis für andere Plugins (haus/strompreis).** Mit dem Haken „Strompreis an andere Plugins geben“ (Reiter MQTT,
