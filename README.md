@@ -8,6 +8,10 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.42
+
+Neues Plugin-Symbol.
+
 ## Neu in 1.2.41
 
 Bilder der Einbindung erneuert: Das Bild der Seite „Spotpreis aWATTar Werte“ zeigt die neu angeordnete Seite. Sonst keine Änderung gegen 1.2.40.
