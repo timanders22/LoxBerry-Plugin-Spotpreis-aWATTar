@@ -138,7 +138,9 @@ function spot_abweisen($grund, $klartext) {
 if ($spot_soll_kaputt) {
     spot_abweisen('TOKEN_KAPUTT', spot_t('ENDPUNKT.TOKEN_KAPUTT'));
 }
-if (isset($_GET['selftest'])) {
+/* 1.2.43 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.2.42 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     header('Content-Type: text/plain; charset=utf-8');
     if ($spot_soll === '') {
         http_response_code(403);
@@ -273,7 +275,8 @@ header('Content-Type: text/plain; charset=utf-8');
 
 /* ---------- Zustand ---------- */
 $st = spot_state();
-$cfg = spot_config();
+/* bis 1.2.42 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$spot_lauf_cfg = spot_config();
 
 if (isset($_GET['debug'])) {
     printf("DEBUG  Markt: %s  Aufschlaege netto: %.3f ct/kWh  USt: %.1f %%\n",
@@ -301,7 +304,7 @@ if (isset($_GET['debug'])) {
         abs($st['diff_monat']), abs($st['euro_monat']));
     }
     printf("Verschiebe-Potenzial (7 Tage): %.3f ct/kWh Spanne -> rund %.2f EUR im Jahr bei %.1f kWh/Tag\n\n",
-        $st['shift_ct'], $st['shift_jahr'], (float) $cfg['shift_kwh']);
+        $st['shift_ct'], $st['shift_jahr'], (float) $spot_lauf_cfg['shift_kwh']);
     foreach (array('heute' => 'HEUTE', 'morgen' => 'MORGEN') as $k => $label) {
         echo "-- $label --\n";
         if (empty($st[$k]['hours'])) {
@@ -330,4 +333,4 @@ if (empty($st['ok']) && !isset($_GET['debug'])) {
     exit;
 }
 
-echo spot_zeile($st, $cfg);
+echo spot_zeile($st, $spot_lauf_cfg);

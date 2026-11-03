@@ -329,7 +329,7 @@ if ($sp_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_z
     if (isset($_POST['ansage_test_ziel']) && $sp_tnur === 0) {
         $sp_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($sp_tnur >= 1) {
-        $sp_tr = ansage_testansage(spot_tts(), $sp_tk, $sp_tnur);
+        $sp_tr = ansage_testansage(spot_ansage_vor_ort(), $sp_tk, $sp_tnur);
     } else {
         $sp_tr = spot_testansage_eigen(false);
     }
@@ -706,7 +706,8 @@ if ($sp_ist_post && isset($_POST['save'])) {
     $sp_thw = array();         // Welle Mehrfach-Ziele (1.2.40): die Linie hat keine Hinweisliste - die Hinweise gehen an $sp_note
     $sp_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $sp_new['tts'] = ansage_formular_lesen($sp_tpost, spot_tts($sp_alt), $sp_tmangel, $sp_tbean,
-        spot_ansage_opt() + array('ziele' => spot_mit_zielen()), spot_ansage_k(), $sp_thinw);
+        spot_ansage_opt() + array('ziele' => spot_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), spot_ansage_k(), $sp_thinw);
+    list($sp_new['ansage_regeln']) = ansage_regeln_formular($sp_tpost, spot_ansage_regeln(spot_config()), array(), $sp_tmangel, $sp_tbean, spot_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($sp_tmangel as $sp_tm) { $sp_fehler[] = $sp_tm['text']; }
     foreach ($sp_tbean as $sp_tb) { $sp_feldfehler[] = $sp_tb; }
     $sp_tok_getippt = false;
@@ -892,7 +893,7 @@ $sp_cfg = function_exists('spot_config') ? spot_config() : array();
 if (!is_array($sp_cfg)) { $sp_cfg = array(); }
 if (function_exists('spot_vorgaben')) { $sp_cfg += spot_vorgaben(); }
 $sp_notify = is_array($sp_cfg['notify']) ? $sp_cfg['notify'] : array();
-$sp_notify += array('audio' => 0, 'push' => 0, 'hours' => array(), 'only_cheap' => 0, 'negative' => 1, 'tomorrow' => 0);
+$sp_notify += array('audio' => 1, 'push' => 0, 'hours' => array(), 'only_cheap' => 0, 'negative' => 1, 'tomorrow' => 0);
 $sp_hoursel = array_map('intval', (array) $sp_notify['hours']);
 $sp_tts = is_array($sp_cfg['tts']) ? $sp_cfg['tts'] : array();
 $sp_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
@@ -1885,7 +1886,8 @@ $sp_th['m'] = function ($n) use ($sp_tnie, $sp_feldfehler) {
 <?php echo ansage_formular_html(spot_tts($sp_cfg), $sp_th + array(
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => spot_mit_zielen(),
-'ziele_post' => (is_array($sp_eingaben) && isset($sp_eingaben['formular']) && $sp_eingaben['formular'] === 'save') ? spot_ziele_x2_post($sp_eingaben['werte']) : null), spot_ansage_k()); ?>
+'ziele_post' => (is_array($sp_eingaben) && isset($sp_eingaben['formular']) && $sp_eingaben['formular'] === 'save') ? spot_ziele_x2_post($sp_eingaben['werte']) : null), spot_ansage_k());
+echo ansage_regeln_html(spot_ansage_regeln($sp_cfg), array(), array(), $sp_th + array('token_vor_ort' => true), spot_ansage_k()); ?>
 <p class="sm-hilfe"><?php echo sprintf(spot_t('TEXT.ANSAGE_TEST_HINWEIS'), '<b>' . sp_e(spot_t('REITER.TEST')) . '</b>'); ?></p>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>
@@ -2646,6 +2648,7 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
    ohne weitere Ziele nichts. */
 if (spot_mit_zielen()) { echo ansage_testknoepfe_html(spot_tts($sp_cfg), spot_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+<?= spot_ansage_lage_html() ?>
 </div>
 <div class="sm-small"><?php echo spot_t('TEXT.H_TESTANSAGE'); ?></div>
 

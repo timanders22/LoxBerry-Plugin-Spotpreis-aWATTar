@@ -259,7 +259,7 @@ if ((int) date('j') === 1 && (int) date('G') >= 8) {
             if (!empty($cfgm['notify']['audio'])) {
                 $t = spot_month_text($vm);
                 if ($t !== '') {
-                    spot_say($t);
+                    spot_ansage_legen(array(array('schluessel' => 'monat', 'text' => $t)));     // 1.2.43
                 }
             }
         } else {

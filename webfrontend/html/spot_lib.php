@@ -669,9 +669,9 @@ function spot_config_normalisieren($cfg) {
         $cfg['last_einheit'] = 'kwh';
     }
     if (!is_array($cfg['notify'])) { $cfg['notify'] = array(); }
-    if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
+    if (!is_array($cfg['tts']) || !$cfg['tts']) { $cfg['tts'] = ansage_werk_block(); }     // 1.2.43: nie gesetzt = ab Werk EIN; ein gespeicherter bleibt
     $cfg['notify'] += array(
-        'audio' => 0,
+        'audio' => 1,
         'push' => 0,
         'hours' => array(),          // Liste der Stunden 0-23 mit Ansage/Push
         'only_cheap' => 0,           // nur melden, wenn Preis unter "guenstig"-Schwelle
@@ -3601,7 +3601,10 @@ function spot_mqtt_behalten_liste(array $themen) {
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.2.42 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -4630,15 +4633,186 @@ function spot_ansage_k() {
  * (1 gesendet, 0 gescheitert, -1 nichts gesendet ohne Fehler: aus, Original-Audioserver, leerer Text),
  * kennung, art, http, zeile, zeichen; nie Text oder Token. Ins Protokoll kommt genau eine Zeile.
  */
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.2.43, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('SPOT_ANSAGE_HOECHSTALTER')) { define('SPOT_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function spot_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function spot_ansage_warte($fn)
+{
+    $d = spot_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function spot_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    spot_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; spot_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function spot_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(spot_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), spot_ansage_k());
+    if (!$g) { return false; }
+    $cfg = spot_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!spot_config_save($cfg)) { return false; }
+    spot_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function spot_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    return ansage_token_fuer_lauf(spot_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), spot_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function spot_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $t = spot_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(spot_ansage_vor_ort($cfg), spot_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function spot_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $k = spot_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(spot_tts($cfg), spot_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function spot_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function spot_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = spot_config();
+    $k = spot_ansage_k();
+    $t = $tts === null ? spot_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, spot_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function spot_ansage_senden($jetzt = null)
+{
+    $d = spot_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = spot_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= SPOT_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = spot_config();
+        spot_ansage_token_pflegen($conf);
+        $conf = spot_config();
+        $a = ansage_regel_sprechen($frisch, spot_tts($conf), spot_ansage_regeln($conf), spot_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { spot_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            spot_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
 function spot_say_ergebnis($text) {
-    $r = ansage_sprechen((string) $text, spot_tts(), spot_ansage_k());
+    $r = ansage_sprechen((string) $text, spot_ansage_vor_ort(), spot_ansage_k());
     spot_log('Ansage: ' . ansage_kurz($r));
     return $r;
 }
 
 /** Wie bis 1.2.33: true nur, wenn gesendet. */
 function spot_say($text) {
-    $r = spot_say_ergebnis($text);
+    $r = spot_ansage_direkt($text);     // 1.2.43: im Vorgang (?say=1, Befehl), es zaehlt nur der Schalter
+    spot_log('Ansage: ' . ansage_kurz($r));
     return $r['stand'] === 1;
 }
 
@@ -4676,7 +4850,7 @@ function spot_webport() {
 function spot_ansage_pruefzeile($offen) {
     $k = spot_ansage_k();
     $k['e'] = function ($s) { return (string) $s; };
-    list($st, $text) = ansage_pruefzeile(spot_tts(), (bool) $offen, $k);
+    list($st, $text) = ansage_pruefzeile(spot_ansage_pruefblock(), (bool) $offen, $k);
     return array($st === 1 ? 1 : ($st === 0 ? 0 : 2), $text);
 }
 
@@ -4821,7 +4995,8 @@ function spot_announce_check() {
                 @file_put_contents($flag, '1');
                 $txt = spot_announce_text();
                 if ($txt !== '') {
-                    spot_say($txt);
+                    spot_ansage_token_pflegen($cfg);
+                    spot_ansage_legen(array(array('schluessel' => 'preis', 'text' => $txt)));     // 1.2.43: eigener Vorgang, Regeln aus dem Stamm
                 }
             }
         }
@@ -4836,7 +5011,7 @@ function spot_announce_check() {
             if (!empty($cfg['notify']['audio'])) {
                 $txt = spot_tomorrow_text($st);
                 if ($txt !== '') {
-                    spot_say($txt);
+                    spot_ansage_legen(array(array('schluessel' => 'morgen', 'text' => $txt)));     // 1.2.43
                 }
             }
             spot_log('Preise fuer morgen veroeffentlicht: min ' . $st['morgen']['minp'] . ' ct um ' . $st['morgen']['minh'] . ' Uhr, max ' . $st['morgen']['maxp'] . ' ct um ' . $st['morgen']['maxh'] . ' Uhr');
@@ -5323,6 +5498,15 @@ function spot_sicherung_lesen($roh)
             $mangel[] = spot_t('TEXT.SICH_MARSTEK_URL_TOKEN');
             continue;
         }
+        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
+            $s2_g = '';
+            $s2_r = ansage_regeln_wert($w, $s2_g);
+            if ($s2_r === null) {  continue; }
+            $neu['ansage_regeln'] = $s2_r;
+            
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             /* O7: hier NICHT maskieren - die Oberflaeche gibt die Meldung mit
              * sp_e() aus. Bis 1.2.31 stand hier htmlspecialchars(), und der
@@ -5487,6 +5671,7 @@ function spot_sicherung_schreiben()
     if (isset($daten['tts']) && is_array($daten['tts'])) {
         // seit 1.2.33 aus der gemeinsamen Sprachausgabe (eine Liste der Geheimnisse)
         $daten['tts'] = ansage_sicherung_bereinigen($daten['tts']);
+        unset($daten['ansage_token_herkunft']);     // 1.2.43
     }
     /* X-3 (Pruefbericht oberflaeche, Befund 11): was das Zurueckspielen
      * abweisen wuerde, sagt die Datei schon beim Sichern - nur mit Namen, nie
@@ -6465,9 +6650,13 @@ function spot_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
         } while ($n > 0);
         return $o;
     };
-    $lies = function ($n) use ($s) {
+    /* bis 1.2.42 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser ueber sein Fenster hinaus fest.
+     * Schweigt der Broker ganz, greift schon stream_set_timeout(). */
+    $lies_bis = microtime(true) + (float) $fenster + 5.0;
+    $lies = function ($n) use ($s, $lies_bis) {
         $d = '';
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
