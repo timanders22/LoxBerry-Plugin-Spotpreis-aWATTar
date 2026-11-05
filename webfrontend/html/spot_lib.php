@@ -1060,6 +1060,26 @@ function spot_profile() {
 
 /* ---------------- Marktdaten (aWATTar) ---------------- */
 
+/**
+ * 1.2.46 (SP-1): Muss dieser Tag jetzt geholt werden? Rein, ohne Datei.
+ *
+ * Bis 1.2.45: heute alle 15 Minuten, morgen je Zustandsrechnung (alle 5 Minuten), bis die Preise da sind -
+ * gerechnet rund 300 Anfragen am Tag; die Grenze des Dienstes ist nur aus einer inoffiziellen Quelle bekannt
+ * (100 je Tag und Adresse). Ein vollstaendiger Tag der Boerse aendert sich nicht mehr: er wird nicht neu geholt.
+ * Morgen erst ab 13 Uhr, und zwischen zwei Versuchen 15 Minuten, auch nach einem Fehlversuch.
+ * $eintraege: Preise in der Datei (0 = keine), $versuch_alter: Sekunden seit dem letzten Versuch, -1 = keiner.
+ */
+function spot_day_faellig($startTs, $jetzt, $eintraege, $versuch_alter) {
+    $stunden = (int) round((strtotime('+1 day', $startTs) - $startTs) / 3600);
+    if ($eintraege >= $stunden) {
+        return false;
+    }
+    if ($startTs > $jetzt && (int) date('G', $jetzt) < 13) {
+        return false;
+    }
+    return !($versuch_alter >= 0 && $versuch_alter < 900);
+}
+
 /** Stundenpreise eines Tages: [ts => boersenpreis EUR/kWh netto] oder null. */
 function spot_day($startTs, $force = false) {
     $cfg = spot_config();
@@ -1083,12 +1103,18 @@ function spot_day($startTs, $force = false) {
      * Ueberlegung wie in plan_frist_ende() im Fahrplaner. */
     $end = strtotime(date('Y-m-d', $startTs) . ' +1 day 00:00:00') * 1000;
     $js = false;
+    // 1.2.46 (SP-1): siehe spot_day_faellig(). Der Merker traegt die Zeit, auch die eines Fehlversuchs.
+    $sp_merker = spot_tmpdir() . '/markt_versuch_' . ($startTs > time() ? 'morgen' : 'heute');
+    $sp_zuletzt = is_file($sp_merker) ? (int) @file_get_contents($sp_merker) : 0;
     if (spot_nur_zwischenspeicher()) {
         // P4: nur lesen, was der Minutenlauf abgelegt hat - gleich welchen Alters.
         $js = is_file($cache) ? (string) @file_get_contents($cache) : false;
-    } elseif (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
-        $js = file_get_contents($cache);
+    } elseif (!$force && !spot_day_faellig($startTs, time(),
+            is_file($cache) ? substr_count((string) @file_get_contents($cache), 'marketprice') : 0,
+            ($sp_zuletzt > 0 && $sp_zuletzt <= time()) ? time() - $sp_zuletzt : -1)) {
+        $js = is_file($cache) ? (string) @file_get_contents($cache) : false;
     } else {
+        @file_put_contents($sp_merker, (string) time());
         $url = "https://api.awattar.$tld/v1/marketdata?start=$start&end=$end";
         $ctx = stream_context_create(array('http' => array('timeout' => 15, 'user_agent' => 'LoxBerry Spotpreis')));
         $neu = @file_get_contents($url, false, $ctx);
@@ -1560,6 +1586,7 @@ function spot_regeln($all, $st) {
         'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
                       ? (float) $st['heute']['avg'] : null,
         'laufend'  => spot_laufend_lesen(),
+        'frist'    => plan_frist_lesen(spot_tmpdir() . '/frist.json'),   // 1.2.46 (OC-1)
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
@@ -1668,6 +1695,7 @@ function spot_fahrplan($st = null) {
         'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
                       ? (float) $st['heute']['avg'] : null,
         'laufend'  => spot_laufend_lesen(),
+        'frist'    => plan_frist_lesen(spot_tmpdir() . '/frist.json'),   // 1.2.46 (OC-1)
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
@@ -1966,6 +1994,7 @@ function spot_state($force = false) {
     /* Die Hysterese fortschreiben - ERST nach der Rechnung, damit der
      * naechste Lauf sie vorfindet. */
     spot_laufend_fortschreiben($st['regeln'], (int) $st['hstart']);
+    plan_frist_schreiben(spot_tmpdir() . '/frist.json', $st['regeln'], (int) $st['hstart']);   // 1.2.46 (OC-1)
     spot_write_json_atomic($cache, $st);
     spot_log_if_changed('zustand', 'cur=' . $st['cur'] . ' ct rank=' . $st['rank'] . ' level=' . $st['level'] . ' morgen_ok=' . $st['tomorrow_ok']);
     return $st;
@@ -2638,7 +2667,9 @@ function spot_url_ok($url) {
 
 /** Vollstaendige Standard-URL zum Marstek-Plugin auf diesem LoxBerry. */
 function spot_marstek_default_url() {
-    return 'http://' . spot_own_ip() . '/plugins/marstekvenus/marstek.php';
+    // 1.2.46 (K4): der Webport des LoxBerry. Auf Port 8080 rief die Kopplung bisher Port 80 und blieb aus.
+    $port = (int) spot_webport();
+    return 'http://' . spot_own_ip() . ($port === 80 || $port <= 0 ? '' : ':' . $port) . '/plugins/marstekvenus/marstek.php';
 }
 
 /* ---------------- Optionale Kopplung: Marstek-Speicher laden ----------------
@@ -5502,7 +5533,10 @@ function spot_sicherung_lesen($roh)
         if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
             $s2_g = '';
             $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) {  continue; }
+            if ($s2_r === null) {     // 1.2.46: bis 1.2.45 stillschweigend uebergangen, die Datei galt als heil
+                $mangel[] = sprintf(spot_t('TEXT.SICH_WERT'), 'config.ansage_regeln', ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', spot_ansage_k()));
+                continue;
+            }
             $neu['ansage_regeln'] = $s2_r;
             
             continue;

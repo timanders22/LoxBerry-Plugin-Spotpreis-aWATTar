@@ -708,6 +708,8 @@ if ($sp_ist_post && isset($_POST['save'])) {
     $sp_new['tts'] = ansage_formular_lesen($sp_tpost, spot_tts($sp_alt), $sp_tmangel, $sp_tbean,
         spot_ansage_opt() + array('ziele' => spot_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), spot_ansage_k(), $sp_thinw);
     list($sp_new['ansage_regeln']) = ansage_regeln_formular($sp_tpost, spot_ansage_regeln(spot_config()), array(), $sp_tmangel, $sp_tbean, spot_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.2.46: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.2.45 verlor das Speichern den Vermerk ganz.
+    $sp_new['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($sp_alt['ansage_token_herkunft']) ? $sp_alt['ansage_token_herkunft'] : array(), spot_ansage_opt());
     foreach ($sp_tmangel as $sp_tm) { $sp_fehler[] = $sp_tm['text']; }
     foreach ($sp_tbean as $sp_tb) { $sp_feldfehler[] = $sp_tb; }
     $sp_tok_getippt = false;

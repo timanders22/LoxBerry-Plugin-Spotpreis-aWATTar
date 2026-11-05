@@ -77,7 +77,7 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde nichts gesichert."
-    exit 1
+    exit 2
 fi
 
 # ---------- Marke "Aktualisierung laeuft" - als Erstes ----------
@@ -108,6 +108,37 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     echo "<FAIL> die Einstellungen beiseite. Dieses Skript endet mit Rueckgabewert 2."
     exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_sichere() {   # $1 Quelle, $2 Ziel: fehlt die Datei oder ist sie leer, ist ein Fehlschlag keiner
+    [ -f "$1" ] || return 0
+    zs_hinlegen "$1" "$2" && return 0
+    [ -s "$1" ] || return 1
+    echo "<WARNING> $(basename "$1") liess sich nicht sichern ($2)."
+    ZS_FEHL="$ZS_FEHL $(basename "$1")"
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    [ "$SP_MARKE_VORHER" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 
 # Gruppe 27 (1.2.39, V3; Bauform Ferien 1.2.28): die Befehlsbruecke vor dem Austausch der Dateien anhalten. Die
 # Marke liegt schon - der Waechter im Minutenlauf (bin/cron.php) laeuft waehrend der Marke nicht und startet sie bis
@@ -147,10 +178,10 @@ mkdir -p "$SICHERUNG" 2>/dev/null
 # Merker schon in 2.3.14 aus demselben Grund entfernt.
 
 echo "<INFO> Sicherungsordner: $SICHERUNG"
-if cp -p "$BASE/config/plugins/$PFOLDER/spot.json" "$SICHERUNG/spot.json" 2>/dev/null; then
-    echo "<OK> Konfiguration gesichert."
-else
+if [ ! -f "$BASE/config/plugins/$PFOLDER/spot.json" ]; then
     echo "<INFO> Keine bestehende spot.json gefunden - nichts zu sichern."
+elif zs_sichere "$BASE/config/plugins/$PFOLDER/spot.json" "$SICHERUNG/spot.json"; then
+    echo "<OK> Konfiguration gesichert."
 fi
 
 
@@ -177,6 +208,7 @@ if [ "$SP_MARKE_VORHER" = "0" ] && { [ -e "$LANG_SICHER" ] || [ -L "$LANG_SICHER
     if [ -e "$LANG_SICHER" ] || [ -L "$LANG_SICHER" ]; then
         echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $LANG_SICHER"
         echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        rm -f "$MARKE" 2>/dev/null
         exit 2
     fi
     echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $LANG_SICHER"
@@ -198,14 +230,14 @@ chmod 0700 "$LANG_SICHER" 2>/dev/null
 # Seit dem Nachzug Anbieterregel (1.2.40) auch haus_anbieter.json: ohne sie begaenne die Rolle nach dem Update
 # neu (ein abgeloester Anbieter haette seinen Grund "abgeloest" vergessen).
 for LANG_F in history.csv laufzaehler mqtt_praefixe.json haus_anbieter.json; do
-    [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
-        && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
+    zs_sichere "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F"
 done
 for LANG_F in "$BASE/data/plugins/$PFOLDER"/marke_*; do
-    [ -f "$LANG_F" ] && cp -p "$LANG_F" "$LANG_SICHER/" 2>/dev/null
+    [ -f "$LANG_F" ] && zs_sichere "$LANG_F" "$LANG_SICHER/$(basename "$LANG_F")"
 done
 # Die Wirkung pruefen, nicht den Rueckgabewert: liegt hinterher etwas da?
 if [ -n "$(ls -A "$LANG_SICHER" 2>/dev/null)" ]; then
     echo "<OK> Langzeitwerte gesichert."
 fi
+zs_schluss
 exit 0

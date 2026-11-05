@@ -8,6 +8,15 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.46
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Sicherung zurückspielen:** Ungültige Regeln der Sprachausgabe in der Datei werden gemeldet und die Datei wird abgewiesen, statt sie still zu übergehen.
+- **Planer:** Eine Regel mit Frist läuft jetzt nur noch die bestellte Dauer, sobald die Preise bis zur Frist bekannt sind; vorher lief sie bei steigenden Preisen bis zur Frist durch.
+- **Preisabruf:** aWATTar wird deutlich seltener gefragt: ein vollständiger Tag gar nicht mehr, die Preise von morgen erst ab 13 Uhr und dann höchstens alle 15 Minuten.
+- **Speicherkopplung:** Läuft der LoxBerry nicht auf Port 80, findet die automatische Adresse das Marstek-Plugin jetzt trotzdem.
+
 ## Neu in 1.2.45
 
 - Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.
