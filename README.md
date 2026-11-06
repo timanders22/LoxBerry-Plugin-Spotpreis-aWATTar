@@ -8,6 +8,10 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.48
+
+- Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.
+
 ## Neu in 1.2.47
 
 - PV-Prognose: Unter der Adresse der PV-Prognose steht ein Link zum Azimut-Werkzeug (azimut.polka-umwelt.de). Dort das Haus im Luftbild suchen und mit „Orthogonales Messen“ am First entlang klicken. Die angezeigte Gradzahl („Abweichung von Süden“, 0 = Süden, Osten negativ, Westen positiv) zählt wie forecast.solar und kommt unverändert an die Stelle „Ausrichtung“ in der Adresse.
