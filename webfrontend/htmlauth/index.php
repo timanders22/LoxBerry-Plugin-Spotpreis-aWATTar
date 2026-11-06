@@ -1582,6 +1582,7 @@ for ($sp_i = 0; $sp_i < 12; $sp_i++) { ?>
     <label><?php echo spot_t('PLAN.L_PV_URL'); ?></label>
     <input data-role="none" type="text" name="pv_url" value="<?= sp_e($sp_cfg['pv_url']) ?>" placeholder="https://api.forecast.solar/estimate/...">
     <div class="sm-small"><?php echo spot_t('PLAN.H_PV_URL'); ?></div>
+    <div class="sm-hilfe"><a href="https://azimut.polka-umwelt.de/" target="_blank" rel="noopener"><?php echo sp_e(spot_t('PLAN.AZIMUT_LINK')); ?></a>. <?php echo sp_e(spot_t('PLAN.AZIMUT_PV')); ?></div>
   </div>
   <div>
     <label><?php echo spot_t('PLAN.L_PV_EINHEIT'); ?></label>
