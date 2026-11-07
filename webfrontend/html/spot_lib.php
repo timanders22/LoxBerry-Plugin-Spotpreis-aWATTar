@@ -386,6 +386,13 @@ function spot_vorgaben()
      * Stunde kennt. Ab Werk AN - ohne sie kann ein Geraet mitten im
      * Betrieb abschalten, und das will niemand absichtlich. */
     'hysterese' => 1,
+    /* 1.2.49: die beiden Schluessel des Sprachmoduls (Regeln "Wann gesprochen wird", Herkunft uebernommener Sprechtoken).
+     * Bis 1.2.48 fehlten sie hier: das Formular und spot_ansage_token_pflegen() schrieben sie in spot.json,
+     * spot_konfig_schluessel() nannte sie "fremd" (Reiter Test, Zeile Konfiguration), und "Einstellungen sichern"
+     * liess ansage_regeln weg, weil spot_sicherung_schreiben() nur Vorgabenschluessel ausgibt (gemessen 07.11.2026).
+     * Bauart Saugroboter 1.1.33 / Pumpenwacht 1.0.16. */
+    'ansage_regeln' => ansage_regeln_vorgaben(),
+    'ansage_token_herkunft' => array(),
 ) + plan_global_vorgabe();
 }
 
@@ -5374,6 +5381,20 @@ function spot_wert_gegen($w, $s) {
 function spot_wert_mangel($k, $w) {
     $s = spot_schranken();
     $aus = array();
+    if ($k === 'ansage_regeln') {     // 1.2.49: gegen den Stamm, wie spot_sicherung_lesen()
+        $sp_rg = '';
+        return ansage_regeln_wert($w, $sp_rg) !== null ? array()
+            : array(array('ansage_regeln', array('ANSAGE', $sp_rg !== '' ? $sp_rg : 'M_R_BLOCK')));
+    }
+    if ($k === 'ansage_token_herkunft') {     // 1.2.49: nur Namen der Sprechtoken mit dem Vermerk 'nachbar'
+        if (!is_array($w)) { return array(array('ansage_token_herkunft', array('TYP'))); }
+        foreach ($w as $hk => $hv) {
+            if (!in_array((string) $hk, array_values(ansage_token_felder()), true) || $hv !== 'nachbar') {
+                return array(array('ansage_token_herkunft', array('TYP')));
+            }
+        }
+        return array();
+    }
     if ($k === 'regeln') {
         if (!is_array($w) || count($w) > SPOT_REGELN || ($w && array_keys($w) !== range(0, count($w) - 1))) {
             return array(array('regeln', array('TYP')));
@@ -5589,6 +5610,9 @@ function spot_sicherung_lesen($roh)
         // marstek_token steht nie in einer Sicherung - sein Fehlen ist richtig.
         // Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt, fehlen in
         // jeder aelteren Sicherung; sie sind ab Werk aus und gelten dann so.
+        // 1.2.49: ansage_regeln fehlt jeder Sicherung bis 1.2.48 (dann gelten die Regeln ab Werk, wie bisher);
+        // ansage_token_herkunft steht nie in einer Sicherung (die geltende bleibt, unten).
+        if (in_array($fk, array('ansage_regeln', 'ansage_token_herkunft'), true)) { continue; }
         if ($fk !== 'marstek_token' && !in_array($fk, spot_sicherung_neue_schluessel(), true)
             && !in_array($fk, spot_sicherung_spaete_schluessel(), true)
             && !array_key_exists($fk, $daten)) {
@@ -5620,6 +5644,11 @@ function spot_sicherung_lesen($roh)
                 ? $sp_jetzt['tts'][$sp_tk] : '';
         }
     }
+    /* 1.2.49: die Herkunft der Sprechtoken kommt nie aus einer Datei; die geltende bleibt - ein uebernommenes Token
+     * bleibt uebernommen. Bis 1.2.48 fiel sie beim Zurueckspielen weg. */
+    $neu['ansage_token_herkunft'] = (isset($sp_jetzt['ansage_token_herkunft']) && is_array($sp_jetzt['ansage_token_herkunft'])
+        && !spot_wert_mangel('ansage_token_herkunft', $sp_jetzt['ansage_token_herkunft']))
+        ? $sp_jetzt['ansage_token_herkunft'] : array();
     // Ein leeres Token in der Datei laesst das geltende stehen (Klasse 12).
     if (!$sp_tok_aus_datei) {
         $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
