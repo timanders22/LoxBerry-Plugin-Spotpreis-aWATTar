@@ -8,6 +8,10 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.50
+
+- Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.
+
 ## Neu in 1.2.49
 
 - „Einstellungen sichern“ nimmt jetzt auch die Regeln der Sprachausgabe „Wann gesprochen wird“ mit. Bis 1.2.48 fehlten sie in der Sicherung; nach dem Zurückspielen galten sie ab Werk. Eine Sicherung aus einer früheren Fassung wird weiter angenommen.
