@@ -349,6 +349,13 @@ function spot_vorgaben()
     'haus_speicher_ein' => 0,
     'befehle_mqtt_ein' => 0,
     'endpunkt_ein' => 0,
+    /* Schwellen-Push (1.2.51, ab Werk aus): eine Meldung, wenn der Endpreis unter schwelle_ct faellt, eine,
+     * wenn er wieder ueber schwelle_ct + schwelle_hyst steigt; je Richtung hoechstens eine in
+     * schwelle_sperre Minuten (spot_schwelle_schritt()). Unabhaengig von notify.hours und only_cheap. */
+    'schwelle_ein' => 0,
+    'schwelle_ct' => 20.0,
+    'schwelle_hyst' => 1.0,
+    'schwelle_sperre' => 60,
     'notify' => array(),
     'tts' => array(),
     // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
@@ -715,6 +722,11 @@ function spot_config_normalisieren($cfg) {
     foreach (array('haus_strompreis_ein', 'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein') as $sp_k) {
         $cfg[$sp_k] = empty($cfg[$sp_k]) ? 0 : 1;
     }
+    /* Schwellen-Push (1.2.51): dieselben Schranken wie Oberflaeche und Sicherung (spot_schranken()). */
+    $cfg['schwelle_ein'] = empty($cfg['schwelle_ein']) ? 0 : 1;
+    $cfg['schwelle_ct'] = max(-100.0, min(200.0, (float) $cfg['schwelle_ct']));
+    $cfg['schwelle_hyst'] = max(0.0, min(50.0, (float) $cfg['schwelle_hyst']));
+    $cfg['schwelle_sperre'] = max(0, min(1440, (int) $cfg['schwelle_sperre']));
     return $cfg;
 }
 
@@ -3104,6 +3116,7 @@ function spot_mqtt_themen($st = null) {
     if ($st === null) {
         $st = spot_state();
     }
+    $sp_sw = spot_schwelle_werte($st);
     $msgs = array(
         'ok' => $st['ok'], 'cur' => $st['cur'],
         /* O9 (Pruefbericht mqtt, B6): das Gegenstueck zu CURX der Loxone-Zeile -
@@ -3126,6 +3139,10 @@ function spot_mqtt_themen($st = null) {
         'audio' => empty($cfg['notify']['audio']) ? 0 : 1,
         'push' => empty($cfg['notify']['push']) ? 0 : 1,
         'ptest' => spot_ptest_active(),
+        /* Schwellen-Push (1.2.51): unter zurueckbehalten (spot_retain_liste()), die Meldefenster fluechtig. */
+        'schwelle/unter' => $sp_sw['unter'],
+        'schwelle/meldung_unter' => $sp_sw['meld_u'],
+        'schwelle/meldung_ueber' => $sp_sw['meld_o'],
         /* Lebenszeichen - siehe den Block ueber spot_lauf_stand() und
          * spot_cron_puls(). ts ist der CRON, rechne das Rechnen. */
         'status/ts' => spot_cron_puls(),
@@ -3199,7 +3216,9 @@ function spot_mqtt_praefix($cfg = null) {
 function spot_mqtt_ausfall_themen(array $msgs) {
     $aus = array();
     foreach ($msgs as $k => $v) {
-        if ($k === 'ok' || preg_match('#^regel/[0-9]+/aktiv$#', (string) $k)) {
+        /* 1.2.51: dazu der Schwellen-Push - ohne gueltigen Preis ist schwelle/unter 0 (spot_schwelle_werte()),
+         * ein zurueckbehaltenes 1 bliebe sonst ueber die Stoerung hinweg stehen. */
+        if ($k === 'ok' || preg_match('#^regel/[0-9]+/aktiv$#', (string) $k) || strpos((string) $k, 'schwelle/') === 0) {
             $aus[$k] = $v;
         }
     }
@@ -3233,7 +3252,8 @@ function spot_mqtt_beschreibung() {
                    'AVG_MORGEN', 'MIN_MORGEN', 'MINH_MORGEN', 'MAX_MORGEN', 'MAXH_MORGEN',
                    'FENSTER_START', 'FENSTER_IN', 'FENSTER_CT', 'CO2', 'CO2_MIN', 'CO2_MINH', 'CO2_CLEAN',
                    'WP_CUR', 'WP_NEXT', 'FIX', 'DYN_MONAT', 'DIFF_MONAT', 'EURO_MONAT', 'SHIFT_JAHR',
-                   'ANN', 'AUDIO', 'PUSH', 'PTEST', 'STATUS_TS', 'STATUS_RECHNE', 'STATUS_ZAEHLER', 'STATUS_OK',
+                   'ANN', 'AUDIO', 'PUSH', 'PTEST',
+                   'SCHWELLE_UNTER', 'SCHWELLE_MELDUNG_UNTER', 'SCHWELLE_MELDUNG_UEBER', 'STATUS_TS', 'STATUS_RECHNE', 'STATUS_ZAEHLER', 'STATUS_OK',
                    'REGEL_AKTIV', 'REGEL_IN', 'REGEL_REST', 'REGEL_CT', 'REGEL_EIN', 'REGEL_VERDRAENGT',
                    'REGEL_SPERRE', 'REGEL_RANG', 'REGEL_FEHLT', 'REGEL_SPART', 'REGEL_SPART_EUR',
                    'PLAN_BUDGET', 'PLAN_BUDGET2', 'PLAN_SPART', 'PLAN_LAST',
@@ -3537,6 +3557,10 @@ function spot_retain_liste() {
         'plan/budget2' => 1,
         /* Der eingetragene feste Arbeitspreis (fixed_price). */
         'fix' => 1,
+        /* 1.2.51, Auftrag des Hausherrn vom 12.11.2026: der Zustand des Schwellen-Pushs geht zurueckbehalten
+         * hinaus. Aus, ohne gueltigen Preis und bei einer Stoerung (spot_mqtt_ausfall_themen()) wird er 0
+         * gesendet; stirbt der Minutenlauf, sagt es das Lebenszeichen. */
+        'schwelle/unter' => 1,
     );
 }
 
@@ -4074,7 +4098,10 @@ function spot_zeile($st, $cfg) {
      * von ruhigen Preisen unterscheiden. Angehaengt, nicht eingeschoben -
      * die Befehlserkennung in Loxone sucht Textstellen, bestehende
      * Eingaenge merken von den beiden neuen Feldern nichts. */
-    $o = sprintf("SPOT;OK=%d;MINH=%d;MINP=%.3f;MAXH=%d;MAXP=%.3f;AVG=%.3f;HOK=%d;HMINH=%d;HMINP=%.3f;HMAXH=%d;HMAXP=%.3f;HAVG=%.3f;CUR=%.3f;CURB=%.3f;NEXT=%.3f;NEG=%d;RANK=%d;RANKD=%d;LEVEL=%d;WINH=%d;WININ=%d;WINCT=%.3f;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d;CO2=%d;CO2MIN=%d;CO2MINH=%d;CO2CLEAN=%d;WPCUR=%.3f;WPNEXT=%.3f;FIX=%.3f;DYNM=%.3f;DIFFM=%.3f;EUROM=%.2f;SHIFTJ=%.2f;CURX=%d\n",
+    /* 1.2.51: SCHWELLE_UNTER, SCHWELLE_MELDUNG_UNTER, SCHWELLE_MELDUNG_UEBER (Schwellen-Push) am Ende der Zeile angehaengt - bestehende
+     * Eingaenge merken davon nichts; keiner der drei Namen ist das Ende eines anderen Feldnamens. */
+    $sp_sw = spot_schwelle_werte($st);
+    $o = sprintf("SPOT;OK=%d;MINH=%d;MINP=%.3f;MAXH=%d;MAXP=%.3f;AVG=%.3f;HOK=%d;HMINH=%d;HMINP=%.3f;HMAXH=%d;HMAXP=%.3f;HAVG=%.3f;CUR=%.3f;CURB=%.3f;NEXT=%.3f;NEG=%d;RANK=%d;RANKD=%d;LEVEL=%d;WINH=%d;WININ=%d;WINCT=%.3f;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d;CO2=%d;CO2MIN=%d;CO2MINH=%d;CO2CLEAN=%d;WPCUR=%.3f;WPNEXT=%.3f;FIX=%.3f;DYNM=%.3f;DIFFM=%.3f;EUROM=%.2f;SHIFTJ=%.2f;CURX=%d;SCHWELLE_UNTER=%d;SCHWELLE_MELDUNG_UNTER=%d;SCHWELLE_MELDUNG_UEBER=%d\n",
         $st['tomorrow_ok'], $st['morgen']['minh'], $st['morgen']['minp'], $st['morgen']['maxh'], $st['morgen']['maxp'], $st['morgen']['avg'],
         $st['ok'], $st['heute']['minh'], $st['heute']['minp'], $st['heute']['maxh'], $st['heute']['maxp'], $st['heute']['avg'],
         $st['cur'], $st['cur_boerse'], $st['next'], $st['neg'], $st['rank'], $st['rankd'], $st['level'],
@@ -4086,7 +4113,8 @@ function spot_zeile($st, $cfg) {
         $st['co2'], $st['co2_min'], $st['co2_minh'], $st['co2_clean'],
         $st['wp_cur'], $st['wp_next'],
         $st['fix'], $st['dyn_monat'], $st['diff_monat'], $st['euro_monat'], $st['shift_jahr'],
-        isset($st['cur_fehlt']) ? (int) $st['cur_fehlt'] : 0);
+        isset($st['cur_fehlt']) ? (int) $st['cur_fehlt'] : 0,
+        $sp_sw['unter'], $sp_sw['meld_u'], $sp_sw['meld_o']);
 
     /* Lebenszeichen als eigene Zeile. TS ist der Zeitpunkt, zu dem der
      * Zustand zuletzt wirklich gerechnet wurde - nicht der Zeitpunkt dieses
@@ -4204,6 +4232,10 @@ function spot_felder() {
          * die Config an dieser Stelle sinnvoll fuehrt.
          * In Loxone: Alter in Sekunden = (Zeit-Baustein + 1230768000) - TS. */
         'CURX'    => array(0, 0, 1, '', spot_t('VORLAGE.F_CURX')),
+        /* Schwellen-Push (1.2.51): Zustand und die beiden Meldefenster - digital. */
+        'SCHWELLE_UNTER' => array(0, 0, 1, '', spot_t('VORLAGE.F_SCHWELLE_UNTER')),
+        'SCHWELLE_MELDUNG_UNTER' => array(0, 0, 1, '', spot_t('VORLAGE.F_SCHWELLE_MELDUNG_UNTER')),
+        'SCHWELLE_MELDUNG_UEBER' => array(0, 0, 1, '', spot_t('VORLAGE.F_SCHWELLE_MELDUNG_UEBER')),
         'TS'      => array(1, 0, 2147483647, 's', spot_t('VORLAGE.F_TS')),
         'RECHNE'  => array(1, 0, 2147483647, 's', spot_t('VORLAGE.F_RECHNE')),
         'LAUF'    => array(1, 0, 999, '', spot_t('VORLAGE.F_LAUF')),
@@ -4400,6 +4432,14 @@ function spot_mqtt_eingang_felder($felder = null) {
         'TS' => 'status/ts', 'RECHNE' => 'status/rechne', 'LAUF' => 'status/zaehler',
         'PVSUM' => 'plan/pv_prognose', 'SOC' => 'plan/soc', 'BUDGET' => 'plan/budget', 'PLANLAST' => 'plan/last',
     );
+    /* 1.2.51: die drei Eingaenge des Schwellen-Pushs nur, wenn er eingeschaltet ist - sonst verlangte die
+     * Hakenliste unter Gateway V2 nach dem Update drei Haken fuer Themen, die niemand braucht, und die
+     * Pruefzeile V2_HAKEN wuerde auf jeder bestehenden Anlage rot. */
+    $sp_sw_e = spot_schwelle_einstellung();
+    if ($sp_sw_e['ein']) {
+        $einzeln += array('SCHWELLE_UNTER' => 'schwelle/unter', 'SCHWELLE_MELDUNG_UNTER' => 'schwelle/meldung_unter',
+                          'SCHWELLE_MELDUNG_UEBER' => 'schwelle/meldung_ueber');
+    }
     $regel = array('' => 'aktiv', 'IN' => 'in', 'REST' => 'rest', 'CT' => 'ct', 'VERD' => 'verdraengt',
                    'SPERRE' => 'sperre');
     $aus = array();
@@ -4973,6 +5013,321 @@ function spot_month_text($vm) {
     return $t;
 }
 
+/* ==================================================================
+ * Schwellen-Push (neu in 1.2.51, ab Werk aus)
+ * ==================================================================
+ *
+ * Eine Meldung, wenn der Preis unter die eingestellte Schwelle FAELLT, und
+ * eine, wenn er wieder ueber Schwelle + Hysterese STEIGT - unabhaengig von
+ * Stunden, Ansagezeiten und Meldefenstern, die diese Linie sonst kennt (die
+ * bleiben, wie sie sind). Den Push verschickt wie bei jeder Meldung dieser
+ * Linie der Miniserver: das Plugin setzt ein Meldefenster fuer fuenf Minuten
+ * auf 1 (Feld SCHWELLE_MELDUNG_UNTER bzw. SCHWELLE_MELDUNG_UEBER, MQTT schwelle/meldung_unter bzw.
+ * schwelle/meldung_ueber), ein Benachrichtigungsbaustein in Loxone reagiert
+ * auf die steigende Flanke. Der Zustand selbst (SCHWELLE_UNTER, MQTT
+ * schwelle/unter, zurueckbehalten) sagt "der Preis liegt unter der
+ * Schwelle".
+ *
+ * Hysterese: "unter", sobald der Preis kleiner als die Schwelle ist; "wieder
+ * ueber" erst, wenn er groesser als Schwelle + Hysterese ist. Sperrzeit: je
+ * Richtung hoechstens eine Meldung in dieser Zeit; ein Wechsel innerhalb der
+ * Sperrzeit aendert den Zustand, meldet aber nicht (Protokollzeile
+ * "gesperrt").
+ *
+ * Ohne bekannten Ausgangszustand - erster Lauf nach dem Einschalten, nach
+ * einer Aenderung von Schwelle oder Hysterese, nach einem Update, das den
+ * Datenordner abraeumt - wird der Zustand OHNE Meldung uebernommen: gemeldet
+ * wird ein Uebergang, nicht ein Stand. Ohne gueltigen Preis (Abruf
+ * gescheitert, Ersatzwert) wird nicht gerechnet; der Zustand bleibt, nach
+ * aussen geht "unter" als 0.
+ */
+
+/** Die Einstellungen des Schwellen-Pushs aus der Konfiguration (geprueft und gekappt beim Lesen). */
+function spot_schwelle_einstellung($cfg = null) {
+    if ($cfg === null) {
+        $cfg = spot_config();
+    }
+    return array(
+        'ein' => empty($cfg['schwelle_ein']) ? 0 : 1,
+        'ct' => (float) $cfg['schwelle_ct'],
+        'hyst' => max(0.0, (float) $cfg['schwelle_hyst']),
+        'sperre' => max(0, (int) $cfg['schwelle_sperre']),
+    );
+}
+
+/** Ein Meldefenster: 1 in den fuenf Minuten nach dem Zeitpunkt $t (0 = nie gemeldet). */
+function spot_schwelle_fenster($t, $jetzt) {
+    $t = (int) $t;
+    $jetzt = (int) $jetzt;
+    return ($t > 0 && $jetzt >= $t && $jetzt - $t < 300) ? 1 : 0;
+}
+
+/**
+ * Ein Schritt der Schwellenpruefung - ohne Datei, ohne Uhr, ohne Protokoll;
+ * deshalb im Reiter Test und im Pruefstand mit einer Preisreihe nachrechenbar.
+ * $z bisheriger Zustand (leer = unbekannt), $preis in ct/kWh, $gueltig: der
+ * Preis der laufenden Zeit liegt vor, $e die Einstellung, $jetzt Unix-Zeit.
+ * Rueckgabe array(Zustand, Ereignis); Ereignis '' (nichts), 'aus',
+ * 'ungueltig', 'start', 'unter', 'unter_gesperrt', 'ueber', 'ueber_gesperrt'.
+ */
+function spot_schwelle_schritt($z, $preis, $gueltig, array $e, $jetzt) {
+    $leer = array('unter' => -1, 'ct' => null, 'hyst' => null, 'meld_u' => 0, 'meld_o' => 0, 'seit' => 0);
+    $z = is_array($z) ? $z + $leer : $leer;
+    $jetzt = (int) $jetzt;
+    if (empty($e['ein'])) {
+        $war = (int) $z['unter'] !== -1 || (int) $z['meld_u'] > 0 || (int) $z['meld_o'] > 0;
+        return array($leer, $war ? 'aus' : '');
+    }
+    if (!$gueltig || !is_numeric($preis) || !is_finite((float) $preis)) {
+        return array($z, 'ungueltig');
+    }
+    $x = (float) $e['ct'];
+    $h = max(0.0, (float) $e['hyst']);
+    $p = (float) $preis;
+    $sperre = max(0, (int) $e['sperre']) * 60;
+    /* Frei, wenn noch nie gemeldet, die Sperrzeit um ist - oder die Uhr
+     * zurueckgestellt wurde: eine Meldung "in der Zukunft" sperrt nicht. */
+    $frei = function ($t) use ($jetzt, $sperre) {
+        $t = (int) $t;
+        return $t <= 0 || $t > $jetzt || $jetzt - $t >= $sperre;
+    };
+    if ($z['ct'] === null || $z['hyst'] === null || abs((float) $z['ct'] - $x) > 1e-9
+        || abs((float) $z['hyst'] - $h) > 1e-9 || !in_array((int) $z['unter'], array(0, 1), true)) {
+        $z['unter'] = $p < $x ? 1 : 0;
+        $z['ct'] = $x;
+        $z['hyst'] = $h;
+        $z['seit'] = $jetzt;
+        return array($z, 'start');
+    }
+    if ((int) $z['unter'] === 0 && $p < $x) {
+        $z['unter'] = 1;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_u'])) {
+            $z['meld_u'] = $jetzt;
+            return array($z, 'unter');
+        }
+        return array($z, 'unter_gesperrt');
+    }
+    if ((int) $z['unter'] === 1 && $p > $x + $h) {
+        $z['unter'] = 0;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_o'])) {
+            $z['meld_o'] = $jetzt;
+            return array($z, 'ueber');
+        }
+        return array($z, 'ueber_gesperrt');
+    }
+    return array($z, '');
+}
+
+/** Der Zustand liegt im Datenordner (uebersteht einen Neustart; ein Update raeumt ihn ab - dann wird der
+ *  Ausgangszustand ohne Meldung uebernommen). Geschrieben wird er nur bei einer Aenderung. */
+function spot_schwelle_datei() {
+    return spot_datadir() . '/schwelle.json';
+}
+
+/** Der Puls (Zeit, gesehener Preis, Ereignis) liegt im fluechtigen Zwischenspeicher und wird bei jedem
+ *  Minutenlauf geschrieben - die Pruefzeile im Reiter Test misst daran, ob der Minutenlauf rechnet. */
+function spot_schwelle_pulsdatei() {
+    return spot_tmpdir() . '/schwelle_puls.json';
+}
+
+function spot_schwelle_json_lesen($f) {
+    if (!is_file($f)) {
+        return array();
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Erst in eine Nebendatei, dann umbenennen - niemand liest einen halben Zustand. */
+function spot_schwelle_ablegen($f, array $d) {
+    $neu = $f . '.neu';
+    $j = json_encode($d);
+    if ($j === false || @file_put_contents($neu, $j . "\n") === false) {
+        @unlink($neu);
+        return false;
+    }
+    if (!@rename($neu, $f)) {
+        @unlink($neu);
+        return false;
+    }
+    return true;
+}
+
+/** Eine Zahl fuer Protokoll und Reiter Test: zwei Nachkommastellen, Komma. */
+function spot_schwelle_zahl($v) {
+    return number_format((float) $v, 2, ',', '');
+}
+
+/**
+ * Minutenlauf: einen Schritt rechnen, den Zustand ablegen, je Ausloesung eine
+ * Protokollzeile. $st ist der Zustand der Linie (ok, cur, cur_fehlt).
+ * Rueckgabe das Ereignis (fuer den Pruefstand), 'schreibfehler', wenn der
+ * Zustand nicht abgelegt werden konnte - dann ging auch keine Meldung hinaus,
+ * und der naechste Lauf versucht es noch einmal.
+ */
+function spot_schwelle_pruefen($st, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = spot_schwelle_einstellung();
+    $f = spot_schwelle_datei();
+    $alt = spot_schwelle_json_lesen($f);
+    if (!$e['ein'] && !$alt) {
+        if (is_file(spot_schwelle_pulsdatei())) {
+            @unlink(spot_schwelle_pulsdatei());
+        }
+        return '';
+    }
+    $gueltig = is_array($st) && !empty($st['ok']) && empty($st['cur_fehlt']);
+    $preis = (is_array($st) && isset($st['cur'])) ? $st['cur'] : null;
+    list($neu, $ereignis) = spot_schwelle_schritt($alt, $preis, $gueltig, $e, $jetzt);
+    if ($ereignis === 'aus') {
+        @unlink($f);
+        @unlink(spot_schwelle_pulsdatei());
+        spot_log('Schwellen-Push ausgeschaltet - Zustand verworfen, es geht keine Meldung mehr hinaus.');
+        return 'aus';
+    }
+    spot_schwelle_ablegen(spot_schwelle_pulsdatei(),
+        array('ts' => $jetzt, 'preis' => $gueltig ? (float) $preis : null, 'ereignis' => $ereignis));
+    if ($neu != $alt && !spot_schwelle_ablegen($f, $neu)) {
+        spot_log('Schwellen-Push: Zustand nicht schreibbar (' . $f . ') - keine Meldung, der naechste Lauf versucht es noch einmal.');
+        return 'schreibfehler';
+    }
+    $p = spot_schwelle_zahl($preis);
+    $x = spot_schwelle_zahl($e['ct']);
+    $bis = function ($t) use ($e) {
+        return date('d.m. H:i', (int) $t + $e['sperre'] * 60);
+    };
+    switch ($ereignis) {
+        case 'start':
+            spot_log(sprintf('Schwellen-Push: Ausgangszustand uebernommen - Preis %s ct/kWh liegt %s der Schwelle %s ct/kWh. Keine Meldung; gemeldet wird erst ein Wechsel.',
+                $p, (int) $neu['unter'] === 1 ? 'unter' : 'nicht unter', $x));
+            break;
+        case 'unter':
+            spot_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - Meldung "unter Schwelle" (SCHWELLE_MELDUNG_UNTER=1 fuer 5 Minuten).', $p, $x));
+            break;
+        case 'unter_gesperrt':
+            spot_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, $x, $bis($neu['meld_u']), date('d.m. H:i', (int) $neu['meld_u'])));
+            break;
+        case 'ueber':
+            spot_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh (Schwelle %s + Hysterese %s) - Meldung "wieder ueber" (SCHWELLE_MELDUNG_UEBER=1 fuer 5 Minuten).',
+                $p, spot_schwelle_zahl($e['ct'] + $e['hyst']), $x, spot_schwelle_zahl($e['hyst'])));
+            break;
+        case 'ueber_gesperrt':
+            spot_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, spot_schwelle_zahl($e['ct'] + $e['hyst']), $bis($neu['meld_o']), date('d.m. H:i', (int) $neu['meld_o'])));
+            break;
+    }
+    return $ereignis;
+}
+
+/**
+ * Was nach Loxone geht: unter (Zustand), meld_u und meld_o (Meldefenster,
+ * fuenf Minuten nach einer Meldung). Aus, ohne Zustand oder ohne gueltigen
+ * Preis ist unter 0 - ein zurueckbehaltenes 1 bliebe sonst stehen.
+ */
+function spot_schwelle_werte($st = null, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $aus = array('unter' => 0, 'meld_u' => 0, 'meld_o' => 0);
+    $e = spot_schwelle_einstellung();
+    $z = spot_schwelle_json_lesen(spot_schwelle_datei());
+    if (!$e['ein'] || !$z) {
+        return $aus;
+    }
+    $gueltig = !is_array($st) || (!empty($st['ok']) && empty($st['cur_fehlt']));
+    $aus['unter'] = ($gueltig && isset($z['unter']) && (int) $z['unter'] === 1) ? 1 : 0;
+    $aus['meld_u'] = spot_schwelle_fenster(isset($z['meld_u']) ? $z['meld_u'] : 0, $jetzt);
+    $aus['meld_o'] = spot_schwelle_fenster(isset($z['meld_o']) ? $z['meld_o'] : 0, $jetzt);
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Logik" im Reiter Test (und im Pruefstand): eine feste
+ * Preisreihe - Unterschreiten, Hysterese, Sperrzeit je Richtung, Wiederkehr
+ * nach der Sperrzeit, ungueltiger Preis, geaenderte Schwelle, Ausschalten -
+ * und die Meldefenster. Schreibt nichts. Rueckgabe array(0|1, Klartext).
+ */
+function spot_schwelle_selbstpruefung() {
+    $e = array('ein' => 1, 'ct' => 10.0, 'hyst' => 1.0, 'sperre' => 60);
+    $e8 = array('ct' => 8.0) + $e;
+    $aus = array('ein' => 0) + $e;
+    $t0 = 1700000000;
+    $reihe = array(
+        array(0, 12.0, true, $e, 'start'),
+        array(60, 9.5, true, $e, 'unter'),
+        array(120, 10.5, true, $e, ''),
+        array(180, 11.5, true, $e, 'ueber'),
+        array(240, 9.0, true, $e, 'unter_gesperrt'),
+        array(300, 11.5, true, $e, 'ueber_gesperrt'),
+        array(4000, 9.0, true, $e, 'unter'),
+        array(4060, 50.0, false, $e, 'ungueltig'),
+        array(4120, 11.5, true, $e, 'ueber'),
+        array(4180, 7.5, true, $e8, 'start'),
+        array(4240, 9.5, true, $e8, 'ueber_gesperrt'),
+        array(4300, 7.0, true, $aus, 'aus'),
+    );
+    $z = array();
+    $falsch = array();
+    foreach ($reihe as $i => $r) {
+        list($z, $ev) = spot_schwelle_schritt($z, $r[1], $r[2], $r[3], $t0 + $r[0]);
+        if ($ev !== $r[4]) {
+            $falsch[] = sprintf('%d: %s statt %s', $i + 1, $ev === '' ? '-' : $ev, $r[4] === '' ? '-' : $r[4]);
+        }
+    }
+    if (spot_schwelle_fenster($t0 + 60, $t0 + 160) !== 1 || spot_schwelle_fenster($t0 + 60, $t0 + 360) !== 0
+        || spot_schwelle_fenster(0, $t0) !== 0) {
+        $falsch[] = 'Meldefenster';
+    }
+    if ($falsch) {
+        return array(0, sprintf(spot_t('PRUEFTEXT.SCHWELLE_LOGIK_FALSCH'), implode('; ', $falsch)));
+    }
+    return array(1, sprintf(spot_t('PRUEFTEXT.SCHWELLE_LOGIK_OK'), count($reihe)));
+}
+
+/**
+ * Pruefzeile "Wirkung" im Reiter Test: rechnet der Minutenlauf die Schwelle,
+ * und passt der abgelegte Zustand zu dem Preis, den er dabei gesehen hat?
+ * Rueckgabe array(0|1|2, Klartext). Schreibt nichts.
+ */
+function spot_schwelle_lage($jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = spot_schwelle_einstellung();
+    if (!$e['ein']) {
+        return array(2, spot_t('PRUEFTEXT.SCHWELLE_AUS'));
+    }
+    $puls = spot_schwelle_json_lesen(spot_schwelle_pulsdatei());
+    if (!isset($puls['ts'])) {
+        return array(0, spot_t('PRUEFTEXT.SCHWELLE_NIE'));
+    }
+    $alter = $jetzt - (int) $puls['ts'];
+    if ($alter > 900) {
+        return array(0, sprintf(spot_t('PRUEFTEXT.SCHWELLE_ALT'), (int) round($alter / 60)));
+    }
+    if (!isset($puls['preis']) || !is_numeric($puls['preis'])) {
+        return array(2, sprintf(spot_t('PRUEFTEXT.SCHWELLE_OHNE_PREIS'), max(0, $alter)));
+    }
+    $z = spot_schwelle_json_lesen(spot_schwelle_datei());
+    if (!isset($z['ct']) || !is_numeric($z['ct']) || abs((float) $z['ct'] - $e['ct']) > 1e-9
+        || !isset($z['hyst']) || !is_numeric($z['hyst']) || abs((float) $z['hyst'] - $e['hyst']) > 1e-9) {
+        return array(2, spot_t('PRUEFTEXT.SCHWELLE_NEU'));
+    }
+    $p = (float) $puls['preis'];
+    $u = isset($z['unter']) ? (int) $z['unter'] : -1;
+    $passt = ($u === 1 && $p <= $e['ct'] + $e['hyst']) || ($u === 0 && $p >= $e['ct']);
+    $wann = function ($t) {
+        return (int) $t > 0 ? date('d.m. H:i', (int) $t) : spot_t('PRUEFTEXT.SCHWELLE_NIE_GEMELDET');
+    };
+    if (!$passt) {
+        return array(0, sprintf(spot_t('PRUEFTEXT.SCHWELLE_WIDERSPRUCH'), spot_schwelle_zahl($p), $u,
+            spot_schwelle_zahl($e['ct']), spot_schwelle_zahl($e['hyst'])));
+    }
+    return array(1, sprintf(spot_t('PRUEFTEXT.SCHWELLE_OK'), spot_schwelle_zahl($p), spot_schwelle_zahl($e['ct']),
+        spot_schwelle_zahl($e['hyst']), spot_t($u === 1 ? 'PRUEFTEXT.SCHWELLE_JA' : 'PRUEFTEXT.SCHWELLE_NEIN'),
+        $wann(isset($z['meld_u']) ? $z['meld_u'] : 0), $wann(isset($z['meld_o']) ? $z['meld_o'] : 0),
+        (int) $e['sperre'], max(0, $alter)));
+}
+
 /** Ist fuer die aktuelle Stunde eine Meldung vorgesehen? */
 function spot_hour_selected($h = null) {
     $cfg = spot_config();
@@ -5301,6 +5656,9 @@ function spot_schranken() {
         'notify.audio' => array('schalter'), 'notify.push' => array('schalter'),
         'notify.only_cheap' => array('schalter'), 'notify.negative' => array('schalter'),
         'notify.tomorrow' => array('schalter'), 'notify.hours' => array('stunden'),
+        // Schwellen-Push (1.2.51)
+        'schwelle_ein' => array('schalter'), 'schwelle_ct' => array('zahl', -100, 200),
+        'schwelle_hyst' => array('zahl', 0, 50), 'schwelle_sperre' => array('ganz', 0, 1440),
     );
 }
 
@@ -5315,7 +5673,10 @@ function spot_sicherung_neue_schluessel() {
  *  die Bruecke oder den Lesezweig des Endpunkts ab (Spaetschluessel-Hausform G19/G26). Die Oberflaeche sagt es
  *  (TEXT.SICH_SPAET_BEHALTEN). */
 function spot_sicherung_spaete_schluessel() {
-    return array('haus_strompreis_ein', 'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
+    /* 1.2.51: dazu die vier Schluessel des Schwellen-Pushs - eine Sicherung aus 1.2.50 oder frueher schaltet
+     * einen eingeschalteten Schwellen-Push nicht still ab. */
+    return array('haus_strompreis_ein', 'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein',
+                 'schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre');
 }
 
 /** Ein Wert gegen seine Schranke. Rueckgabe null (in Ordnung) oder array(Kennwort[, a, b]). */
@@ -5631,7 +5992,10 @@ function spot_sicherung_lesen($roh)
     $sp_spaet = array();
     foreach (spot_sicherung_spaete_schluessel() as $sp_sk) {
         if (!array_key_exists($sp_sk, $daten)) {
-            $neu[$sp_sk] = isset($sp_jetzt[$sp_sk]) ? (int) $sp_jetzt[$sp_sk] : $neu[$sp_sk];
+            /* 1.2.51: im Typ der Vorgabe - schwelle_ct und schwelle_hyst sind Kommazahlen, die (int) bis 1.2.50
+             * fuer die vier Schalter genuegte. */
+            $neu[$sp_sk] = isset($sp_jetzt[$sp_sk])
+                ? (is_float($neu[$sp_sk]) ? (float) $sp_jetzt[$sp_sk] : (int) $sp_jetzt[$sp_sk]) : $neu[$sp_sk];
             $sp_spaet[] = $sp_sk;
         }
     }
@@ -6061,6 +6425,12 @@ function spot_selbsttest($endpunkt_pruefen = false)
      * Richtungen (spot_mqtt_liste_pruefen()). */
     list($sp_ml_ok, $sp_ml_text) = spot_mqtt_liste_pruefen($st);
     $add('PRUEF.MQTT_LISTE', $sp_ml_ok, $sp_ml_text);
+    /* Schwellen-Push (1.2.51): die Logik an einer festen Preisreihe, dann die Wirkung - rechnet der Minutenlauf,
+     * und passt der abgelegte Zustand zum Preis, den er gesehen hat? Beides schreibt nichts. */
+    list($sp_sw_ok, $sp_sw_text) = spot_schwelle_selbstpruefung();
+    $add('PRUEF.SCHWELLE_LOGIK', $sp_sw_ok, $sp_sw_text);
+    list($sp_sw_ok, $sp_sw_text) = spot_schwelle_lage();
+    $add('PRUEF.SCHWELLE', $sp_sw_ok, $sp_sw_text);
 
     // Ist die Loxone-Vorlage wohlgeformt? Eine kaputte Vorlage merkt der
     // Anwender sonst erst in Loxone Config - und sucht den Fehler bei sich.

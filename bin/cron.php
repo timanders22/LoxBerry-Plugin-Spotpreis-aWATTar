@@ -215,6 +215,14 @@ if ($spot_neu_holen) {
 spot_config_vervollstaendigen();
 
 spot_announce_check();
+/* Schwellen-Push (1.2.51, ab Werk aus): ein Schritt je Minutenlauf, VOR dem MQTT-Versand - das Meldefenster
+ * geht im selben Lauf hinaus. Ein Fehler darin darf den Minutenlauf nicht aufhalten. */
+try {
+    spot_schwelle_pruefen($st);
+} catch (Throwable $spot_e) {
+    spot_log('Schwellen-Push abgebrochen (' . get_class($spot_e) . ': ' . $spot_e->getMessage()
+        . ') - der Minutenlauf ist davon nicht betroffen.');
+}
 spot_marstek_control($st); // nur aktiv, wenn in den Einstellungen eingeschaltet
 
 /* ---------------- Monatsbericht am Monatsersten ----------------

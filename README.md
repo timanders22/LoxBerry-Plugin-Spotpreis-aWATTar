@@ -8,6 +8,13 @@ per MQTT und als JSON — mit stündlicher Sprachansage und Push-Auslöser.
 Kein Konto, kein API-Key, keine Cloud-Bindung. Kompatibel mit LoxBerry 3.x und
 **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.2.51
+
+- **Schwellen-Push** (ab Werk aus), im Reiter *Einstellungen* unter „Schwellen-Push (unabhängig von den Stunden)“: eine Meldung, wenn der Endpreis unter eine eigene Schwelle fällt, und eine, wenn er wieder über Schwelle + Hysterese steigt – unabhängig von den Stunden der Liste „Ansage und Push je Stunde“ und vom Haken „nur unter der Günstig-Schwelle“, die beide bleiben, wie sie sind. Je Richtung kommt in der Sperrzeit (Vorgabe 60 Minuten) höchstens eine Meldung. Nach dem Einschalten und nach jeder Änderung von Schwelle oder Hysterese wird der Ausgangszustand ohne Meldung übernommen; gemeldet wird ein Wechsel.
+- Den Push verschickt wie bisher der Miniserver: neue Felder am Ende der Loxone-Zeile `SCHWELLE_UNTER` (1 = Preis unter der Schwelle), `SCHWELLE_MELDUNG_UNTER` und `SCHWELLE_MELDUNG_UEBER` (je fünf Minuten 1 nach einer Meldung „unter Schwelle“ bzw. „wieder über“); über MQTT `schwelle/unter` (zurückbehalten), `schwelle/meldung_unter` und `schwelle/meldung_ueber`. Einen Benachrichtigungsbaustein an `SCHWELLE_MELDUNG_UNTER` hängen. Die Importvorlage und die Namenstabelle des Reiters *Einbindung in Loxone* führen die drei Eingänge.
+- Jede Auslösung steht als Zeile im Protokoll, auch eine gesperrte. Der Reiter *Test* rechnet die Zustandsfolge an einer Preisreihe nach (Unterschreiten, Hysterese, Sperrzeit, Wiederkehr) und prüft, ob der Minutenlauf die Schwelle rechnet und der abgelegte Zustand zum Preis passt.
+- Eine Sicherung aus 1.2.50 oder früher schaltet einen eingeschalteten Schwellen-Push beim Zurückspielen nicht ab; die vier neuen Einstellungen behalten dann ihren geltenden Wert.
+
 ## Neu in 1.2.50
 
 - Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.

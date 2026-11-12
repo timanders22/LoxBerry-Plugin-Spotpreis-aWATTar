@@ -689,6 +689,11 @@ if ($sp_ist_post && isset($_POST['save'])) {
         'negative' => isset($_POST['neg_always']) ? 1 : 0,
         'tomorrow' => isset($_POST['notify_tomorrow']) ? 1 : 0,
     );
+    // ---- Schwellen-Push (1.2.51) ----
+    $sp_new['schwelle_ein'] = isset($_POST['schwelle_ein']) ? 1 : 0;
+    foreach (array('schwelle_ct', 'schwelle_hyst', 'schwelle_sperre') as $sp_k) {
+        $sp_new[$sp_k] = $sp_pruef($sp_num($sp_post($sp_k)), $sp_s[$sp_k], $sp_k, $sp_k);
+    }
     // ---- Sprachausgabe ----
     /* Seit 1.2.34 (Sprachausgabe Stufe 2, Nr. 36 b): der Formular-Baustein der gemeinsamen Sprachausgabe
      * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
@@ -1871,6 +1876,31 @@ if ($sp_cfg['pv_quelle'] !== '' || $sp_cfg['soc_url'] !== '' || !empty($sp_cfg['
     </label>
 </div>
 
+<h2><?php echo spot_t('SCHWELLE.TITEL'); ?></h2>
+<div style="margin-bottom:6px;">
+    <label style="display:inline-flex;align-items:center;gap:6px;">
+        <input data-role="none" type="checkbox" name="schwelle_ein" <?= !empty($sp_cfg['schwelle_ein']) ? 'checked' : '' ?>><?php echo spot_t('SCHWELLE.EIN'); ?>
+    </label>
+    <div class="sm-small"><?php echo spot_t('SCHWELLE.H_EIN'); ?></div>
+</div>
+<div class="sm-row">
+    <div>
+        <label><?php echo spot_t('SCHWELLE.CT'); ?></label>
+        <input data-role="none" type="text" name="schwelle_ct" value="<?= sp_e($sp_cfg['schwelle_ct']) ?>" placeholder="20">
+        <div class="sm-small"><?php echo spot_t('SCHWELLE.H_CT'); ?></div>
+    </div>
+    <div>
+        <label><?php echo spot_t('SCHWELLE.HYST'); ?></label>
+        <input data-role="none" type="text" name="schwelle_hyst" value="<?= sp_e($sp_cfg['schwelle_hyst']) ?>" placeholder="1">
+        <div class="sm-small"><?php echo spot_t('SCHWELLE.H_HYST'); ?></div>
+    </div>
+    <div>
+        <label><?php echo spot_t('SCHWELLE.SPERRE'); ?></label>
+        <input data-role="none" type="text" name="schwelle_sperre" value="<?= sp_e($sp_cfg['schwelle_sperre']) ?>" placeholder="60">
+        <div class="sm-small"><?php echo spot_t('SCHWELLE.H_SPERRE'); ?></div>
+    </div>
+</div>
+
 <h2><?php echo spot_t('TEXT.SPRACHAUSGABE'); ?></h2>
 <div class="sm-hinweis"><?php echo spot_t('TEXT.ANSAGE_HAUSFORM'); ?></div>
 <?php /* Seit 1.2.34 der Formular-Baustein der gemeinsamen Sprachausgabe (ansage_formular_html()): Klassen
@@ -2386,6 +2416,9 @@ $sp_bs = spot_bausteinseiten();
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IANN_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_MELDEFENSTER_ERSTE_10_MIN_EINER_'); ?></td><td>&mdash;</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IPUSH_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.IAUDIO_I_V'); ?></span></td><td><?php echo spot_t('TEXT.FREIGABEN_AUS_DER_PLUGIN_KONFIGURA'); ?></td><td>&mdash;</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.IPTEST_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_TEST_PUSHNACHRICHT_ANGEFORDERT_R'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono">\i;SCHWELLE_UNTER=\i\v</span></td><td><?php echo spot_t('SCHWELLE.E_SCHWELLE_UNTER'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono">\i;SCHWELLE_MELDUNG_UNTER=\i\v</span></td><td><?php echo spot_t('SCHWELLE.E_SCHWELLE_MELDUNG_UNTER'); ?></td><td>&mdash;</td></tr>
+<tr><td><span class="sm-mono">\i;SCHWELLE_MELDUNG_UEBER=\i\v</span></td><td><?php echo spot_t('SCHWELLE.E_SCHWELLE_MELDUNG_UEBER'); ?></td><td>&mdash;</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2_I_V'); ?></span></td><td><?php echo spot_t('TEXT.CO_8322_INTENSITT_DES_STROMMIXES_J'); ?></td><td>g/kWh</td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2MIN_I_V'); ?></span> / <span class="sm-mono"><?php echo spot_t('TEXT.ICO2MINH_I_V'); ?></span></td><td><?php echo spot_t('TEXT.SAUBERSTE_STUNDE_DER_NCHSTEN_24_H_'); ?></td><td><?php echo spot_t('TEXT.G_KWH_023'); ?></td></tr>
 <tr><td><span class="sm-mono"><?php echo spot_t('TEXT.ICO2CLEAN_I_V'); ?></span></td><td><?php echo spot_t('TEXT.1_UNTER_DER_SAUBER_SCHWELLE_OUML_K'); ?></td><td>&mdash;</td></tr>
