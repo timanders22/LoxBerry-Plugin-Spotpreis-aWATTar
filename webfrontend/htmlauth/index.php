@@ -798,47 +798,63 @@ if ($sp_ist_post && isset($_POST['spot_csv'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
+ * 1.2.52: ueber das gemeinsame Sicherungsmodul (sicherung.php, Modul 1.2.2), in jeder Linie gleich. Den Eingang
+ * prueft sicherung_eingang(): zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+ * is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die Groessengrenze des Moduls
+ * (256 kB, wie bisher hier). Lesen, Pruefen und Speichern macht sicherung_zurueckspielen() nach der Beschreibung
+ * spot_sicherung_beschreibung(); eine halb gueltige Datei aendert nichts, alle Beanstandungen werden gesammelt.
+ * Die Schritte dieser Linie davor und danach stehen in den Rueckrufen - dieselben wie bis 1.2.51.
+ *
+ * Die Saetze des Moduls sind maskiert; diese Seite maskiert ihre Meldungen selbst (sp_e(), O7). Deshalb gehen sie
+ * hier einmal durch html_entity_decode(), und die eigenen Saetze in 'nachziehen' werden vorher maskiert. */
 if ($sp_ist_post && isset($_POST['spot_zurueck'])) {
-    if (!isset($_FILES['spot_sicherung']) || !is_array($_FILES['spot_sicherung'])
-        || !isset($_FILES['spot_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['spot_sicherung']['tmp_name'])) {
-        $sp_fehler[] = spot_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['spot_sicherung']['size'] > 262144) {
-        $sp_fehler[] = spot_t('TEXT.SICH_ZU_GROSS');
+    $sp_klar = function ($s) { return html_entity_decode((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $sp_mask = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $sp_b = spot_sicherung_beschreibung();
+    list($sp_roh, $sp_ab) = sicherung_eingang($sp_b, $_POST, $_FILES, 'spot_sicherung');
+    if ($sp_ab !== null) {
+        $sp_r = $sp_ab;
     } else {
-        $sp_rs_alt = spot_config();
-        list($spot_neu, $spot_mangel, $spot_n, $spot_spaet) = spot_sicherung_lesen(
-            (string) @file_get_contents($_FILES['spot_sicherung']['tmp_name']));
-        /* Gruppe 27 (1.2.39): der Merker "war Anbieter" gehoert zur Anlage, nicht zur Sicherung - er bleibt. */
-        if ($spot_neu !== null && !empty($sp_rs_alt['_haus_frueher'])) {
-            $spot_neu['_haus_frueher'] = 1;
-        }
-        if ($spot_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $sp_fehler[] = spot_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $spot_mangel);
-        } elseif (spot_config_save($spot_neu)) {
-            $sp_note = sprintf(spot_t('TEXT.SICH_UEBERNOMMEN'), $spot_n);
-            if ($spot_spaet) {
-                $sp_note .= ' ' . implode(' ', $spot_spaet);
+        $sp_zspaet = array();
+        $sp_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$sp_zspaet) {
+            /* S1: die Sprechtoken (Alexa-NG, Chromecast 4 Lox NG) stehen nie in einer Sicherung - eine Datei, die
+             * eines traegt, hat die Pruefung abgewiesen; die geltenden bleiben. Welle Mehrfach-Ziele (1.2.40):
+             * fehlt die Liste der weiteren Ziele (Sicherung einer aelteren Fassung), gelten die jetzigen weiter -
+             * genannt im Hinweis. Eine Sicherung MIT leerer Liste heisst "keine weiteren Ziele". */
+            if (isset($neu['tts']) && is_array($neu['tts'])) {
+                $jt = (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null;
+                $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'], $jt);
+                list($neu['tts'], $sp_zspaet) = ansage_sicherung_spaet($neu['tts'], $jt);
+            }
+            return $neu;
+        };
+        $sp_b['speichern'] = function ($neu) { return spot_config_save($neu); };
+        $sp_b['zweitschrift'] = function () { $p = spot_paths(); return array($p['config'], $p['backup']); };
+        $sp_b['nachziehen'] = function ($neu, $jetzt, $r)
+                use (&$sp_zspaet, $sp_mqtt_wechsel, $sp_haus_folgen, $sp_bruecke_folgen, $sp_mask) {
+            $h = array();
+            if ($sp_zspaet) {
+                $h[] = $sp_mask(sprintf(spot_t('TEXT.SICH_SPAET'), implode(', ', $sp_zspaet)));
             }
             /* M1: auch eine Sicherung kann das Praefix wechseln oder MQTT ausschalten. */
-            $sp_rs_s = $sp_mqtt_wechsel(!empty($sp_rs_alt['mqtt_enabled']), spot_mqtt_praefix($sp_rs_alt),
-                !empty($spot_neu['mqtt_enabled']), spot_mqtt_praefix($spot_neu));
+            $s = $sp_mqtt_wechsel(!empty($jetzt['mqtt_enabled']), spot_mqtt_praefix($jetzt),
+                !empty($neu['mqtt_enabled']), spot_mqtt_praefix($neu));
             /* Gruppe 27 (1.2.39): dieselben Folgen wie beim Reiter MQTT - haus/strompreis, Abo-Datei, Bruecke. */
-            $sp_rs_s = array_merge($sp_rs_s, $sp_haus_folgen($sp_rs_alt, $spot_neu));
-            if (!empty($spot_neu['mqtt_enabled'])) { spot_abo_datei(true); }
-            $sp_rs_s = array_merge($sp_rs_s, $sp_bruecke_folgen());
-            if ($sp_rs_s) {
-                $sp_note .= ' ' . implode(' ', $sp_rs_s);
-            }
-        } else {
-            $sp_fehler[] = spot_t('TEXT.SICH_SCHREIBFEHLER');
-        }
+            $s = array_merge($s, $sp_haus_folgen($jetzt, $neu));
+            if (!empty($neu['mqtt_enabled'])) { spot_abo_datei(true); }
+            $s = array_merge($s, $sp_bruecke_folgen());
+            foreach ($s as $x) { $h[] = $sp_mask($x); }
+            /* Den Dienst nachziehen und sagen, was mit ihm geschah (Regeln/05): spot_config_save() hat den
+             * Preiszustand verworfen, der naechste Lauf rechnet mit den zurueckgespielten Einstellungen. */
+            $h[] = $sp_mask(spot_t('TEXT.SICH_NEU_GERECHNET'));
+            return $h;
+        };
+        $sp_r = sicherung_zurueckspielen($sp_b, $sp_roh);
+    }
+    $sp_m = sicherung_meldungen($sp_b, $sp_r);
+    foreach ($sp_m['fehler'] as $sp_x) { $sp_fehler[] = $sp_klar($sp_x); }
+    if ($sp_m['hinweise']) {
+        $sp_note = trim($sp_note . ' ' . implode(' ', array_map($sp_klar, $sp_m['hinweise'])));
     }
 }
 
@@ -1944,12 +1960,10 @@ echo ansage_regeln_html(spot_ansage_regeln($sp_cfg), array(), array(), $sp_th + 
 <div class="sm-warnung"><?= spot_t('TEXT.SICH_WARNUNG') ?></div>
 <?php
 /* X-3 (Pruefbericht oberflaeche, Befund 11): was das Zurueckspielen abweisen
- * wuerde, steht schon am Knopf - nur die Namen. Dieselbe Pruefung wie in
- * spot_sicherung_schreiben() (dort als _warnung in der Datei). */
-$sp_x3_daten = $sp_cfg;
-unset($sp_x3_daten['token'], $sp_x3_daten['marstek_token'], $sp_x3_daten['tts']['alexa_token'], $sp_x3_daten['tts']['google_token']);
-$sp_x3 = spot_konfig_mangel($sp_x3_daten);
-if ((string) $sp_cfg['token'] !== '' && !spot_endpunkt_token_form_ok($sp_cfg['token'])) { array_unshift($sp_x3, 'token'); }
+ * wuerde, steht schon am Knopf - nur die Namen. Seit 1.2.52 DIESELBE Pruefung wie beim
+ * Zurueckspielen (sicherung_selbstpruefung() des Moduls) an genau der Datei, die der Knopf
+ * liefert; die Datei sagt es selbst in _warnung. */
+$sp_x3 = sicherung_selbstpruefung(spot_sicherung_beschreibung(), spot_sicherung_daten(), $sp_cfg);
 if ($sp_x3) { ?>
 <div class="sm-alert sm-warn"><?= sp_e(sprintf(spot_t('TEXT.SICH_X3'), implode(', ', $sp_x3))) ?></div>
 <?php } ?>
@@ -1967,6 +1981,7 @@ if ($sp_x3) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <?php echo spot_fmt(); ?>
     <input data-role="none" type="file" name="spot_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(spot_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="spot_zurueck" value="1"><?= spot_t('TEXT.K_ZURUECK') ?></button>
   </form>
 </div>

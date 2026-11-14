@@ -29,6 +29,10 @@ require_once __DIR__ . '/planer.php';
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
  * anzulegen und antwortet bei direktem Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 1.2.52: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
+ * anderen Linien. Die Beschreibung dieser Linie steht in spot_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 /* Nachzug Anbieterregel (1.2.40, 29.10.2026): das gemeinsame Stueck der Anbieterregel fuer haus/strompreis
  * (Regeln/07 Nr. 15), byteweise gleich mit der Stammfassung aus Spotpreis Tibber 0.9.33 - nur reine Funktionen
  * hanb_*(), kein Netz, keine Datei; antwortet bei direktem Aufruf mit 403. */
@@ -5663,15 +5667,16 @@ function spot_schranken() {
 }
 
 /** Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt (aeltere Sicherungen tragen sie nicht). Fehlen sie,
- *  gilt die Vorgabe (ab Werk aus). */
+ *  behalten sie seit 1.2.52 ihren geltenden Wert wie die Spaetschluessel unten (Regeln/05 Punkt 6, Entscheidung
+ *  des Hausherrn 12.11.2026 "Ja, behalten"; bis 1.2.51 galt die Vorgabe, ab Werk aus). */
 function spot_sicherung_neue_schluessel() {
     return array('marstek_fremd_beanstanden');
 }
 
 /** Gruppe 27 (1.2.39, E-E2/E-E13, N8): die Schluessel seit 1.2.39. Fehlen sie in einer Sicherung (aelter als
  *  1.2.39), gilt der GELTENDE Wert, nicht die Vorgabe - sonst schaltete ein Zurueckspielen einen laufenden Anbieter,
- *  die Bruecke oder den Lesezweig des Endpunkts ab (Spaetschluessel-Hausform G19/G26). Die Oberflaeche sagt es
- *  (TEXT.SICH_SPAET_BEHALTEN). */
+ *  die Bruecke oder den Lesezweig des Endpunkts ab (Spaetschluessel-Hausform G19/G26). Seit 1.2.52 nennt sie das
+ *  Sicherungsmodul ('fehlt' => 'behalten', spot_sicherung_beschreibung()). */
 function spot_sicherung_spaete_schluessel() {
     /* 1.2.51: dazu die vier Schluessel des Schwellen-Pushs - eine Sicherung aus 1.2.50 oder frueher schaltet
      * einen eingeschalteten Schwellen-Push nicht still ab. */
@@ -5808,20 +5813,6 @@ function spot_wert_mangel($k, $w) {
     return $m === null ? array() : array(array($k, $m));
 }
 
-/** Alle Maengel einer ganzen Konfiguration (X-3) - nur die Namen. */
-function spot_konfig_mangel(array $daten) {
-    $namen = array();
-    foreach ($daten as $k => $w) {
-        if ($k === '' || $k[0] === '_' || in_array($k, array('token', 'marstek_token'), true)) {
-            continue;
-        }
-        foreach (spot_wert_mangel((string) $k, $w) as $x) {
-            $namen[] = $x[0];
-        }
-    }
-    return $namen;
-}
-
 /** Der Grund eines Mangels als Satzteil (Sprachdatei, Abschnitt WERT). */
 function spot_wert_text($m) {
     $k = isset($m[0]) ? (string) $m[0] : 'TYP';
@@ -5843,280 +5834,156 @@ function spot_wert_text($m) {
 }
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 1.2.52: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026, Welle 1 Gruppe 2b). Lesen, Pruefen, Verwerfen, Zurueckspielen und den Kopf der Datei macht seither das
+ * Modul, nach denselben Regeln wie in den anderen Linien (Regeln/05). Bis 1.2.51 stand hier eine eigene Schleife
+ * (spot_sicherung_lesen()): ein unbekannter Schluessel - oben, in einer Schaltregel oder im Block notify oder tts -
+ * wies die ganze Datei ab, und eine Datei ohne Kennzeichen wurde angenommen, wenn ihre Schluessel passten. Seither:
+ * verworfen und mit Namen gemeldet, oben und in den Bloecken; eine Datei mit fremdem Kennzeichen _plugin oder ganz
+ * ohne Kopf wird abgewiesen; ein leerer Wert ueberschreibt keinen bestehenden.
  *
- * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
- * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
- * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
- * als die alte, und man sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Was diese Linie bestimmt:
+ *  - Kennzeichen 'LoxBerry-Plugin-Spotpreis-aWATTar' (Name des Repositorys); bis 1.2.51 schrieb der Knopf keines.
+ *    Eine aeltere Sicherung erkennt der Uebersetzer an ihrem _hinweis, den nur der Sichern-Knopf dieser Linie schreibt
+ *    (wortgleich in allen Fassungen 1.2.16 bis 1.2.51, gemessen 14.11.2026).
+ *  - Nie aus einer Datei und nie in eine Datei ('nie_aus_datei', Modul 1.2.1: behalten ihren geltenden Wert):
+ *    marstek_token (Aktionstoken des Marstek-Plugins, Energie-1 C2), der Vermerk ansage_token_herkunft der
+ *    Sprachausgabe und der Merker _haus_frueher ("war Anbieter", Gruppe 27). Eine Datei, die ein Marstek-Token
+ *    traegt, wird wie bisher ganz abgewiesen ('quer'); eine Marstek-Adresse mit Token ebenso, und beim Sichern
+ *    kommt die Adresse ohne Token in die Datei (Hinweis in _warnung).
+ *  - Die Sprechtoken im Block tts stehen nie in der Datei ('sichern'); eine Datei, die eines traegt, wird abgewiesen
+ *    (spot_sicherung_tts_pruefen(), am Wert, wie er in der Datei steht); die geltenden setzt der Knopf zurueck.
+ *  - Was fehlen darf ('fehlt' => 'behalten', Regeln/05 Punkt 6, Entscheidung des Hausherrn 12.11.2026 "Ja,
+ *    behalten"): die Schluessel aus spot_sicherung_spaete_schluessel() und spot_sicherung_neue_schluessel() und
+ *    ansage_regeln. Alle uebrigen hat jede Fassung mit Kopf geschrieben (gemessen mit dem Pruefstand, --alt alle).
+ *  - Ein leeres Endpunkt-Token laesst das geltende stehen (Regel 3 des Moduls; bis 1.2.51 Klasse 12 hier).
  */
-function spot_sicherung_lesen($roh)
+function spot_sicherung_beschreibung()
 {
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(spot_t('TEXT.SICH_KEIN_JSON')), 0);
+    $notify = array();
+    foreach (array_keys(spot_schranken()) as $sp_sk) {
+        if (strpos($sp_sk, 'notify.') === 0) { $notify[] = substr($sp_sk, 7); }
     }
-    $neu = spot_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    $sp_tok_aus_datei = false;
-    foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-         *
-         * Ohne diese drei Zeilen weist die Funktion genau die Datei ab, die
-         * spot_sicherung_schreiben() zwei Bildschirmzeilen weiter oben
-         * erzeugt hat - der Kopf traegt Schluessel, die es in den Vorgaben
-         * nicht gibt und nie geben soll. Wer der Sicherungsdatei etwas
-         * hinzufuegt, das keine Einstellung ist, ergaenzt im selben Zug die
-         * Leseseite. */
-        if ($k !== '' && $k[0] === '_') {
-            continue;
-        }
-        /* Das Marstek-Token kommt nie aus einer Datei (Energie-1 C2). Eine
-         * Sicherung dieses Plugins traegt es nicht. Ein LEERER Wert sagt
-         * nichts und wird uebergangen (wie das leere Formularfeld: das
-         * geltende bleibt). Traegt der Schluessel einen Wert - Text oder
-         * Liste -, ist die Datei fremd oder von Hand bearbeitet: abgewiesen
-         * wird die ganze Datei, ohne den Wert zu nennen. Ebenso ein Token in
-         * der Marstek-Adresse. */
-        /* Das Endpunkt-Token (Klasse 12). Bis 1.2.29 ging es ungeprueft
-         * durch: eine Liste wurde gespeichert, und danach war der Endpunkt
-         * mit ?token=Array offen (gemessen, HTTP 200 mit voller Zeile). Ein
-         * leerer Wert schaltete den Schutz still ab. Jetzt: nur eine
-         * Zeichenkette in der Form der eigenen Erzeugung; leer = das geltende
-         * Token bleibt; alles andere weist die ganze Datei ab. */
-        if ($k === 'token') {
-            if (!is_string($w) || ($w !== '' && !spot_endpunkt_token_form_ok($w))) {
-                $mangel[] = spot_t('TEXT.SICH_TOKEN_FORM');
-            } elseif ($w !== '') {
-                $neu['token'] = $w;
-                $sp_tok_aus_datei = true;
-                $anzahl++;
+    $tts = array_merge(spot_ansage_schluessel(), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'regeln' => sicherung_liste(array_keys(spot_regel_vorgabe())),
+        'notify' => sicherung_block($notify),
+        'tts'    => sicherung_block($tts, $tts_knoten)
+                    + array('sichern' => 'ansage_sicherung_bereinigen', 'pruefen' => 'spot_sicherung_tts_pruefen'),
+        /* S2 (1.2.49): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'fehlt' => 'behalten',
+            'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+        /* Ein Token in der Marstek-Adresse kommt nie in die Datei (X-3; das Zurueckspielen wiese es ab). */
+        'marstek_url' => array('sichern' => function ($w) {
+            return (is_string($w) && $w !== '' && spot_marstek_url_hat_token($w)) ? spot_marstek_url_ohne_token($w) : $w;
+        }),
+    );
+    foreach (array_merge(spot_sicherung_spaete_schluessel(), spot_sicherung_neue_schluessel()) as $sp_sk) {
+        $schluessel[$sp_sk] = array('fehlt' => 'behalten');
+    }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Spotpreis-aWATTar',
+        'hinweis' => 'Spotpreis aWATTar - gesicherte Einstellungen.'
+                   . ' ENTHAELT DEN AKTIONSTOKEN DES ENDPUNKTS -'
+                   . ' wie ein Passwort behandeln, nicht in ein Forum haengen'
+                   . ' und nicht an einen Fehlerbericht heften.'
+                   . ' Nicht darin: das Marstek-Token und die Sprechtoken fuer Alexa-NG'
+                   . ' und Chromecast 4 Lox NG - sie bleiben beim Zurueckspielen, wie sie sind.',
+        'fassung' => 'spot_fassung',
+        'vorgaben' => spot_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('marstek_token', 'ansage_token_herkunft', '_haus_frueher'),
+        'uebersetzer' => 'spot_sicherung_uebersetzer',
+        'pruefen' => 'spot_sicherung_wert_pruefen',
+        'quer' => function ($neu, $r, $daten) {
+            /* Energie-1 C2: eine Sicherung dieses Plugins traegt nie ein Marstek-Token. Ein leerer Wert sagt nichts;
+             * jeder andere (Text, Liste) heisst: fremd oder von Hand bearbeitet - die ganze Datei wird abgewiesen,
+             * ohne den Wert zu nennen. */
+            if (is_array($daten) && array_key_exists('marstek_token', $daten) && $daten['marstek_token'] !== '') {
+                return array(array('marstek_token', htmlspecialchars(spot_t('TEXT.SICH_MARSTEK_TOKEN'), ENT_QUOTES, 'UTF-8')));
             }
-            continue;
-        }
-        if ($k === 'marstek_token') {
-            if ($w !== '') {
-                $mangel[] = spot_t('TEXT.SICH_MARSTEK_TOKEN');
-            }
-            continue;
-        }
-        if ($k === 'marstek_url' && is_string($w) && spot_marstek_url_hat_token($w)) {
-            $mangel[] = spot_t('TEXT.SICH_MARSTEK_URL_TOKEN');
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) {     // 1.2.46: bis 1.2.45 stillschweigend uebergangen, die Datei galt als heil
-                $mangel[] = sprintf(spot_t('TEXT.SICH_WERT'), 'config.ansage_regeln', ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', spot_ansage_k()));
-                continue;
-            }
-            $neu['ansage_regeln'] = $s2_r;
-            
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            /* O7: hier NICHT maskieren - die Oberflaeche gibt die Meldung mit
-             * sp_e() aus. Bis 1.2.31 stand hier htmlspecialchars(), und der
-             * Anwender las "x&lt;b&gt;&amp;y" statt "x<b>&y". */
-            $mangel[] = sprintf(spot_t('TEXT.SICH_FREMD'), (string) $k);
-            continue;
-        }
-        /* C4 (Pruefbericht code, Befund 7; oberflaeche, Befund 8): JEDER Wert
-         * mit derselben Pruefung wie das Formular - Typ, Bereich, Liste. Bis
-         * 1.2.31 ging hier alles ausser dem Token ungeprueft durch: mqtt_topic
-         * als Liste machte das Praefix zu "Array", marstek_hours 99 liess die
-         * Kopplung in jeder Stunde laden. Genannt wird nur der Name und der
-         * Grund, nie der Wert. */
-        $sp_wm = spot_wert_mangel((string) $k, $w);
-        if ($sp_wm) {
-            foreach ($sp_wm as $sp_x) {
-                $mangel[] = sprintf(spot_t('TEXT.SICH_WERT'), $sp_x[0], spot_wert_text($sp_x[1]));
-            }
-            continue;
-        }
-        $neu[$k] = $w;
-        $anzahl++;
+            return array();
+        },
+        'warnung' => function ($cfg) {
+            return (isset($cfg['marstek_url']) && is_string($cfg['marstek_url']) && $cfg['marstek_url'] !== ''
+                    && spot_marstek_url_hat_token($cfg['marstek_url']))
+                ? array('marstek_url trug ein Token. Es steht NICHT in dieser Datei;'
+                        . ' bitte im Plugin in das Feld "Aktionstoken des Marstek-Plugins" eintragen.')
+                : array();
+        },
+        'jetzt' => function () { return spot_config(); },
+        't' => 'spot_t',
+        'log' => 'spot_log',
+    );
+}
+
+/** Eine Sicherung ohne Kennzeichen (bis 1.2.51): eigene, wenn ihr _hinweis so beginnt, wie ihn nur der Sichern-Knopf
+ *  dieser Linie schreibt; sonst null (abgewiesen). Die Datei bleibt, wie sie ist. */
+function spot_sicherung_uebersetzer($daten)
+{
+    return (is_array($daten) && isset($daten['_hinweis']) && is_string($daten['_hinweis'])
+            && strpos($daten['_hinweis'], 'Spotpreis aWATTar - gesicherte Einstellungen.') === 0) ? $daten : null;
+}
+
+/** Ein Wert der Sicherung, mit derselben Pruefung wie das Formular (spot_wert_mangel(), C4) - das Endpunkt-Token in
+ *  der Form der eigenen Erzeugung (Klasse 12), die Marstek-Adresse ohne Token. Genannt werden Name und Grund, nie
+ *  der Wert. Rueckgabe '' oder Liste von Saetzen (maskiert, wie das Modul sie erwartet). */
+function spot_sicherung_wert_pruefen($k, $w)
+{
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    if ($k === 'token') {
+        return ($w === '' || spot_endpunkt_token_form_ok($w)) ? '' : $e(spot_t('TEXT.SICH_TOKEN_FORM'));
     }
-    if ($anzahl === 0) {
-        $mangel[] = spot_t('TEXT.SICH_LEER');
+    if ($k === 'marstek_url' && is_string($w) && spot_marstek_url_hat_token($w)) {
+        return $e(spot_t('TEXT.SICH_MARSTEK_URL_TOKEN'));
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    foreach (array_keys(spot_vorgaben()) as $fk) {
-        // marstek_token steht nie in einer Sicherung - sein Fehlen ist richtig.
-        // Schluessel, die es erst seit dem Durchgang 01.10.2026 gibt, fehlen in
-        // jeder aelteren Sicherung; sie sind ab Werk aus und gelten dann so.
-        // 1.2.49: ansage_regeln fehlt jeder Sicherung bis 1.2.48 (dann gelten die Regeln ab Werk, wie bisher);
-        // ansage_token_herkunft steht nie in einer Sicherung (die geltende bleibt, unten).
-        if (in_array($fk, array('ansage_regeln', 'ansage_token_herkunft'), true)) { continue; }
-        if ($fk !== 'marstek_token' && !in_array($fk, spot_sicherung_neue_schluessel(), true)
-            && !in_array($fk, spot_sicherung_spaete_schluessel(), true)
-            && !array_key_exists($fk, $daten)) {
-            $fehlend[] = $fk;
-        }
+    $t = array();
+    foreach (spot_wert_mangel((string) $k, $w) as $x) {
+        $t[] = $e(sprintf(spot_t('TEXT.SICH_WERT'), $x[0], spot_wert_text($x[1])));
     }
-    if ($fehlend) {
-        // O7: ohne htmlspecialchars - die Ausgabe maskiert (sp_e()).
-        $mangel[] = sprintf(spot_t('TEXT.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
+    return $t;
+}
+
+/** Der Block tts: die Sprechtoken am Wert, wie er in der Datei steht ($roh, Modul 1.2.0 - ein leerer Wert, den Regel
+ *  3 durch das geltende Token ersetzt, ist kein gesichertes Token), die uebrigen Schluessel wie das Formular. */
+function spot_sicherung_tts_pruefen($w, $k, $neu, $roh)
+{
+    $t = array();
+    foreach (ansage_sicherung_mangel($roh) as $n) {
+        $t[] = htmlspecialchars(sprintf(spot_t('TEXT.SICH_WERT'), $n, spot_wert_text(array('SPRECHTOKEN'))), ENT_QUOTES, 'UTF-8');
     }
-    /* Zurueckspielen behaelt das geltende Marstek-Token (Energie-1 C2): die
-     * Datei traegt keines, und die Vorgabe '' haette es sonst still geloescht. */
-    $sp_jetzt = spot_config();
-    /* Gruppe 27 (1.2.39): fehlt ein Spaetschluessel in der Datei, gilt der geltende Wert (siehe
-     * spot_sicherung_spaete_schluessel()). Die Namen gehen als Hinweis (vierter Rueckgabewert) an die Oberflaeche. */
-    $sp_spaet = array();
-    foreach (spot_sicherung_spaete_schluessel() as $sp_sk) {
-        if (!array_key_exists($sp_sk, $daten)) {
-            /* 1.2.51: im Typ der Vorgabe - schwelle_ct und schwelle_hyst sind Kommazahlen, die (int) bis 1.2.50
-             * fuer die vier Schalter genuegte. */
-            $neu[$sp_sk] = isset($sp_jetzt[$sp_sk])
-                ? (is_float($neu[$sp_sk]) ? (float) $sp_jetzt[$sp_sk] : (int) $sp_jetzt[$sp_sk]) : $neu[$sp_sk];
-            $sp_spaet[] = $sp_sk;
-        }
-    }
-    $neu['marstek_token'] = isset($sp_jetzt['marstek_token']) ? (string) $sp_jetzt['marstek_token'] : '';
-    /* S1: ebenso die beiden Sprechtoken (Alexa-NG, Chromecast 4 Lox NG). Eine
-     * Datei MIT Token hat spot_wert_mangel() schon abgewiesen. */
-    if (isset($neu['tts']) && is_array($neu['tts'])) {
-        foreach (array('alexa_token', 'google_token') as $sp_tk) {
-            $neu['tts'][$sp_tk] = (isset($sp_jetzt['tts'][$sp_tk]) && is_string($sp_jetzt['tts'][$sp_tk]))
-                ? $sp_jetzt['tts'][$sp_tk] : '';
-        }
-    }
-    /* 1.2.49: die Herkunft der Sprechtoken kommt nie aus einer Datei; die geltende bleibt - ein uebernommenes Token
-     * bleibt uebernommen. Bis 1.2.48 fiel sie beim Zurueckspielen weg. */
-    $neu['ansage_token_herkunft'] = (isset($sp_jetzt['ansage_token_herkunft']) && is_array($sp_jetzt['ansage_token_herkunft'])
-        && !spot_wert_mangel('ansage_token_herkunft', $sp_jetzt['ansage_token_herkunft']))
-        ? $sp_jetzt['ansage_token_herkunft'] : array();
-    // Ein leeres Token in der Datei laesst das geltende stehen (Klasse 12).
-    if (!$sp_tok_aus_datei) {
-        $neu['token'] = isset($sp_jetzt['token']) ? $sp_jetzt['token'] : '';
-    }
-    $sp_zspaet = array();
-    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-     * heisst "keine weiteren Ziele" und wird so uebernommen. */
-    $sp_spaete = array();
-    if (isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
-        list($neu['tts'], $sp_spaete) = ansage_sicherung_spaet($neu['tts'],
-            (isset($sp_jetzt['tts']) && is_array($sp_jetzt['tts'])) ? $sp_jetzt['tts'] : null);
-    }
-    foreach ($sp_spaete as $sp_sn) { $sp_zspaet[] = $sp_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-    return array($mangel ? null : $neu, $mangel, $anzahl, array_merge(
-                 $sp_spaet ? array(sprintf(spot_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $sp_spaet))) : array(),
-                 $sp_zspaet ? array(sprintf(spot_t('TEXT.SICH_SPAET'), implode(', ', $sp_zspaet))) : array()));
+    $p = spot_sicherung_wert_pruefen('tts', is_array($w) ? ansage_sicherung_bereinigen($w) : $w);
+    return array_merge($t, is_array($p) ? $p : ($p !== '' ? array($p) : array()));
 }
 
 /**
- * Die Sicherungsdatei bauen.
+ * Die Sicherungsdatei bauen (1.2.52: ueber das gemeinsame Sicherungsmodul).
  *
- * VOLLSTAENDIG, aus den Vorgaben heraus: geschrieben werden ALLE Schluessel,
- * nicht nur die abweichenden. Ein Schluessel, der in der Sicherung fehlt,
- * kaeme beim Zurueckspielen aus der Vorgabe - und das ist genau dann falsch,
- * wenn jemand ihn bewusst auf den heutigen Vorgabewert gesetzt hat und sich
- * die Vorgabe spaeter aendert.
+ * VOLLSTAENDIG: alle Schluessel der Vorgaben, auch die, die gleich der Vorgabe sind - ein fehlender kaeme beim
+ * Zurueckspielen auf einer anderen Fassung aus deren Vorgabe. DER AKTIONSTOKEN DES ENDPUNKTS IST DABEI: ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und der Miniserver kaeme trotzdem nicht mehr an das Plugin.
+ * Nicht darin: das Formularmerkmal (steht in keiner Vorgabe), das Marstek-Token, die Sprechtoken und die Vermerke
+ * (Beschreibung). Was das eigene Zurueckspielen abwiese, sagt die Datei in _warnung (X-3, nur Namen).
  *
- * DER AKTIONSTOKEN IST DABEI. Ohne ihn stuenden nach dem Zurueckspielen alle
- * Felder richtig, und der Miniserver kaeme trotzdem nicht mehr an das
- * Plugin - die Datei waere wertlos. Wer ihn weglaesst, hat kein
- * Sicherheitsmerkmal eingebaut, sondern die Funktion halbiert.
- *
- * Damit traegt die Datei ein Geheimnis. Der Text am Knopf sagt das, und die
- * Datei sagt es in ihrem eigenen Kopf noch einmal - wer sie in einem Jahr
- * wiederfindet, sieht ohne Nachfragen, was er in der Hand haelt.
- *
- * Das FORMULARMERKMAL gehoert ausdruecklich NICHT hinein (siehe
- * spot_formtoken()); es steht auch in keiner Vorgabe und kann deshalb gar
- * nicht hineingeraten.
- *
- * Rueckgabe: array(Dateiname, Inhalt) - oder array('', '') bei ungueltigem
- * UTF-8, denn json_encode gibt dann false zurueck und ein leerer Download
- * saehe wie eine gelungene Sicherung aus.
+ * Rueckgabe: array(Dateiname, Inhalt) - oder array('', '') bei ungueltigem UTF-8, denn json_encode gibt dann false
+ * zurueck und ein leerer Download saehe wie eine gelungene Sicherung aus.
  */
 function spot_sicherung_schreiben()
 {
-    $cfg = spot_config();
-    // Vollstaendig: jeder Vorgabeschluessel steht in der Datei.
-    $daten = array(
-        '_hinweis' => 'Spotpreis aWATTar - gesicherte Einstellungen.'
-                    . ' ENTHAELT DEN AKTIONSTOKEN DES ENDPUNKTS -'
-                    . ' wie ein Passwort behandeln, nicht in ein Forum haengen'
-                    . ' und nicht an einen Fehlerbericht heften.'
-                    . ' Nicht darin: das Marstek-Token und die Sprechtoken fuer Alexa-NG'
-                    . ' und Chromecast 4 Lox NG - sie bleiben beim Zurueckspielen, wie sie sind.',
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_fassung' => spot_fassung(),
-    );
-    /* Ein Token in der Marstek-Adresse - bis 1.2.29 der einzige Weg, die
-     * Kopplung zum Laufen zu bringen - kommt ebenfalls nicht mit: es wird aus
-     * der Adresse genommen, und der Kopf der Datei sagt es (X-3). Das
-     * Zurueckspielen wiese eine Adresse mit Token ab. */
-    $sp_mu = (isset($cfg['marstek_url']) && is_string($cfg['marstek_url'])) ? $cfg['marstek_url'] : '';
-    $sp_mu_tok = ($sp_mu !== '' && spot_marstek_url_hat_token($sp_mu));
-    if ($sp_mu_tok) {
-        $daten['_warnung'] = 'marstek_url trug ein Token. Es steht NICHT in dieser Datei;'
-            . ' bitte im Plugin in das Feld "Aktionstoken des Marstek-Plugins" eintragen.';
-    }
-    foreach (spot_vorgaben() as $k => $v) {
-        // Das Marstek-Token gehoert nie in eine Sicherung (Energie-1 C2).
-        if ($k === 'marstek_token') {
-            continue;
-        }
-        $daten[$k] = isset($cfg[$k]) ? $cfg[$k] : $v;
-    }
-    if ($sp_mu_tok) {
-        $daten['marstek_url'] = spot_marstek_url_ohne_token($sp_mu);
-    }
-    /* S1: die Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG kommen nie in
-     * die Datei - wie das Marstek-Token. Sie werden beim Umzug im jeweiligen
-     * Plugin abgelesen. */
-    if (isset($daten['tts']) && is_array($daten['tts'])) {
-        // seit 1.2.33 aus der gemeinsamen Sprachausgabe (eine Liste der Geheimnisse)
-        $daten['tts'] = ansage_sicherung_bereinigen($daten['tts']);
-        unset($daten['ansage_token_herkunft']);     // 1.2.43
-    }
-    /* X-3 (Pruefbericht oberflaeche, Befund 11): was das Zurueckspielen
-     * abweisen wuerde, sagt die Datei schon beim Sichern - nur mit Namen, nie
-     * mit Werten. Bis 1.2.31 warnte nur die Marstek-Adresse. */
-    $sp_x3 = spot_konfig_mangel($daten);
-    if (isset($cfg['token']) && $cfg['token'] !== '' && !spot_endpunkt_token_form_ok($cfg['token'])) {
-        array_unshift($sp_x3, 'token');
-    }
-    if ($sp_x3) {
-        $daten['_warnung'] = (isset($daten['_warnung']) ? $daten['_warnung'] . ' ' : '')
-            . 'Diese Werte wuerde das Zurueckspielen abweisen: ' . implode(', ', $sp_x3)
-            . '. Bitte in den Einstellungen berichtigen und neu sichern.';
-    }
-    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) {
+    $js = sicherung_json(spot_sicherung_daten());
+    if ($js === '') {
         return array('', '');
     }
     return array('spotpreis_einstellungen_' . date('Ymd_His') . '.json', $js);
+}
+
+/** 1.2.52: Die Sicherung als Feld (Kopf mit _plugin, _fassung, _stand und Inhalt). */
+function spot_sicherung_daten()
+{
+    return sicherung_bauen(spot_sicherung_beschreibung(), spot_config());
 }
 
 /**
@@ -7220,7 +7087,7 @@ function spot_haus_sitzung_datei()
 }
 
 /** Den Merker "war Anbieter" (_haus_frueher) in der Konfiguration setzen oder entfernen - mit Zweitschrift
- *  (spot_config_save()). Unterstrich: spot_sicherung_lesen() uebergeht ihn, spot_sicherung_schreiben() schreibt nur
+ *  (spot_config_save()). Unterstrich: das Sicherungsmodul uebergeht ihn ('nie_aus_datei'), spot_sicherung_schreiben() schreibt nur
  *  Vorgabeschluessel. Rueckgabe true, wenn geschrieben wurde. Abschrift fer_haus_frueher_setzen(). */
 function spot_haus_frueher_setzen($ja)
 {
