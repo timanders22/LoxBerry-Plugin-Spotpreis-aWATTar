@@ -1032,7 +1032,8 @@ if ($sp_fmt_fehlt) {
 if ($sp_frame) {
     /* W8 (Gruppe 27, 1.2.39): der Hilfelink fuehrt auf die Seite des Plugins im LoxBerry-Wiki, nicht auf die
      * Startseite. */
-    LBWeb::lbheader('Spotpreis aWATTar', 'https://wiki.loxberry.de/plugins/spotpreis_awattar/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Spotpreis aWATTar', __DIR__), 'https://wiki.loxberry.de/plugins/spotpreis_awattar/start', 'help.html');
 }
 /* O1: die Seite wird gepuffert, damit die Selbstpruefung im Reiter Test die
  * Verschachtelung der Flaechen am FERTIGEN HTML messen kann (ganz unten). */
