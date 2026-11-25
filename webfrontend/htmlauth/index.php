@@ -323,6 +323,12 @@ if ($sp_ist_post && isset($_POST['testansage'])) {
 }
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.2.58: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($sp_ist_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = spot_meld_test();
+    if ($meld_ok) { $sp_note = $meld_satz; } else { $sp_fehler[] = $meld_satz; }
+    $sp_tab = 'tab-test';
+}
 if ($sp_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $sp_tk = spot_ansage_k();
     $sp_tnur = (isset($_POST['ansage_test_ziel']) && spot_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -388,7 +394,16 @@ if ($sp_ist_post && isset($_POST['mqtt_save'])) {
     $sp_mq_pf = isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '';
     $sp_mq_pf = is_string($sp_mq_pf) ? trim($sp_mq_pf) : $sp_mq_pf;
     $sp_mq_m = spot_wert_gegen($sp_mq_pf, spot_schranken()['mqtt_topic']);
-    if ($sp_mq_m !== null) {
+    /* 1.2.58 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+     * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+     * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+    if ($sp_mq_m === null && is_string($sp_mq_pf) && hb_bereich($sp_mq_pf) !== ''
+        && $sp_mq_pf !== (string) spot_config()['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        $sp_fehler[] = sprintf(spot_t('HAUSBEREICH.FEHLER'), $sp_mq_pf, hb_bereich($sp_mq_pf));
+        $sp_nichts_gespeichert = true;
+        $sp_eingaben = spot_eingaben_sammeln('mqtt_save', array('mqtt_topic'));
+    } elseif ($sp_mq_m !== null) {
         $sp_fehler[] = sprintf(spot_t('WERT.FELD'), 'mqtt_topic', spot_wert_text($sp_mq_m));
         $sp_nichts_gespeichert = true;
         $sp_eingaben = spot_eingaben_sammeln('mqtt_save', array('mqtt_topic'));
@@ -414,7 +429,7 @@ if ($sp_ist_post && isset($_POST['mqtt_save'])) {
     $sp_tab = 'tab-mqtt';
 }
 
-if ($sp_ist_post && isset($_POST['save'])) {
+if ($sp_ist_post && isset($_POST['save']) && !isset($_POST['meld_test'])) {     // 1.2.58: der Knopf Testmeldung (im selben Formular) speichert nicht
     /* O4 (Pruefbericht oberflaeche, Befunde 5-7; code, Befund 8 = aWATTar-k4;
      * Entscheidungen Nr. 16 und 19): JEDES Feld wird mit derselben Pruefung wie
      * das Zurueckspielen geprueft (spot_wert_gegen(), Schranken in
@@ -713,6 +728,8 @@ if ($sp_ist_post && isset($_POST['save'])) {
     $sp_new['tts'] = ansage_formular_lesen($sp_tpost, spot_tts($sp_alt), $sp_tmangel, $sp_tbean,
         spot_ansage_opt() + array('ziele' => spot_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), spot_ansage_k(), $sp_thinw);
     list($sp_new['ansage_regeln']) = ansage_regeln_formular($sp_tpost, spot_ansage_regeln(spot_config()), array(), $sp_tmangel, $sp_tbean, spot_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.2.58: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $sp_new['meldung'] = meld_formular_lesen($_POST, isset($sp_alt['meldung']) ? $sp_alt['meldung'] : null, spot_meld_anlaesse(), $sp_tmangel, $sp_tbean, spot_meld_k(), spot_meld_haken_vorgabe());
     // 1.2.46: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.2.45 verlor das Speichern den Vermerk ganz.
     $sp_new['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($sp_alt['ansage_token_herkunft']) ? $sp_alt['ansage_token_herkunft'] : array(), spot_ansage_opt());
     foreach ($sp_tmangel as $sp_tm) { $sp_fehler[] = $sp_tm['text']; }
@@ -828,7 +845,8 @@ if ($sp_ist_post && isset($_POST['spot_zurueck'])) {
             }
             return $neu;
         };
-        $sp_b['speichern'] = function ($neu) { return spot_config_save($neu); };
+        // 1.2.58: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $sp_b['speichern'] = function ($neu) { return spot_config_save($neu, false); };
         $sp_b['zweitschrift'] = function () { $p = spot_paths(); return array($p['config'], $p['backup']); };
         $sp_b['nachziehen'] = function ($neu, $jetzt, $r)
                 use (&$sp_zspaet, $sp_mqtt_wechsel, $sp_haus_folgen, $sp_bruecke_folgen, $sp_mask) {
@@ -855,6 +873,31 @@ if ($sp_ist_post && isset($_POST['spot_zurueck'])) {
     foreach ($sp_m['fehler'] as $sp_x) { $sp_fehler[] = $sp_klar($sp_x); }
     if ($sp_m['hinweise']) {
         $sp_note = trim($sp_note . ' ' . implode(' ', array_map($sp_klar, $sp_m['hinweise'])));
+    }
+}
+
+/* ================= Lade-Beanstandungen: angezeigte Werte uebernehmen (1.2.58) =================
+ * Nur mit gesetztem Haken (Entscheidung des Hausherrn 24.11.2026, "Haken im gelben Kasten"); ohne ihn bleibt die Datei
+ * byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if ($sp_ist_post && sicherung_lade_eingang($_POST) !== '') {
+    $sp_lb = spot_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $sp_err = sicherung_t('K_LADE_HAKEN_FEHLT', $sp_lb);
+    } else {
+        $sp_ld = spot_lade_roh();
+        $sp_lv = spot_config(false);
+        $sp_un = array();
+        if ($sp_ld !== null) {
+            list($sp_lneu, $sp_un) = sicherung_lade_uebernehmen_stand($sp_ld, $sp_lv, sicherung_lade_beanstandungen($sp_lb, $sp_ld, $sp_lv));
+            if ($sp_un && !spot_config_save($sp_lneu, false)) {
+                $sp_err = sprintf(spot_t('TEXT.SPEICHERN_FEHL'), 'spot.json');
+                $sp_un = array();
+            }
+        }
+        if ($sp_un) {
+            spot_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $sp_un)));
+            $sp_note = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $sp_lb), implode(', ', $sp_un));
+        }
     }
 }
 
@@ -1185,8 +1228,13 @@ ob_start();
 <div class="sm-wrap">
 
 <?php if ($sp_saved) { ?><div class="sm-alert sm-ok"><b><?php echo spot_t('TEXT.KONFIGURATION_GESPEICHERT'); ?></b> <?php echo spot_t('TEXT.INKL_SICHERUNGSKOPIE_FR_UPDATES'); ?></div><?php } ?>
+<?= sicherung_lade_kasten(spot_lade_b(true), isset($sp_lade) ? $sp_lade : spot_lade_beanstandungen(),
+        spot_fmt() . '<input data-role="none" type="hidden" name="activetab" value="' . sp_e($sp_tab) . '">') ?>
 <?php if ($sp_note !== '') { ?><div class="sm-alert sm-ok"><?= sp_e($sp_note) ?></div><?php } ?>
 <?php if ($sp_err !== '') { ?><div class="sm-alert sm-err"><b><?php echo spot_t('TEXT.FEHLER'); ?></b> <?= sp_e($sp_err) ?></div><?php } ?>
+<?php /* 1.2.58: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$sp_lade = spot_lade_beanstandungen();
+spot_lade_melden($sp_lade); ?>
 
 <?php if (!empty($sp_st)) { ?>
 <div class="sm-alert sm-info">
@@ -1937,7 +1985,9 @@ $sp_th['m'] = function ($n) use ($sp_tnie, $sp_feldfehler) {
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => spot_mit_zielen(),
 'ziele_post' => (is_array($sp_eingaben) && isset($sp_eingaben['formular']) && $sp_eingaben['formular'] === 'save') ? spot_ziele_x2_post($sp_eingaben['werte']) : null), spot_ansage_k());
-echo ansage_regeln_html(spot_ansage_regeln($sp_cfg), array(), array(), $sp_th + array('token_vor_ort' => true), spot_ansage_k()); ?>
+echo ansage_regeln_html(spot_ansage_regeln($sp_cfg), array(), array(), $sp_th + array('token_vor_ort' => true), spot_ansage_k());
+echo spot_meld_form_html($sp_cfg);     // 1.2.58: Meldungen an SignalBot
+?>
 <p class="sm-hilfe"><?php echo sprintf(spot_t('TEXT.ANSAGE_TEST_HINWEIS'), '<b>' . sp_e(spot_t('REITER.TEST')) . '</b>'); ?></p>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo spot_t('TEXT.SPEICHERN'); ?></button>

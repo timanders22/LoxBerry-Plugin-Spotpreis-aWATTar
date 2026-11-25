@@ -212,7 +212,7 @@ if ($spot_neu_holen) {
 /* Fehlende Schluessel einmal in die Datei schreiben (Regeln/05). Die
  * Funktion tut nichts, solange nichts fehlt - geschrieben wird also nur beim
  * ersten Lauf nach einem Update. */
-spot_config_vervollstaendigen();
+spot_dienst_pflege();     // 1.2.58: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 
 spot_announce_check();
 /* Schwellen-Push (1.2.51, ab Werk aus): ein Schritt je Minutenlauf, VOR dem MQTT-Versand - das Meldefenster
@@ -264,7 +264,7 @@ if ((int) date('j') === 1 && (int) date('G') >= 8) {
                 . $vm['fix'] . ' ct -> ' . ($vm['diff'] >= 0 ? 'dynamisch waere guenstiger gewesen um ' : 'fester Tarif war guenstiger um ')
                 . abs($vm['diff']) . ' ct/kWh (' . abs($vm['euro']) . ' EUR)');
             $cfgm = spot_config();
-            if (!empty($cfgm['notify']['audio'])) {
+            if (spot_meld_will('monat', $cfgm)) {     // 1.2.58: Ansage oder Meldung an SignalBot
                 $t = spot_month_text($vm);
                 if ($t !== '') {
                     spot_ansage_legen(array(array('schluessel' => 'monat', 'text' => $t)));     // 1.2.43

@@ -29,10 +29,12 @@ require_once __DIR__ . '/planer.php';
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
  * anzulegen und antwortet bei direktem Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.2.58)
 /* 1.2.52: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
  * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
  * anderen Linien. Die Beschreibung dieser Linie steht in spot_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.2.58, Regeln/07)
 /* Nachzug Anbieterregel (1.2.40, 29.10.2026): das gemeinsame Stueck der Anbieterregel fuer haus/strompreis
  * (Regeln/07 Nr. 15), byteweise gleich mit der Stammfassung aus Spotpreis Tibber 0.9.33 - nur reine Funktionen
  * hanb_*(), kein Netz, keine Datei; antwortet bei direktem Aufruf mit 403. */
@@ -362,6 +364,7 @@ function spot_vorgaben()
     'schwelle_sperre' => 60,
     'notify' => array(),
     'tts' => array(),
+    'meldung' => meld_vorgaben(spot_meld_anlaesse(), spot_meld_haken_vorgabe()),     // 1.2.58: Meldungen an SignalBot, ab Werk aus
     // Fahrplaner (ab 1.2.0): Leistungsbudget und PV-Gutschrift.
     // Vorgabe 0 heisst jeweils "aus" - wer nichts einstellt, bekommt
     // das Verhalten der Fassung davor.
@@ -923,7 +926,18 @@ function spot_config_vervollstaendigen() {
         spot_log('Konfiguration NICHT vervollstaendigt: die Datei hat kein Token, die Zweitschrift schon.');
         return 0;
     }
-    if (!spot_config_save($cfg)) {
+    /* 1.2.58 (Lade-Beanstandungen, Regeln/05 "Vervollstaendigen, Bauform Docker NG"): geschrieben werden die WERTE AUS
+     * DER DATEI plus die fehlenden Schluessel - fuer einen fehlenden der Wert, den spot_config() nach seiner Lese-Regel
+     * liefert (endpunkt_ein einer eingerichteten Anlage 1). Bis 1.2.57 wurde die ganze normierte Konfiguration
+     * geschrieben und damit jeder beim Laden ersetzte Wert in der Datei festgeschrieben. */
+    $sp_datei = json_decode((string) @file_get_contents($p['config']), true);
+    if (!is_array($sp_datei)) {
+        return 0;
+    }
+    foreach ($sk[0] as $sp_k) {
+        $sp_datei[$sp_k] = array_key_exists($sp_k, $cfg) ? $cfg[$sp_k] : spot_vorgaben()[$sp_k];
+    }
+    if (!spot_config_save($sp_datei, false)) {
         return 0;
     }
     spot_log('Konfiguration vervollstaendigt: ' . count($sk[0]) . ' Schluessel mit Vorgabe ergaenzt ('
@@ -960,6 +974,66 @@ function spot_merker_aufraeumen($muster, $behalten) {
         if (basename($f) !== 'marke_' . $behalten) {
             @unlink($f);
         }
+    }
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (1.2.58; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * spot_config_normalisieren() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Schranken und leert
+ * Zugangsdaten falscher Form. Das bleibt - aber jede solche Ersetzung wird gemeldet (Reiter Test rot, Seite gelb,
+ * einmal ins Protokoll) und nie in die Datei zurueckgeschrieben.
+ * ================================================================== */
+
+/** Die rohen Werte von spot.json (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function spot_lade_roh() {
+    $p = spot_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen: marstek_token (in der Sicherung ein Vermerk) wird hier mitgeprueft;
+ *  geheim sind token, marstek_token und die Sprechtoken. $maskiert = false fuer den Reiter Test (maskiert bei der
+ *  Ausgabe). */
+function spot_lade_b($maskiert = true) {
+    $b = spot_sicherung_beschreibung();
+    $b['nie_aus_datei'] = array_values(array_diff((array) $b['nie_aus_datei'], array('marstek_token')));
+    $b['geheim'] = array_merge(array('token', 'marstek_token'), array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    if (!$maskiert) { $b['e'] = function ($s) { return (string) $s; }; }
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst spot_config(false)). */
+function spot_lade_beanstandungen($cfg = null, $maskiert = true) {
+    $d = spot_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(spot_lade_b($maskiert), $d, is_array($cfg) ? $cfg : spot_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function spot_lade_behalten(array $cfg) {
+    $d = spot_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = spot_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(spot_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Minutenlauf (bin/cron.php): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden. */
+function spot_dienst_pflege() {
+    $r = spot_config_vervollstaendigen();
+    spot_lade_melden(spot_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function spot_lade_melden(array $beanst) {
+    $d = spot_datadir();
+    if ($d === '' || !is_dir($d)) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        spot_log(sicherung_lade_protokollzeile($beanst));
     }
 }
 
@@ -2477,8 +2551,12 @@ function spot_write_atomic($datei, $inhalt) {
     return true;
 }
 
-function spot_config_save($cfg) {
+function spot_config_save($cfg, $lade_behalten = true) {
     $p = spot_paths();
+    /* 1.2.58 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen, beim Vervollstaendigen (schreibt Dateiwerte) und beim Knopf "Angezeigte Werte uebernehmen". */
+    if ($lade_behalten && is_array($cfg)) { $cfg = spot_lade_behalten($cfg); }
     $dir = dirname($p['config']);
     if (!is_dir($dir)) {
         @mkdir($dir, 0775, true);
@@ -3385,6 +3463,7 @@ function spot_mqtt_publish($st = null, $erzwingen = false) {
         return -1;
     }
     $prefix = spot_mqtt_praefix($cfg);
+    spot_praefix_haus_melden($cfg);   // 1.2.58: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     /* M3 (Pruefbericht mqtt, B4): haelt der Broker noch Altwerte frueher
      * zurueckbehaltener Themen (spot_mqtt_altlast()), gehen GENAU DIESE Themen
      * mit - die leere retain-Nutzlast unmittelbar vor dem gueltigen Wert
@@ -4869,6 +4948,8 @@ function spot_ansage_senden($jetzt = null)
         $conf = spot_config();
         spot_ansage_token_pflegen($conf);
         $conf = spot_config();
+        spot_meld_senden($frisch, $conf);     // 1.2.58: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = spot_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, spot_tts($conf), spot_ansage_regeln($conf), spot_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -5382,7 +5463,7 @@ function spot_announce_check() {
      *
      * Zweimal kann sie dadurch nicht kommen: der Merker said_<YmdH> steht
      * schon und traegt die Stunde im Namen. */
-    if (!empty($cfg['notify']['audio']) && $st['ok'] && (int) date('i') < 5) {
+    if (spot_meld_will('preis', $cfg) && $st['ok'] && (int) date('i') < 5) {     // 1.2.58: Ansage oder Meldung an SignalBot
         $flag = spot_tmpdir() . '/said_' . date('YmdH');
         if (!is_file($flag)) {
             $sel = spot_hour_selected();
@@ -5405,7 +5486,7 @@ function spot_announce_check() {
     // am selben Tag ein zweites Mal.
     if (!empty($cfg['notify']['tomorrow']) && $st['tomorrow_ok']) {
         if (spot_merker_setzen('tomorrow_' . date('Ymd'))) {
-            if (!empty($cfg['notify']['audio'])) {
+            if (spot_meld_will('morgen', $cfg)) {     // 1.2.58: Ansage oder Meldung an SignalBot
                 $txt = spot_tomorrow_text($st);
                 if ($txt !== '') {
                     spot_ansage_legen(array(array('schluessel' => 'morgen', 'text' => $txt)));     // 1.2.43
@@ -5747,6 +5828,9 @@ function spot_wert_gegen($w, $s) {
 function spot_wert_mangel($k, $w) {
     $s = spot_schranken();
     $aus = array();
+    if ($k === 'meldung') {     // 1.2.58: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        return meld_block_pruefen($w, spot_meld_anlaesse()) ? array(array('meldung', array('TYP'))) : array();
+    }
     if ($k === 'ansage_regeln') {     // 1.2.49: gegen den Stamm, wie spot_sicherung_lesen()
         $sp_rg = '';
         return ansage_regeln_wert($w, $sp_rg) !== null ? array()
@@ -5870,6 +5954,7 @@ function spot_sicherung_beschreibung()
     $schluessel = array(
         'regeln' => sicherung_liste(array_keys(spot_regel_vorgabe())),
         'notify' => sicherung_block($notify),
+        'meldung' => meld_sicherung_knoten(spot_meld_anlaesse(), spot_meld_k()),     // 1.2.58
         'tts'    => sicherung_block($tts, $tts_knoten)
                     + array('sichern' => 'ansage_sicherung_bereinigen', 'pruefen' => 'spot_sicherung_tts_pruefen'),
         /* S2 (1.2.49): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
@@ -5941,6 +6026,10 @@ function spot_sicherung_wert_pruefen($k, $w)
         return $e(spot_t('TEXT.SICH_MARSTEK_URL_TOKEN'));
     }
     $t = array();
+    /* 1.2.58: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+    if ($k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+        return array($e(sprintf(spot_t('TEXT.SICH_WERT'), $k, sprintf(spot_t('HAUSBEREICH.SICH_W'), hb_bereich($w)))));
+    }
     foreach (spot_wert_mangel((string) $k, $w) as $x) {
         $t[] = $e(sprintf(spot_t('TEXT.SICH_WERT'), $x[0], spot_wert_text($x[1])));
     }
@@ -6198,6 +6287,9 @@ function spot_selbsttest($endpunkt_pruefen = false)
      * bildet, wirkt der Eintrag still nicht - gesendet wird trotzdem,
      * nur fluechtig. Die Zeile nennt die Zahl der angesehenen Stellen
      * mit; eine Null waere kein 'in Ordnung'. */
+    // 1.2.58: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $sp_hb = spot_pruef_praefix_haus($cfg);
+    $add('HAUSBEREICH.F_TEST', $sp_hb[0] === -1 ? 2 : $sp_hb[0], $sp_hb[1]);
     $rt = array_keys(spot_retain_liste());
     $alle = array_keys(spot_mqtt_themen($st));
     $fremd = array_diff($rt, $alle);
@@ -6479,6 +6571,12 @@ function spot_selbsttest($endpunkt_pruefen = false)
     $add('PRUEF.SPEICHER', $sp_qok, $sp_qtext);
     list($sp_bok, $sp_btext) = spot_pruef_bruecke();
     $add('PRUEF.BRUECKE', $sp_bok, $sp_btext);
+    /* 1.2.58: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. */
+    $sp_lb = spot_lade_b(false);
+    $sp_la = spot_lade_beanstandungen(null, false);
+    $add('SICHERUNG.K_LADE_FRAGE', $sp_la ? 0 : 1,
+        $sp_la ? implode(' ', sicherung_lade_saetze($sp_lb, $sp_la)) : sicherung_t('K_LADE_KEINE', $sp_lb));
     return $z;
 }
 
@@ -7937,4 +8035,158 @@ function spot_gesundheit()
     if ($warn) { return array(4, implode(' ', $warn) . ' ' . $grund); }
     if ($hinweis) { return array(6, implode(' ', $hinweis) . ' ' . $grund); }
     return array(5, $grund);
+}
+
+/**
+ * 1.2.58 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function spot_pruef_praefix_haus($cfg)
+{
+    $p = spot_mqtt_praefix($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_enabled']))) {
+            return array(-1, sprintf(spot_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(spot_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(spot_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.2.58: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function spot_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = spot_mqtt_praefix($cfg);
+    if ($merk === null) {
+        $merk = spot_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        spot_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('spot_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.2.58, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (spot_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (spot_meld_will()); der Sender trennt die Wege wieder (spot_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function spot_meld_anlaesse()
+{
+    return array('preis' => spot_t('TEXT.N_PREIS'), 'morgen' => spot_t('TEXT.N_MORGEN'), 'monat' => spot_t('TEXT.N_MONAT'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function spot_meld_haken_vorgabe()
+{
+    return array('preis' => 1, 'morgen' => 1, 'monat' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function spot_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    return in_array((string) $a, array('preis', 'morgen', 'monat'), true) && is_array($cfg) && !empty($cfg['notify']['audio']);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function spot_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, spot_meld_anlaesse(), spot_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function spot_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, spot_meld_anlaesse(), spot_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function spot_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(spot_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function spot_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    return spot_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(spot_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function spot_meld_k()
+{
+    return spot_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function spot_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $anl = spot_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !spot_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function spot_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $b = spot_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, spot_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        spot_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function spot_meld_test()
+{
+    $r = meld_testmeldung(spot_meld_k());
+    spot_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function spot_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = spot_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = spot_meld_k();
+    $o = array();
+    /* 1.2.58: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(spot_meld_block($cfg), spot_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(spot_meld_block($cfg), spot_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }
